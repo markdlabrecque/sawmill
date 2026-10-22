@@ -1,4 +1,4 @@
-import { ClaudeCodeRuntime } from './claude-runtime.js';
+import { createRuntime } from './runtime-factory.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -28,7 +28,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
   const progress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
   let head = '';
-  let runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
+  let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
     diff = progress.reviewedHead && progress.repair

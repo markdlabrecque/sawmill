@@ -286,3 +286,29 @@ test('standalone repair retains completed cases and reviews only the fix commit 
   assert.equal(reports.length, 2);
   assert.match(reports[1]!.body, /Open page: completed/);
 });
+
+test('Codex factory refuses browser cases explicitly without starting a vendor process', async t => {
+  const y = await fixture(t);
+  await y.cli('worktree', 'create', '16');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('runtime: claude-code', 'runtime: codex').replaceAll('claude-opus-4-6', 'gpt-5.4'));
+  const marker = join(y.root, 'codex-started');
+  await writeFile(join(y.root, 'codex'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected'); process.exitCode = 1;\n`);
+  await chmod(join(y.root, 'codex'), 0o755);
+  const previous = process.env.PATH;
+  process.env.PATH = `${y.root}:${previous ?? ''}`;
+  t.after(() => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; });
+  const result = await y.invoke(['team', 'review', '16', '--json']);
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(JSON.parse(result.stdout).outcome.error, /Codex browser capability is unsupported/);
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:user-testing]')));
+});
+
+test('Claude refuses missing browser executable permission mappings before spawning', async t => {
+  const y = await fixture(t);
+  await y.cli('worktree', 'create', '16');
+  const runtime = new ClaudeCodeRuntime({ executable: join(y.root, 'never-start-vendor'), env: { PATH: y.root } });
+  const result = await y.invoke(['team', 'review', '16', '--json'], { runtime });
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(JSON.parse(result.stdout).outcome.error, /chrome-devtools-axi is missing from PATH/);
+});
