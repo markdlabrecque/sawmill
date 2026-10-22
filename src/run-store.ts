@@ -33,6 +33,8 @@ export interface TeamProgress {
   /** A question ends the invocation; an answer re-enters this role on its saved branch. */
   question?: { role: Role; question: string; wipHead?: string; preserved: boolean; error?: string };
   infrastructureAttempts?: InfrastructureAttempt[];
+  /** Accumulated user-case results across repair reviews. */
+  userTesting?: import('./user-testing.js').UserTesting;
 }
 /** Infrastructure invocation history, independent of the repair bounce budget. */
 export interface InfrastructureAttempt {

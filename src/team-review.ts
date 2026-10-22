@@ -9,6 +9,7 @@ import { readRun } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { infrastructure, type Runtime } from './runtime.js';
+import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, type BrowserReview } from './user-testing.js';
 
 const execute = promisify(execFile);
 export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
@@ -24,24 +25,41 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   }
   let prompt = '';
   let diff = '';
+  let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
+  const progress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
+  let head = '';
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
-    diff = await fullReviewDiff(ticket.worktree!, project.integration);
+    head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
+    diff = progress.reviewedHead && progress.repair
+      ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
+      : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;
     prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
+    browser = await browserHandoff(project, ticket.body, ticket.worktree, options.home, options.signal, progress.userTesting);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     runtime = { async run() { return { outcome: infrastructure(`Review preparation failed: ${message}`) }; } };
   }
-  if (/^ {0,3}##\s+User test cases\s*#*\s*$/im.test(ticket.body)) runtime = { async run() { return { outcome: infrastructure('User test cases require browser case handling, which is not implemented yet.') }; } };
   const duration = Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0);
-  const result = await runRole(cwd, project, writer, number, runtime, {
+  const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
     role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
-    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\nFull diff:\n${diff}\n\nTest command:\n${project.tests.command}`,
-    testCommand: project.tests.command, timeoutMs: duration, browser: false, signal: options.signal,
+    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests.command}${browser.handoff}`,
+    testCommand: project.tests.command, timeoutMs: duration, browser: browser.browser, signal: options.signal,
   }, options);
   const outcome = result.outcome;
+  progress.outputs.reviewer = result;
+  const testing = userTestingResult(browser, outcome, progress.userTesting);
+  if (testing) progress.userTesting = testing;
+  if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') progress.reviewedHead = head;
+  if (outcome.outcome === 'bounce') progress.repair = { source: 'reviewer', feedback: outcome.feedback, baseCommit: head,
+    ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
+  if (testing && !await transition(cwd, project, writer, number, {
+    team: progress,
+    report: { stage: 'user-testing', details: userTestingComment(testing), reachedStage: 'reviewer', round: result.round },
+  }, [], options)) return { status: 'logjam', ticket: number, ...result };
   const stage = outcome.outcome === 'pass' ? 'review-pass' : outcome.outcome === 'bounce' ? 'review-bounce' : outcome.outcome === 'question' ? 'aborted' : 'infrastructure';
   const ok = await transition(cwd, project, writer, number, {
+    team: progress,
     stage, ...(outcome.outcome === 'question' || outcome.outcome === 'infrastructure' ? { state: 'logjam', reason: outcome.outcome === 'question' ? 'question' : 'environment' } : {}),
     report: { stage, details: JSON.stringify({ ...outcome, diagnostics: result.diagnostics, model: project.roles.reviewer.model, effort: project.roles.reviewer.effort }), reachedStage: 'reviewer', round: result.round },
   }, [], options);

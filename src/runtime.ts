@@ -3,7 +3,7 @@ import type { Effort, Role } from './config.js';
 export type Outcome =
   | { outcome: 'done'; summary: string }
   | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[] }
-  | { outcome: 'bounce'; feedback: string; cases?: UserCase[] }
+  | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[] }
   | { outcome: 'question'; question: string }
   | { outcome: 'infrastructure'; error: string };
 export interface UserCase { case: string; result: 'completed' | 'broken'; step?: string }
