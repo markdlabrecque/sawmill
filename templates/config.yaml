@@ -25,5 +25,7 @@ pause_threshold: 3
 # <project> is the millyard folder name.
 # worktrees: /home/me/projects
 
-# How often mill run checks for finished teams, when it is not woken by one.
-poll_interval: 30s
+# How often mill integrate asks the tracker whether the pipeline for the
+# rebased commit has finished, when ci is wait. Nothing else in mill polls:
+# teams are child processes and the loop is told when one exits.
+ci_poll_interval: 30s

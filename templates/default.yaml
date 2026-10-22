@@ -37,7 +37,7 @@ roles:
     model: claude-opus-5-5
     effort: high
   reviewer:
-    model: claude-fable-5-1
+    model: claude-opus-5-5
     effort: high
 
 # How long one role may run before it is treated as an infrastructure failure
