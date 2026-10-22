@@ -28,7 +28,7 @@ export class ClaudeCodeRuntime implements Runtime {
       browserRules.push(`Bash(${executable} *)`);
     }
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', request.model, '--effort', request.effort,
-      '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
+      '--setting-sources', '', '--settings', '{"attribution":{"commit":"","pr":""}}', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
       '--permission-mode', 'dontAsk', '--tools', writer ? 'Read,Glob,Grep,Write,Edit,Bash' : 'Read,Glob,Grep,Bash',
       '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git commit *)'] : []),
         ...conflictRules, 'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', `Bash(${request.testCommand})`, ...(request.browser ? browserRules : [])].join(','),
