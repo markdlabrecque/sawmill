@@ -35,6 +35,13 @@ export async function preserveWip(path: string, ticket: number): Promise<string>
   await checkBranch();
   if (await git('status', '--porcelain', '--untracked-files=all')) throw new Error('WIP preservation left uncommitted files; work retained.');
   const head = await git('rev-parse', 'HEAD');
-  await git('-c', 'remote.origin.mirror=false', 'push', '--no-follow-tags', 'origin', `${branch}:${branch}`);
+  // A rebase rewrites the branch, so a plain push is refused. Lease on the last-seen
+  // remote head (empty when never pushed) so an unseen remote commit is still refused.
+  const seen = await git('for-each-ref', '--format=%(objectname)', `refs/remotes/origin/mill/${ticket}`);
+  try {
+    await git('-c', 'remote.origin.mirror=false', 'push', '--no-follow-tags', `--force-with-lease=${branch}:${seen}`, 'origin', `${branch}:${branch}`);
+  } catch (error) {
+    throw new Error(`Could not back up ${branch} to origin (the remote may have commits this worktree has not seen); work retained locally at ${head}.\n${error instanceof Error ? error.message : String(error)}`);
+  }
   return head;
 }
