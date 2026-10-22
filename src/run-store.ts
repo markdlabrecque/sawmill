@@ -33,6 +33,12 @@ export interface TeamProgress {
   testCommit?: string;
   testCommits?: string[];
   testFiles?: string[];
+  /** The written tests still need the red check before the implementer runs. */
+  redPending?: boolean;
+  /** Times the test-writers were sent back for tests that already pass; separate from bounces. */
+  redChecks?: number;
+  /** Send-back note for the next test-writers run; cleared once the tests are red. */
+  redFeedback?: string;
   outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
   reviewedHead?: string;
   /** Set only for a passing review of this committed head. */
