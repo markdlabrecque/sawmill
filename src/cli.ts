@@ -1,4 +1,5 @@
 import { runTeam } from './team-runner.js';
+import { dispatchOnce } from './dispatch.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
@@ -29,7 +30,7 @@ export interface CliOptions {
   sleep?: (milliseconds: number) => Promise<void>;
 }
 
-function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: string): TicketWriter {
+export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: string): TicketWriter {
   if (options.tracker) {
     const tracker = options.tracker;
     if (tracker.addComment && tracker.addLabel && tracker.removeLabel && tracker.closeTicket) return tracker as TicketWriter;
@@ -115,6 +116,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const snapshot = readRun(cwd);
         emit(snapshot, formatRun(snapshot));
         return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'once') {
+        if (positional.length !== 2) throw new CliError('Usage: mill run once [--json]', 2);
+        const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
+        emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}.`,
+          ...result.started.map(row => `#${row.ticket}: worker ${row.worker.pid}`),
+          ...result.failures.map(row => `#${row.ticket}: ${row.error}`)].join('\n'));
+        return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'tickets' && ['comment', 'label'].includes(positional[1] ?? '')) {
         const usage = `Usage: mill tickets ${positional[1]} <n> ${positional[1] === 'comment' ? '<text> [--stage <stage>]' : '<label> [--remove]'} [--json]`;

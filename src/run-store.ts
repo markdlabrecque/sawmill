@@ -37,6 +37,19 @@ export interface RepairContext {
   baseCommit: string;
   failedCases?: import('./runtime.js').UserCase[];
 }
+export interface WorkerOwnership {
+  token: string;
+  runId: string;
+  slot: string;
+  launcherPid: number;
+  pid: number | null;
+  processStart?: string;
+  status: 'starting' | 'running' | 'finished';
+  started: string;
+  finished?: string;
+  log: string;
+  result?: import('./team-runner.js').TeamResult;
+}
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
   position: number;
@@ -51,6 +64,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   completion: 'manual' | 'merged' | null;
   integration: IntegrationProgress;
   team: TeamProgress;
+  worker: WorkerOwnership | null;
   created: string;
   updated: string;
   stageStarted: string | null;
@@ -87,7 +101,8 @@ export function checkDraftable(cwd: string, replace: boolean): void {
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
-    db.exec(`PRAGMA foreign_keys = ON;
+    db.exec(`PRAGMA busy_timeout = 5000;
+      PRAGMA foreign_keys = ON;
       BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS run (id TEXT PRIMARY KEY, created TEXT NOT NULL, base_branch TEXT NOT NULL, source TEXT NOT NULL, tracker TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS tickets (
@@ -121,7 +136,7 @@ export function readRun(cwd: string): RunSnapshot {
   if (!existsSync(runPath(cwd))) throw new CliError('No drafted run; use mill run draft <numbers...>.');
   const db = new DatabaseSync(runPath(cwd), { readOnly: true });
   try {
-    db.exec('BEGIN');
+    db.exec('PRAGMA busy_timeout = 5000; BEGIN');
     const run = db.prepare('SELECT * FROM run').get();
     if (!run) throw new CliError('No drafted run; use mill run draft <numbers...>.');
     const edges: RunEdge[] = db.prepare('SELECT * FROM edges ORDER BY blocked, blocker').all().map(row => ({ blocked: Number(row.blocked), blocker: Number(row.blocker), outsideClosed: Boolean(row.outside_closed) }));
@@ -133,6 +148,7 @@ export function readRun(cwd: string): RunSnapshot {
       worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
       team: row.team ? JSON.parse(String(row.team)) as TeamProgress : {},
+      worker: row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership : null,
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
     }));
