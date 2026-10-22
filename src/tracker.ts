@@ -29,14 +29,17 @@ export interface ChangeRequest {
   headCommit: string;
 }
 
-/** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
-export interface Tracker extends TicketReader {
-  listByLabel(label: string): Promise<Ticket[]>;
-  listChildren(number: number): Promise<Ticket[]>;
+export interface TicketWriter {
   addLabel(number: number, label: string): Promise<void>;
   removeLabel(number: number, label: string): Promise<void>;
   addComment(number: number, body: string): Promise<void>;
   closeTicket(number: number): Promise<void>;
+}
+
+/** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
+export interface Tracker extends TicketReader, TicketWriter {
+  listByLabel(label: string): Promise<Ticket[]>;
+  listChildren(number: number): Promise<Ticket[]>;
   getPipeline(commit: string): Promise<{ state: 'pending' | 'passed' | 'failed' | 'none'; logUrl?: string }>;
   findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
   mergeChangeRequest(id: number | string, method: 'squash' | 'merge'): Promise<{ mergeCommit: string }>;
