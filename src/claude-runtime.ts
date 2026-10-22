@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { accessSync, constants } from 'node:fs';
+import { delimiter, resolve } from 'node:path';
 import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 
 /** Direct Claude stream-json adapter. Fixture-tested against SDK 0.3.308 projections. */
@@ -11,17 +13,25 @@ export class ClaudeCodeRuntime implements Runtime {
     const effortModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
       'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1'];
     if (!effortModels.includes(request.model)) return { outcome: infrastructure(`Unsupported or unverified Claude model/effort: ${request.model}/${request.effort}.`) };
-    if (request.browser) return { outcome: infrastructure('Browser permissions are not implemented for this runtime invocation.') };
+    if (request.browser && request.role !== 'reviewer') return { outcome: infrastructure('Browser capability is supported only for the reviewer.') };
     if (!/^[A-Za-z0-9_./=-]+(?: +[A-Za-z0-9_./=-]+)*$/.test(request.testCommand)) return { outcome: infrastructure('Unsupported test command permission mapping: use a simple command with literal arguments.') };
     if (request.signal?.aborted) return { outcome: infrastructure('Role interrupted before startup.') };
     if (process.platform === 'win32') return { outcome: infrastructure('Claude process-group cleanup is not supported on Windows.') };
     const writer = request.role !== 'reviewer';
+    const env: NodeJS.ProcessEnv = { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config` } : {}), ...this.options.env };
+    const browserRules = ['Bash(chrome-devtools-axi *)'];
+    if (request.browser) {
+      const executable = (env.PATH ?? '').split(delimiter).map(directory => resolve(request.cwd, directory, 'chrome-devtools-axi'))
+        .find(path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } });
+      if (!executable || !/^[/A-Za-z0-9_.+-]+$/.test(executable)) return { outcome: infrastructure('chrome-devtools-axi is missing from PATH or its absolute path has no supported permission mapping.') };
+      browserRules.push(`Bash(${executable} *)`);
+    }
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', request.model, '--effort', request.effort,
       '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
       '--permission-mode', 'dontAsk', '--tools', writer ? 'Read,Glob,Grep,Write,Edit,Bash' : 'Read,Glob,Grep,Bash',
       '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git commit *)'] : []),
-        'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', `Bash(${request.testCommand})`].join(','),
-      '--disallowedTools', 'mcp__*,Bash(chrome-devtools-axi *),Bash(*/chrome-devtools-axi *)'];
+        'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', `Bash(${request.testCommand})`, ...(request.browser ? browserRules : [])].join(','),
+      '--disallowedTools', ['mcp__*', ...(request.browser ? [] : [...browserRules, 'Bash(*/chrome-devtools-axi *)'])].join(',')];
     return new Promise(resolve => {
       let resultText: string | undefined;
       let failure: string | undefined;
@@ -35,7 +45,7 @@ export class ClaudeCodeRuntime implements Runtime {
       const toolCalls = new Map<string, { name: string; command?: string }>();
       const toolErrors = new Map<string, number>();
       const child = spawn(this.options.executable ?? 'claude', args, { cwd: request.cwd,
-        env: { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config` } : {}), ...this.options.env },
+        env,
         detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
       let cleanup: Promise<void> | undefined;
       const terminate = () => {
