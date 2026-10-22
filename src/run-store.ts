@@ -19,6 +19,13 @@ export interface IntegrationProgress {
   fastForwarded?: boolean;
   reported?: boolean;
 }
+export interface TeamProgress {
+  testBase?: string;
+  testCommit?: string;
+  testCommits?: string[];
+  testFiles?: string[];
+  outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
+}
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
   position: number;
@@ -32,6 +39,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   mergeCommit: string | null;
   completion: 'manual' | 'merged' | null;
   integration: IntegrationProgress;
+  team: TeamProgress;
   created: string;
   updated: string;
   stageStarted: string | null;
@@ -113,6 +121,7 @@ export function readRun(cwd: string): RunSnapshot {
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
       worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
+      team: row.team ? JSON.parse(String(row.team)) as TeamProgress : {},
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
     }));

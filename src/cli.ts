@@ -1,3 +1,4 @@
+import { runTeam } from './team-runner.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
@@ -60,6 +61,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await reviewTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { ...options, home });
         emit(result, JSON.stringify(result.outcome));
         return result.status === 'ok' && result.outcome.outcome === 'pass' ? 0 : 1;
+      }
+      if (positional[0] === 'team' && positional[1] === 'run') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill team run <n> [--json]', 2);
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : undefined);
+        if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
+        ticketWriter(options, config.project, cwd);
+        const result = await runTeam(cwd, config.project, config.machine, Number(positional[2]), tracker as IntegrationTracker, { ...options, home });
+        emit(result, `${result.outcome}: #${result.ticket} (${result.stage})${result.error ? `\n${result.error}` : ''}`);
+        return result.outcome === 'passed' ? 0 : 1;
       }
       if (positional[0] === 'integrate') {
         if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError('Usage: mill integrate <n> [--json]', 2);

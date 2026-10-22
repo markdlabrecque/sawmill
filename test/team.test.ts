@@ -1,0 +1,391 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { runCli } from '../src/cli.js';
+import type { Runtime, RuntimeRequest } from '../src/runtime.js';
+import type { ChangeRequest, Ticket } from '../src/tracker.js';
+import { millyard } from './helpers.js';
+
+async function fixture(t: TestContext) {
+  const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.', labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
+  const requests: ChangeRequest[] = [];
+  const tracker = {
+    async getTicket() { return structuredClone(ticket); },
+    async addComment(_n: number, body: string) { await beforeWrite?.(body); ticket.comments.push({ body }); },
+    async addLabel(_n: number, label: string) { await beforeWrite?.(); ticket.labels.push(label); },
+    async removeLabel(_n: number, label: string) { await beforeWrite?.(); ticket.labels = ticket.labels.filter(x => x !== label); },
+    async closeTicket() { await beforeWrite?.(); ticket.state = 'closed'; },
+    async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }) {
+      const request = { ...input, id: 1, url: 'https://example.invalid/changes/1', headCommit: y.git('rev-parse', input.branch) };
+      requests.push(request); return request;
+    },
+    async mergeChangeRequest(_id: number | string, method: 'squash' | 'merge', expectedHead?: string) {
+      assert.equal(method, 'squash');
+      assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], expectedHead);
+      const host = join(y.root, 'host');
+      y.git('clone', '--branch', 'integration', y.remote, host);
+      y.git('-C', host, 'config', 'user.name', 'Fake Tracker');
+      y.git('-C', host, 'config', 'user.email', 'fake@example.invalid');
+      y.git('-C', host, 'config', 'core.hooksPath', '/dev/null');
+      y.git('-C', host, 'merge', '--squash', 'origin/mill/12');
+      y.git('-C', host, 'commit', '-m', 'Squash ticket');
+      const mergeCommit = y.git('-C', host, 'rev-parse', 'HEAD');
+      y.git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
+      return { mergeCommit };
+    },
+    async deleteRemoteBranch(branch: string) { y.git('push', 'origin', '--delete', branch); },
+  };
+  let beforeWrite: ((body?: string) => Promise<void>) | undefined;
+  const y = await millyard(t, { tracker, sleep: async () => {} }, 'sawmill-team-');
+  await y.cli('build');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: team/tool')
+    .replace('integration: main', 'integration: integration').replace('# test_harness: none', 'test_harness: none')
+    .replace('ci: wait', 'ci: none').replace('command: npm test', 'command: node answer.test.cjs'));
+  await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 0;\n');
+  y.git('add', '.'); y.git('commit', '-m', 'Seed answer'); y.git('push');
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'echo "$MILL_TICKET" > "$MILL_WORKTREE/.git-fixture-hook"\n');
+  y.git('config', '--add', 'core.excludesFile', join(y.root, 'ignore'));
+  await writeFile(join(y.root, 'ignore'), '.git-fixture-hook\n');
+  assert.equal((await y.cli('run', 'draft', '12')).code, 0);
+  tracker.getTicket = async () => { throw new Error('No issue reads after draft'); };
+  const inputs: RuntimeRequest[] = [];
+  const redOutputs: string[] = [];
+  const greenOutputs: string[] = [];
+  const runtime: Runtime = { async run(request, sink) {
+    inputs.push(request);
+    sink.session(`${request.role}-session`);
+    sink.stdout(Buffer.from(JSON.stringify({ type: 'assistant', text: request.role }) + '\n'));
+    sink.stderr(Buffer.from('diagnostic\n'));
+    return script(request, sink);
+  } };
+  let script: Runtime['run'] = async request => {
+    const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+    const tests = () => execFileSync('node', ['answer.test.cjs'], { cwd: request.cwd, env: y.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (request.role === 'test-writers') {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1');\n");
+      try { tests(); assert.fail('Expected red'); } catch (error) { redOutputs.push(String((error as { stderr?: string }).stderr)); }
+      git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Specify answer');
+      return { outcome: { outcome: 'done', summary: 'answer.test.cjs fails: expected 42, received 0.' } };
+    }
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+      greenOutputs.push(tests());
+      git('add', 'answer.cjs'); git('commit', '-m', '#12: Return answer');
+      return { outcome: { outcome: 'done', summary: 'Implemented answer; one test passes.' } };
+    }
+    greenOutputs.push(tests());
+    return { outcome: { outcome: 'pass', summary: 'Scenario exercised and correct.' } };
+  };
+  const normal = script;
+  async function cli(...args: string[]) {
+    let stdout = '';
+    const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker, runtime, sleep: async () => {}, stdout: value => { stdout += value; } });
+    return { code, stdout };
+  }
+  return { ...y, cli, tracker, ticket, requests, inputs, redOutputs, greenOutputs, normal,
+    setScript(value: Runtime['run']) { script = value; },
+    setBeforeWrite(value: typeof beforeWrite) { beforeWrite = value; },
+    status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout), path: join(y.root, '12') };
+}
+
+test('team run carries real committed red tests through implementation, full review and a merged done ticket', async t => {
+  const y = await fixture(t);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.equal(value.outcome, 'passed');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  assert.equal(y.git('rev-parse', 'HEAD'), value.mergeCommit);
+  assert.equal(y.ticket.state, 'closed'); assert.equal(y.requests.length, 1);
+  assert.match(y.redOutputs[0]!, /expected|Expected/); assert.match(y.greenOutputs[0]!, /pass 1/);
+  assert.equal(await readFile(join(y.path, '.git-fixture-hook'), 'utf8'), '12\n');
+  assert.equal(y.git('log', '--format=%s', 'integration..mill/12').includes('#12: Specify answer'), true);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  for (const input of y.inputs) {
+    assert.equal(input.cwd, y.path); assert.equal(input.testCommand, 'node answer.test.cjs');
+    assert.match(input.handoff, /Keep the public API synchronous/); assert.match(input.handoff, /Return 42/);
+    assert.match(input.prompt, /Take the recommended option/);
+    assert.deepEqual(row.sessionIds[input.role], [`${input.role}-session`]);
+    assert.match(await readFile(join(y.cwd, '.mill/logs/12', `${input.role}-1.jsonl`), 'utf8'), new RegExp(input.role));
+  }
+  assert.match(y.inputs[1]!.handoff, /expected 42, received 0/);
+  assert.match(y.inputs[1]!.handoff, /answer.test.cjs/);
+  assert.match(y.inputs[2]!.handoff, /Implemented answer; one test passes/);
+  assert.match(y.inputs[2]!.handoff, /diff --git a\/answer.cjs/);
+  assert.match(y.inputs[2]!.handoff, /diff --git a\/answer.test.cjs/);
+  for (const stage of ['tests-written', 'implemented', 'review-pass', 'merged']) assert.ok(y.ticket.comments.some(c => c.body.includes(`[sawmill:${stage}]`)));
+  const summary = y.ticket.comments.at(-1)!.body;
+  for (const text of [value.mergeCommit, 'answer.test.cjs', 'test-writers-session', 'implementer-session', 'reviewer-session']) assert.ok(summary.includes(text), summary);
+});
+
+test('team rejects committed, staged, unstaged, deleted and renamed writer tests without review or integration', async t => {
+  for (const mode of ['committed', 'staged', 'unstaged', 'deleted', 'renamed', 'hidden-index']) {
+    const y = await fixture(t);
+    y.setScript(async (request, sink) => {
+      const result = await y.normal(request, sink);
+      if (request.role === 'implementer') {
+        const file = join(request.cwd, 'answer.test.cjs');
+        if (mode === 'deleted') y.git('-C', request.cwd, 'rm', 'answer.test.cjs');
+        else if (mode === 'renamed') y.git('-C', request.cwd, 'mv', 'answer.test.cjs', 'renamed.test.cjs');
+        else {
+          const original = await readFile(file, 'utf8');
+          await writeFile(file, '// weakened test\n');
+          if (['committed', 'staged', 'hidden-index'].includes(mode)) y.git('-C', request.cwd, 'add', 'answer.test.cjs');
+          if (mode === 'committed') y.git('-C', request.cwd, 'commit', '-m', 'Weaken tests');
+          if (mode === 'hidden-index') await writeFile(file, original);
+        }
+      }
+      return result;
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, `${mode}: ${result.stdout}`);
+    const value = JSON.parse(result.stdout);
+    assert.equal(value.outcome, 'aborted'); assert.equal(value.reason, 'review-bounce');
+    assert.match(value.error, /test.writer.*files.*changed/i);
+    assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer']);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.state, 'logjam'); assert.equal(row.bounces, 1);
+    assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+    assert.equal(row.team.testFiles.includes('answer.test.cjs'), true);
+    assert.equal(row.team.testCommits.length, 1);
+    assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`).includes('assert.equal'), true);
+    if (mode !== 'committed') assert.notEqual(y.git('-C', y.path, 'status', '--porcelain'), '', 'Saved files must remain untouched');
+  }
+});
+
+test('team requires committed writer evidence and clean completed roles while preserving unfinished files', async t => {
+  for (const mode of ['no-tests', 'uncommitted-tests', 'writer-extra', 'implementer-extra', 'rewritten-history', 'wrong-branch']) {
+    const y = await fixture(t);
+    y.setScript(async (request, sink) => {
+      if (request.role === 'test-writers' && mode === 'no-tests') return { outcome: { outcome: 'done', summary: 'No tests needed.' } };
+      const result = await y.normal(request, sink);
+      if (request.role === 'test-writers' && mode === 'uncommitted-tests') y.git('-C', request.cwd, 'reset', 'HEAD^');
+      if ((request.role === 'test-writers' && mode === 'writer-extra') || (request.role === 'implementer' && mode === 'implementer-extra')) await writeFile(join(request.cwd, 'unfinished'), 'keep me');
+      if (request.role === 'implementer' && mode === 'rewritten-history') {
+        y.git('-C', request.cwd, 'reset', '--soft', 'HEAD~2');
+        y.git('-C', request.cwd, 'commit', '-m', 'Replace writer history');
+      }
+      if (request.role === 'implementer' && mode === 'wrong-branch') y.git('-C', request.cwd, 'switch', '-c', 'other');
+      return result;
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, `${mode}: ${result.stdout}`);
+    assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
+    assert.deepEqual(y.inputs.map(r => r.role), mode.startsWith('implementer') || ['rewritten-history', 'wrong-branch'].includes(mode) ? ['test-writers', 'implementer'] : ['test-writers']);
+    assert.equal(y.requests.length, 0);
+    assert.equal((await y.status()).tickets[0].reason, 'environment');
+    if (mode.endsWith('extra')) assert.equal(await readFile(join(y.path, 'unfinished'), 'utf8'), 'keep me');
+    if (mode === 'uncommitted-tests') assert.match(y.git('-C', y.path, 'status', '--porcelain'), /answer.test.cjs/);
+  }
+});
+
+test('every role stops on question or infrastructure, preserving files, session and truthful reason', async t => {
+  for (const role of ['test-writers', 'implementer', 'reviewer']) for (const kind of ['question', 'infrastructure', 'throw'] as const) {
+    const y = await fixture(t);
+    y.setScript(async (request, sink) => {
+      if (request.role !== role) return y.normal(request, sink);
+      await writeFile(join(request.cwd, 'saved-work'), 'unfinished work');
+      if (kind === 'throw') throw new Error('Provider unavailable');
+      return { outcome: kind === 'question' ? { outcome: 'question', question: 'Which API should be used?' } : { outcome: 'infrastructure', error: 'Provider unavailable' } };
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    const value = JSON.parse(result.stdout);
+    assert.equal(value.outcome, kind === 'question' ? 'aborted' : 'infrastructure');
+    assert.equal(value.stage, role); assert.match(value.error, kind === 'question' ? /Which API/ : /Provider unavailable/);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.state, 'logjam'); assert.equal(row.reason, kind === 'question' ? 'question' : 'environment'); assert.equal(row.bounces, 0);
+    assert.equal(row.stage, role); assert.deepEqual(row.sessionIds[role], [`${role}-session`]);
+    assert.equal(y.inputs.at(-1)!.role, role); assert.equal(y.requests.length, 0);
+    assert.equal(await readFile(join(y.path, 'saved-work'), 'utf8'), 'unfinished work');
+    assert.match(y.git('-C', y.path, 'status', '--porcelain'), /saved-work/);
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+    assert.ok(y.ticket.labels.includes('logjam'));
+  }
+});
+
+test('review bounce preserves feedback and stops after one attempt without claiming retry exhaustion', async t => {
+  const y = await fixture(t);
+  y.setScript(async (request, sink) => request.role === 'reviewer' ? { outcome: { outcome: 'bounce', feedback: 'Missing the negative input scenario.' } } : y.normal(request, sink));
+  const result = await y.cli('team', 'run', '12');
+  assert.equal(result.code, 1); assert.match(result.stdout, /^aborted: #12 \(reviewer\)/);
+  assert.match(result.stdout, /Missing the negative input scenario/);
+  assert.equal(y.inputs.length, 3); assert.equal(y.requests.length, 0);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 1); assert.equal(row.reason, 'review-bounce');
+  assert.equal(row.team.outputs.reviewer.outcome.feedback, 'Missing the negative input scenario.');
+});
+
+test('mirror failure at every successful boundary stops the next role or merge and retains pending evidence', async t => {
+  for (const stage of ['worktree-created', 'tests-written', 'implemented', 'review-pass']) {
+    const y = await fixture(t);
+    let failed = false;
+    y.setBeforeWrite(async body => {
+      if (body?.includes(`[sawmill:${stage}]`)) failed = true;
+      if (failed) throw new Error('Tracker unavailable');
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    const value = JSON.parse(result.stdout);
+    assert.equal(value.outcome, 'infrastructure'); assert.equal(value.reason, 'tracker');
+    const snapshot = await y.status();
+    assert.equal(snapshot.tickets[0].reason, 'tracker'); assert.ok(snapshot.pendingWrites.length);
+    assert.equal(y.inputs.length, ['worktree-created', 'tests-written', 'implemented', 'review-pass'].indexOf(stage));
+    assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+  }
+});
+
+test('team completion and acknowledged-merge mirror recovery never rerun roles or merge twice', async t => {
+  const y = await fixture(t);
+  let failed = false;
+  y.setBeforeWrite(async body => {
+    if (body?.includes('[sawmill:merged]')) failed = true;
+    if (failed) throw new Error('Final mirror unavailable');
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.completion, 'merged'); assert.equal(row.reason, 'tracker');
+  const mergeCommit = row.mergeCommit;
+  y.setBeforeWrite(undefined);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const recovered = await y.cli('team', 'run', '12', '--json');
+  assert.equal(recovered.code, 0, recovered.stdout);
+  assert.equal(JSON.parse(recovered.stdout).mergeCommit, mergeCommit);
+  assert.equal((await y.cli('team', 'run', '12')).code, 0);
+  assert.equal(y.requests.length, 1); assert.equal(y.inputs.length, 3);
+  assert.equal(y.ticket.state, 'closed'); assert.equal((await y.status()).tickets[0].state, 'done');
+});
+
+test('team lock prevents another team or standalone reviewer from entering the same ticket', async t => {
+  const y = await fixture(t);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') { entered(); await held; }
+    return y.normal(request, sink);
+  });
+  const first = y.cli('team', 'run', '12', '--json');
+  await started;
+  try {
+    for (const command of ['run', 'review']) {
+      const result = await y.cli('team', command, '12', '--json');
+      assert.equal(result.code, 1); assert.match(result.stdout, /already running/);
+    }
+  } finally { release(); }
+  const result = await first;
+  assert.equal(result.code, 0, result.stdout); assert.equal(y.inputs.length, 3);
+});
+
+test('configured role models, efforts and full multi-commit review reach the runtime with cached prior outputs', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('model: claude-sonnet-5-5\n    effort: medium', 'model: gpt-writer\n    effort: low')
+    .replace('model: claude-opus-5-5\n    effort: high', 'model: gpt-implementer\n    effort: medium')
+    .replace('model: claude-opus-5-5\n    effort: high', 'model: gpt-reviewer\n    effort: max')
+    .replace('role_timeout: 60m', 'role_timeout: 7m'));
+  y.setScript(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'test-writers') {
+      await writeFile(join(request.cwd, 'second test.cjs'), '// second checkpoint\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Second writer checkpoint');
+    }
+    return result;
+  });
+  // An unrelated integration change after drafting must not appear as ticket work.
+  await writeFile(join(y.cwd, 'unrelated'), 'new integration file');
+  y.git('add', '.'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => [r.model, r.effort, r.timeoutMs, r.browser]), [['gpt-writer', 'low', 420000, false], ['gpt-implementer', 'medium', 420000, false], ['gpt-reviewer', 'max', 420000, false]]);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.team.testCommits.length, 2);
+  assert.deepEqual(row.team.testFiles.sort(), ['answer.test.cjs', 'second test.cjs']);
+  for (const sha of row.team.testCommits) assert.ok(y.inputs[1]!.handoff.includes(sha));
+  const review = y.inputs[2]!.handoff.split('Full diff:\n')[1]!;
+  assert.match(review, /module.exports = \(\) => 42/);
+  assert.match(review, /second test.cjs/); assert.doesNotMatch(review, /diff --git a\/unrelated/);
+});
+
+test('review approval still requires real local tests before any push or tracker merge', async t => {
+  const y = await fixture(t);
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') return { outcome: { outcome: 'pass', summary: 'Incorrectly approved without testing.' } };
+    const result = await y.normal(request, sink);
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 41;\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Introduce failing behavior');
+    }
+    return result;
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.equal(value.outcome, 'aborted'); assert.equal(value.integration.outcome, 'tests-failed');
+  assert.match(value.error, /41 !== 42/); assert.equal(value.stage, 'integrate');
+  assert.equal(y.requests.length, 0); assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+  assert.equal((await y.status()).tickets[0].state, 'logjam');
+});
+
+test('team refuses invalid usage and configuration, dirty millyards and manually completed tickets before roles', async t => {
+  const y = await fixture(t);
+  for (const args of [[], ['0'], ['12', 'extra']]) assert.equal((await y.cli('team', 'run', ...args, '--json')).code, 2);
+  assert.equal((await y.cli('team', 'run', '99', '--json')).code, 1);
+  await writeFile(join(y.cwd, 'dirty'), 'uncommitted');
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  y.git('add', '.'); y.git('commit', '-m', 'Clean yard');
+  const original = await readFile(y.projectConfig, 'utf8');
+  await writeFile(y.projectConfig, original.replace('repo: team/tool', 'repo: other/tool'));
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 2);
+  await writeFile(y.projectConfig, original);
+  assert.equal((await y.cli('run', 'close', '12')).code, 0);
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  assert.equal(y.inputs.length, 0); assert.equal(y.requests.length, 0);
+});
+
+test('a saved dirty ticket worktree is retained without starting a role', async t => {
+  const y = await fixture(t);
+  assert.equal((await y.cli('worktree', 'create', '12')).code, 0);
+  await writeFile(join(y.path, 'saved'), 'Keep this work');
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1); assert.match(result.stdout, /uncommitted files/);
+  assert.equal(await readFile(join(y.path, 'saved'), 'utf8'), 'Keep this work');
+  assert.equal(y.inputs.length, 0); assert.equal(y.requests.length, 0);
+});
+
+test('reviewer edits cannot authorize integration of a different commit', async t => {
+  const y = await fixture(t);
+  y.setScript(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'reviewer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 41;\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Reviewer edit');
+    }
+    return result;
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1); assert.match(result.stdout, /Reviewer changed HEAD/);
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+});
+
+test('tampering during a report cannot slip across the next dispatch or integration boundary', async t => {
+  for (const stage of ['tests-written', 'review-pass']) {
+    const y = await fixture(t);
+    y.setBeforeWrite(async body => {
+      if (!body?.includes(`[sawmill:${stage}]`)) return;
+      await writeFile(join(y.path, 'answer.test.cjs'), '// changed during reporting\n');
+      y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Concurrent test edit');
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    assert.equal(JSON.parse(result.stdout).reason, 'review-bounce');
+    assert.equal(y.inputs.length, stage === 'tests-written' ? 1 : 3);
+    assert.equal(y.requests.length, 0);
+  }
+});

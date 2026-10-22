@@ -7,7 +7,7 @@ import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
-export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration'>> & { report?: StageReport };
+export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team'>> & { report?: StageReport };
 
 function checkTracker(cwd: string, project: ProjectConfig): void {
   const drafted = readRun(cwd).run.tracker;
@@ -24,6 +24,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'completion')) db.exec('ALTER TABLE tickets ADD COLUMN completion TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'integration')) db.exec('ALTER TABLE tickets ADD COLUMN integration TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'team')) db.exec('ALTER TABLE tickets ADD COLUMN team TEXT');
     const value = work(db);
     db.exec('COMMIT');
     return value;
@@ -51,9 +52,9 @@ function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
 
 function update(db: DatabaseSync, number: number, change: Transition, writes: MirrorWrite[] = []) {
   requireTicket(db, number);
-  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration' } as const;
+  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team' } as const;
   for (const key of Object.keys(columns) as (keyof typeof columns)[]) {
-    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' ? JSON.stringify(change[key]) : change[key] as string | number | null, number);
+    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' ? JSON.stringify(change[key]) : change[key] as string | number | null, number);
   }
   const now = new Date().toISOString();
   db.prepare('UPDATE tickets SET updated = ? WHERE number = ?').run(now, number);
