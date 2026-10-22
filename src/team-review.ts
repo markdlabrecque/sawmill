@@ -22,22 +22,11 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   if (!await transition(cwd, project, writer, number, { state: 'working', stage: 'reviewer' }, [], options)) {
     return { status: 'logjam', outcome: infrastructure('Tracker writes failed before review.') };
   }
-  const git = async (...args: string[]) => (await execute('git', args, { cwd: ticket.worktree!, maxBuffer: 64 * 1024 * 1024 })).stdout;
   let prompt = '';
   let diff = '';
   let runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
   try {
-    const base = (await git('merge-base', `refs/heads/${project.integration}`, 'HEAD')).trim();
-    diff = await git('diff', '--no-ext-diff', '--no-textconv', '--binary', base, '--');
-    const untracked = (await git('ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
-    for (const path of untracked) {
-      try { diff += await git('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--binary', '--', '/dev/null', path); }
-      catch (error) {
-        const failure = error as { code?: number; stdout?: string };
-        if (failure.code !== 1 || typeof failure.stdout !== 'string') throw error;
-        diff += failure.stdout; // git diff --no-index exits 1 when differences exist.
-      }
-    }
+    diff = await fullReviewDiff(ticket.worktree!, project.integration);
     prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -57,4 +46,21 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
     report: { stage, details: JSON.stringify({ ...outcome, diagnostics: result.diagnostics, model: project.roles.reviewer.model, effort: project.roles.reviewer.effort }), reachedStage: 'reviewer', round: result.round },
   }, [], options);
   return { status: ok && result.mirrored ? 'ok' : 'logjam', ticket: number, ...result };
+}
+
+/** Full first-review change, including staged, unstaged and untracked files. */
+export async function fullReviewDiff(cwd: string, integration: string): Promise<string> {
+  const git = async (...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout;
+  const base = (await git('merge-base', `refs/heads/${integration}`, 'HEAD')).trim();
+  let diff = await git('diff', '--no-ext-diff', '--no-textconv', '--binary', base, '--');
+  const untracked = (await git('ls-files', '--others', '--exclude-standard', '-z')).split('\0').filter(Boolean);
+  for (const path of untracked) {
+    try { diff += await git('diff', '--no-index', '--no-ext-diff', '--no-textconv', '--binary', '--', '/dev/null', path); }
+    catch (error) {
+      const failure = error as { code?: number; stdout?: string };
+      if (failure.code !== 1 || typeof failure.stdout !== 'string') throw error;
+      diff += failure.stdout; // git diff --no-index exits 1 when differences exist.
+    }
+  }
+  return diff;
 }
