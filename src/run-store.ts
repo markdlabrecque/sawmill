@@ -18,6 +18,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   worktree: string | null;
   branch: string | null;
   mergeCommit: string | null;
+  completion: 'manual' | 'merged' | null;
   created: string;
   updated: string;
   stageStarted: string | null;
@@ -30,15 +31,24 @@ export interface RunSnapshot {
   run: { id: string; created: string; baseBranch: string; source: { kind: 'numbers'; numbers: number[] }; tracker: ProjectConfig['tracker'] };
   tickets: RunTicket[];
   edges: RunEdge[];
+  pendingWrites: PendingWrite[];
 }
+
+export type MirrorWrite =
+  | { kind: 'comment'; payload: { body: string } }
+  | { kind: 'add-label' | 'remove-label'; payload: { label: string } }
+  | { kind: 'close'; payload: Record<string, never> };
+export type PendingWrite = MirrorWrite & { id: number; ticket: number; attempts: number };
 
 export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');
 
+const pendingRunMessage = 'Run has pending tracker writes; use mill run answer to flush them or --replace to discard them.';
 const activeRunMessage = 'Run has working or logjam tickets; use --replace to overwrite it.';
 
 export function checkDraftable(cwd: string, replace: boolean): void {
   if (!existsSync(runPath(cwd))) return;
   const snapshot = readRun(cwd);
+  if (!replace && snapshot.pendingWrites.length) throw new CliError(pendingRunMessage);
   if (!replace && snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam')) throw new CliError(activeRunMessage);
 }
 
@@ -53,12 +63,13 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
         tracker_state TEXT NOT NULL, comments TEXT NOT NULL, blocked_by TEXT,
         position INTEGER NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('queued','blocked','working','done','logjam')),
         reason TEXT, stage TEXT, bounces INTEGER NOT NULL DEFAULT 0, session_ids TEXT NOT NULL DEFAULT '{}',
-        worktree TEXT, branch TEXT, merge_commit TEXT, created TEXT NOT NULL, updated TEXT NOT NULL, stage_started TEXT
+        worktree TEXT, branch TEXT, merge_commit TEXT, completion TEXT, created TEXT NOT NULL, updated TEXT NOT NULL, stage_started TEXT
       );
       CREATE TABLE IF NOT EXISTS edges (blocked INTEGER NOT NULL REFERENCES tickets(number), blocker INTEGER NOT NULL, outside_closed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(blocked, blocker));
       CREATE TABLE IF NOT EXISTS pending_writes (id INTEGER PRIMARY KEY, ticket INTEGER NOT NULL REFERENCES tickets(number), kind TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, ticket INTEGER REFERENCES tickets(number), time TEXT NOT NULL, event TEXT NOT NULL);
       `);
+    if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
@@ -87,16 +98,17 @@ export function readRun(cwd: string): RunSnapshot {
       trackerState: row.tracker_state as Ticket['state'], comments: JSON.parse(String(row.comments)) as TicketComment[], blockedBy: JSON.parse(String(row.blocked_by)) as number[] | null,
       position: Number(row.position), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
-      worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null,
+      worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
     }));
-    const states = new Map(tickets.map(ticket => [ticket.number, ticket.state]));
+    const states = new Map(tickets.map(ticket => [ticket.number, ticket.completion ? 'done' : ticket.state]));
     for (const ticket of tickets) {
       ticket.blockers = edges.filter(edge => edge.blocked === ticket.number && !edge.outsideClosed && states.get(edge.blocker) !== 'done').map(edge => edge.blocker);
       if (ticket.state === 'queued' || ticket.state === 'blocked') ticket.state = ticket.blockers.length ? 'blocked' : 'queued';
     }
-    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)) }, tickets, edges };
+    const pendingWrites = db.prepare('SELECT * FROM pending_writes ORDER BY id').all().map(row => ({ id: Number(row.id), ticket: Number(row.ticket), kind: row.kind, payload: JSON.parse(String(row.payload)), attempts: Number(row.attempts) })) as PendingWrite[];
+    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)) }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
