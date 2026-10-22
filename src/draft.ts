@@ -4,6 +4,7 @@ import { CliError } from './errors.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
+import { userTestSection } from './user-testing.js';
 
 export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false) {
   await checkMillyard(cwd, project.integration);
@@ -24,8 +25,12 @@ export async function draft(cwd: string, project: ProjectConfig, selection: RunS
     throw new CliError(`${message} Choose another selector or use explicit ticket numbers.`);
   }
   const numbers = tickets.map(ticket => ticket.number);
+  const sections = tickets.map(ticket => {
+    try { return { ticket, section: userTestSection(ticket.body) }; }
+    catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
+  });
   if (project.test_harness === 'none') {
-    const cases = tickets.filter(ticket => /^ {0,3}##\s+User test cases\s*#*\s*$/im.test(ticket.body));
+    const cases = sections.filter(({ section }) => section.present).map(({ ticket }) => ticket);
     if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
   }
   const edges: RunEdge[] = tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false })));

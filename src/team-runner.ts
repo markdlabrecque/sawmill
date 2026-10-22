@@ -15,6 +15,8 @@ import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
 import { createWorktree } from './worktrees.js';
+import { reportComment } from './reporter.js';
+import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
 
 const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
@@ -178,16 +180,19 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const repairing = Boolean(progress.repair && progress.testCommit);
       const resuming = progress.question?.role;
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
-      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source']): Promise<TeamResult | undefined> => {
+      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number): Promise<TeamResult | undefined> => {
         delete progress.question;
         progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
         const bounces = current().bounces + 1;
         const exhausted = bounces >= 3;
+        const testing = source === 'reviewer' && progress.userTesting ? [{ kind: 'comment' as const, payload: { body: await reportComment(cwd, {
+          stage: 'user-testing', details: userTestingComment(progress.userTesting), reachedStage: 'reviewer', round: reviewRound,
+        }, { ...current(), team: progress }) } }] : [];
         const mirrored = await transition(cwd, project, tracker, number, {
           state: exhausted ? 'logjam' : 'working', reason: exhausted ? 'retry-cap' : null,
           stage, bounces, team: progress,
           report: { stage: exhausted ? 'retry-cap' : 'review-bounce', details: outcome.feedback, reachedStage: stage, round: bounces },
-        }, [], options);
+        }, testing, options);
         if (!mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
         if (exhausted) return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: outcome.feedback, roleOutcome: outcome };
         guard();
@@ -197,18 +202,20 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
-        if (role === 'reviewer' && /^ {0,3}##\s+User test cases\s*#*\s*$/im.test(ticket.body)) throw new Error('User test cases require browser case handling, which is not implemented yet.');
         const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
           ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         const duration = project.role_timeout;
         const beforeRole = await git(path, 'rev-parse', 'HEAD');
         const result = await retryInfrastructure(async () => {
-          const invoked = await runRole(cwd, project, tracker, number, runtime, {
+          const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, options.home, options.signal, progress.userTesting) : undefined;
+          const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...project.roles[role], prompt,
-            handoff: `Ticket snapshot:\n${JSON.stringify(current())}\n\nPrior outputs and committed test files:\n${JSON.stringify(progress)}${diff}\n\nTest command:\n${project.tests.command}`,
-            testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: false, signal: options.signal,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests.command}${browser?.handoff ?? ''}`,
+            testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
           }, options);
+          const testing = browser && userTestingResult(browser, invoked.outcome, progress.userTesting);
+          if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
           return invoked;
         }, result => result.outcome.outcome === 'infrastructure' ? result.outcome.error : undefined,
@@ -255,8 +262,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
         if (role === 'reviewer') progress.reviewedHead = beforeRole;
         delete progress.question;
+        if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.userTesting) await save({ report: {
+          stage: 'user-testing', details: userTestingComment(progress.userTesting), reachedStage: role, round: result.round,
+        } });
         if (result.outcome.outcome === 'bounce') {
-          const stopped = await bounce(result.outcome, 'reviewer');
+          const stopped = await bounce(result.outcome, 'reviewer', result.round);
           if (stopped) return stopped;
           role = 'implementer'; continue;
         }

@@ -327,5 +327,6 @@ test('Codex team non-success stops before integration and retains question and s
   assert.match(result.stdout, /Which interface is stable/);
   const row = await y.status(); assert.equal(row.reason, 'question'); assert.equal(row.bounces, 0);
   assert.deepEqual(row.sessionIds['test-writers'], ['codex-fixture-session']);
-  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/22'), '');
+  assert.equal(row.team.question?.preserved, true);
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/22').split(/\s/)[0], row.team.question?.wipHead);
 });
