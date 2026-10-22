@@ -1,3 +1,4 @@
+import { processStart } from './slots.js';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { accessSync, constants } from 'node:fs';
@@ -118,6 +119,8 @@ export class ClaudeCodeRuntime implements Runtime {
       });
       child.on('error', error => { failure = `Claude startup failed: ${error.message}`; });
       child.stdin.on('error', error => { failure ??= `Claude stdin failed: ${error.message}`; });
+      try { if (child.pid) sink.process?.({ pid: child.pid, processStart: processStart(child.pid), group: true }); }
+      catch (error) { stop(`Cannot preserve child ownership: ${String(error)}`); }
       child.stdin.end(`${request.prompt}\n\n${request.handoff}\n`);
       child.on('close', async (code, signal) => {
         clearTimeout(timeout); request.signal?.removeEventListener('abort', abort);

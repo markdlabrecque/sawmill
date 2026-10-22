@@ -4,6 +4,7 @@ import { readRun } from './run-store.js';
 import { readSlot, releaseSlot } from './slots.js';
 import type { TeamResult } from './team-runner.js';
 import { recordWorker, transition } from './transitions.js';
+import { stopDescendants } from './process-ownership.js';
 
 // Internal process entry point, deliberately not a user-selectable runtime command.
 const [number, runId, token, home] = process.argv.slice(2);
@@ -32,17 +33,20 @@ if (started) {
     const value = JSON.parse(output);
     result = value.outcome ? value as TeamResult : { outcome: 'infrastructure', ticket, stage: 'team-launch', error: value.message ?? `Team CLI exited ${code}: ${output}` };
   } catch (error) { result = { outcome: 'infrastructure', ticket, stage: 'team-launch', error: String(error) }; }
-  try {
+  {
+    const latestOwner = readRun(cwd).tickets.find(row => row.number === ticket)?.worker;
+    if (latestOwner?.token !== token) throw new Error('Worker ownership changed before cleanup.');
+    if (latestOwner.processToken && process.platform === 'linux') await stopDescendants(latestOwner.processToken, [...latestOwner.processes ?? [], { pid: process.pid, processStart: latestOwner.processStart, group: true }]);
     const current = readRun(cwd);
     const row = current.tickets.find(row => row.number === ticket);
     if (current.run.id === runId && row?.worker?.token === token && row.state === 'working') {
       const config = await loadConfig(cwd, home);
       if (!config.valid) throw new Error('Worker config became invalid; recovery required.');
       await transition(cwd, config.project, ticketWriter({}, config.project, cwd), ticket, {
-        state: 'logjam', reason: 'environment', stage: result.stage,
-        report: { stage: 'infrastructure', details: result.error ?? 'Team exited without terminal state.' },
+        state: 'logjam', reason: result.outcome === 'stopped' ? 'stopped' : 'environment', stage: result.stage,
+        report: { stage: result.outcome === 'stopped' ? 'stopped' : 'infrastructure', details: result.error ?? result.reason ?? 'Team exited without terminal state.' },
       });
     }
-    recordWorker(cwd, ticket, { ...owner, status: 'finished', finished: new Date().toISOString(), result });
-  } finally { releaseSlot({ path: owner.slot, token }); }
+    if (recordWorker(cwd, ticket, { ...latestOwner, status: 'finished', finished: new Date().toISOString(), result })) releaseSlot({ path: owner.slot, token });
+  }
 }

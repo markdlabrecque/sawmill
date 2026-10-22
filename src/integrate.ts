@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -11,6 +11,9 @@ import { readRun, type IntegrationProgress } from './run-store.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import { MergeRefusedError } from './tracker.js';
 import type { IntegrationTracker, Pipeline } from './tracker.js';
+import { withRunLock } from './run-lock.js';
+import { recordChild } from './process-ownership.js';
+import { processStart } from './slots.js';
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
@@ -25,7 +28,7 @@ export interface IntegrationResult {
 }
 
 /** A timeout kills the whole test process group, including shell grandchildren. */
-async function tests(cwd: string, project: ProjectConfig, home?: string): Promise<{ code: number | null; timedOut: boolean; output: string }> {
+async function tests(cwd: string, project: ProjectConfig, home?: string, childStarted?: (pid: number) => void): Promise<{ code: number | null; timedOut: boolean; output: string }> {
   const duration = project.tests.timeout;
   const ms = Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
   return new Promise((resolve, reject) => {
@@ -39,10 +42,17 @@ async function tests(cwd: string, project: ProjectConfig, home?: string): Promis
     }, ms);
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => { clearTimeout(timer); resolve({ code, timedOut, output }); });
+    try { if (child.pid) childStarted?.(child.pid); }
+    catch (error) { if (child.pid) process.kill(-child.pid, 'SIGKILL'); reject(error); }
   });
 }
 
 export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string } = {}): Promise<IntegrationResult> {
+  if (existsSync(join(cwd, '.mill/integrate.lock'))) throw new CliError('Legacy integration lock needs verified manual recovery.');
+  return withRunLock(cwd, 'integration', () => integrateLocked(cwd, project, number, tracker, options), true);
+}
+
+async function integrateLocked(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string }): Promise<IntegrationResult> {
   if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
   const branch = `mill/${number}`;
   const snapshot = readRun(cwd);
@@ -58,8 +68,6 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
   await checkMillyard(cwd, project.integration);
   if (await git(ticket.worktree, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
   if (await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new CliError('Ticket worktree is dirty.');
-  const lock = join(cwd, '.mill/integrate.lock');
-  try { await mkdir(lock); } catch { throw new CliError('Integration is already locked; if its process died, remove .mill/integrate.lock before retrying.'); }
   let progress: IntegrationProgress = { ...ticket.integration };
   let mergeCommit = ticket.mergeCommit;
   let stage = ticket.stage ?? 'rebase';
@@ -103,7 +111,7 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
       await advance('tests');
       const head = await git(ticket.worktree, 'rev-parse', 'HEAD');
       boundary();
-      const tested = await tests(ticket.worktree, project, options.home);
+      const tested = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
       boundary();
       if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
       if (tested.code !== 0) {
@@ -208,5 +216,5 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
       try { await save({ report: { stage: 'infrastructure', details: 'Integration could not finish.', error: message(error), reachedStage: stage } }); } catch { /* Durable pending writes retain the report. */ }
     }
     return result('infrastructure', message(error));
-  } finally { await rm(lock, { recursive: true, force: true }); }
+  }
 }

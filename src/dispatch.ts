@@ -11,6 +11,7 @@ import { readRun, stoppedMergeCleanup, type RunSnapshot, type WorkerOwnership } 
 import { claimSlot, processStart, releaseSlot, transferSlot, type SlotLease } from './slots.js';
 import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
+import { withRunLock } from './run-lock.js';
 
 export interface DispatchResult {
   status: 'ok' | 'partial';
@@ -22,7 +23,7 @@ export interface DispatchResult {
 export type WorkerEvent = { ticket: number; worker: WorkerOwnership };
 /** Ordered local candidates only. Claiming repeats these checks inside a write transaction. */
 export function readyTickets(snapshot: RunSnapshot): number[] {
-  return snapshot.tickets.filter(row => row.state === 'queued' && (!row.completion || stoppedMergeCleanup(row)) && !row.blockers.length &&
+  return snapshot.tickets.filter(row => row.state === 'queued' && (!row.completion || stoppedMergeCleanup(row) || (row.completion === 'merged' && row.team.recovery && !row.integration.reported)) && !row.blockers.length &&
     (!row.worker || row.worker.status === 'finished') && !snapshot.pendingWrites.some(write => write.ticket === row.number))
     .sort((a, b) => a.position - b.position).map(row => row.number);
 }
@@ -31,20 +32,18 @@ export function workerEvents(snapshot: RunSnapshot): WorkerEvent[] {
   return snapshot.tickets.flatMap(row => row.worker ? [{ ticket: row.number, worker: row.worker }] : []);
 }
 
-export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter): Promise<DispatchResult> {
+export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true): Promise<DispatchResult> {
   cwd = await realpath(cwd);
-  await checkMillyard(cwd, project.integration);
-  const snapshot = readRun(cwd);
-  const a = snapshot.run.tracker, b = project.tracker;
-  if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
+  const snapshot = await dispatchPreflight(cwd, project);
   const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
+    if (!beforeClaim()) break;
     const token = randomUUID(), started = new Date().toISOString();
-    const lease = claimSlot(home, machine.concurrency, { token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, pid: null, created: started });
+    const lease = claimSlot(home, machine.concurrency, { token, processToken: token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, launcherStart: processStart(process.pid), pid: null, created: started });
     if (!lease) { result.slotsFull = true; break; }
     const directory = join(cwd, '.mill/logs', String(ticket));
-    const worker: WorkerOwnership = { token, runId: snapshot.run.id, slot: lease.path, launcherPid: process.pid, pid: null, status: 'starting', started, log: join(directory, `worker-${token}.log`) };
+    const worker: WorkerOwnership = { token, processToken: token, runId: snapshot.run.id, slot: lease.path, launcherPid: process.pid, launcherStart: lease.launcherStart, pid: null, status: 'starting', started, log: join(directory, `worker-${token}.log`) };
     let claimed = false;
     try {
       claimed = claimWorker(cwd, ticket, worker);
@@ -67,6 +66,15 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   return result;
 }
 
+export async function dispatchPreflight(cwd: string, project: ProjectConfig): Promise<RunSnapshot> {
+  readRun(cwd);
+  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
+  const snapshot = readRun(cwd);
+  const a = snapshot.run.tracker, b = project.tracker;
+  if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
+  return snapshot;
+}
+
 class UncertainWorkerLaunch extends Error {}
 
 function launchWorker(cwd: string, home: string, ticket: number, owner: WorkerOwnership, lease: SlotLease): Promise<WorkerOwnership> {
@@ -74,7 +82,7 @@ function launchWorker(cwd: string, home: string, ticket: number, owner: WorkerOw
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [fileURLToPath(new URL('./team-worker.js', import.meta.url)), String(ticket), owner.runId, owner.token, home], {
-      cwd, detached: true, env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
+      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: owner.token, HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }
   return new Promise((resolve, reject) => {

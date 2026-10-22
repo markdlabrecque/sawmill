@@ -20,6 +20,8 @@ export interface IntegrationProgress {
   reported?: boolean;
 }
 export interface TeamProgress {
+  recovery?: { stage: string };
+  activeRole?: { role: Role; beforeHead: string; bounces: number };
   /** Cooperative boundary checkpoint; retained through answer until work resumes. */
   stop?: { stage: string; resume: Role | 'integrate'; preserved: boolean; wipHead?: string; error?: string };
   testBase?: string;
@@ -59,14 +61,18 @@ export interface WorkerOwnership {
   runId: string;
   slot: string;
   launcherPid: number;
+  launcherStart?: string;
   pid: number | null;
   processStart?: string;
+  processToken?: string;
+  processes?: OwnedProcess[];
   status: 'starting' | 'running' | 'finished';
   started: string;
   finished?: string;
   log: string;
   result?: import('./team-runner.js').TeamResult;
 }
+export interface OwnedProcess { pid: number; processStart?: string; group: boolean }
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
   position: number;
@@ -92,11 +98,12 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
   status: 'ok';
-  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker'] };
+  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
 }
+export interface LoopProgress { cursor: number; consecutiveInfrastructure: number; pausedReason?: string }
 
 /** The merge stays irreversible while an answered stop queues only its remaining cleanup. */
 export function stoppedMergeCleanup(ticket: Pick<RunTicket, 'completion' | 'team' | 'integration'>): boolean {
@@ -182,7 +189,7 @@ export function readRun(cwd: string): RunSnapshot {
       if (ticket.state === 'queued' || ticket.state === 'blocked') ticket.state = ticket.blockers.length ? 'blocked' : 'queued';
     }
     const pendingWrites = db.prepare('SELECT * FROM pending_writes ORDER BY id').all().map(row => ({ id: Number(row.id), ticket: Number(row.ticket), kind: row.kind, payload: JSON.parse(String(row.payload)), attempts: Number(row.attempts) })) as PendingWrite[];
-    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)) }, tickets, edges, pendingWrites };
+    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(run.loop_control ? { loop: JSON.parse(String(run.loop_control)) as LoopProgress } : {}) }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
@@ -197,5 +204,5 @@ export function formatRun(snapshot: RunSnapshot): string {
   });
   const table = [['Ticket', 'Title', 'State', 'Detail'], ...rows].map(row => row.map(cell => cell.replace(/[\r\n\t\x1b]/g, ' ')));
   const widths = [0, 1, 2].map(index => Math.max(...table.map(row => row[index]!.length)));
-  return table.map(row => row.map((cell, index) => index < 3 ? cell.padEnd(widths[index]!) : cell).join('  ').trimEnd()).join('\n');
+  return [snapshot.run.loop?.pausedReason, table.map(row => row.map((cell, index) => index < 3 ? cell.padEnd(widths[index]!) : cell).join('  ').trimEnd()).join('\n')].filter(Boolean).join('\n');
 }

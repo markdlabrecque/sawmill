@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
 import { runCli } from './cli.js';
 
 const args = process.argv.slice(2);
@@ -9,6 +10,7 @@ if (roleCommand) {
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
 }
+process.env.MILL_WORKER_TOKEN ??= randomUUID();
 try { process.exitCode = await runCli(args, { signal: controller.signal }); }
 finally {
   if (roleCommand) {

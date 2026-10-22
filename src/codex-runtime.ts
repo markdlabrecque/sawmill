@@ -1,3 +1,4 @@
+import { processStart } from './slots.js';
 import { execFile, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
@@ -158,6 +159,8 @@ export class CodexRuntime implements Runtime {
       });
       child.on('error', error => { failure = `Codex startup failed: ${error.message}`; });
       child.stdin.on('error', error => { failure ??= `Codex stdin failed: ${error.message}`; });
+      try { if (child.pid) sink.process?.({ pid: child.pid, processStart: processStart(child.pid), group: true }); }
+      catch (error) { stop(`Cannot preserve child ownership: ${String(error)}`); }
       child.stdin.end(`${request.prompt}\n\n${request.handoff}\n`);
       child.on('close', async (code, signal) => {
         clearTimeout(timeout); request.signal?.removeEventListener('abort', abort);
