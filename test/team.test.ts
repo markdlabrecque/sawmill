@@ -1322,7 +1322,8 @@ test('infrastructure retry resumes only the implementer and preserves committed 
 test('a real integration test timeout retries integration without rerunning roles or spending bounces', async t => {
   const y = await fixture(t);
   await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 1\n');
-  const command = 'if [ ! -e "$HOME/test-started" ]; then touch "$HOME/test-started"; echo timed-command-started; sleep 5; fi; node answer.test.cjs';
+  // The first run is the red check after the test-writers; only the second run (integration) hangs.
+  const command = 'echo run >> "$HOME/test-runs"; if [ "$(wc -l < "$HOME/test-runs")" -eq 2 ]; then echo timed-command-started; sleep 5; fi; node answer.test.cjs';
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', `command: '${command}'`).replace('timeout: 30m', 'timeout: 1s'));
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
@@ -1333,6 +1334,72 @@ test('a real integration test timeout retries integration without rerunning role
   assert.match(row.team.infrastructureAttempts[0].error, /Tests timed out after 1s.*timed-command-started/s);
   assert.equal(row.team.infrastructureAttempts[0].integration.outcome, 'infrastructure');
   assert.equal(y.requests.length, 1);
+});
+
+function greenWriter(y: Awaited<ReturnType<typeof fixture>>, greenRuns: number) {
+  let writes = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers' && ++writes <= greenRuns) {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), `const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 0);\nconsole.log('green-marker ${writes}');\n`);
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', `#12: Green tests ${writes}`);
+      return { outcome: { outcome: 'done', summary: `Wrote green tests ${writes}.` } };
+    }
+    return y.normal(request, sink);
+  });
+}
+
+test('tests that already pass go back to the test-writers once, without a question, and do not spend review bounces', async t => {
+  const y = await fixture(t);
+  greenWriter(y, 1);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'implementer', 'reviewer']);
+  assert.match(y.inputs[1]!.handoff, /Your tests all pass without any new code\. Write tests that fail until the ticket is built/);
+  assert.match(y.inputs[2]!.handoff, /expected 42, received 0/);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.bounces, 0);
+  assert.ok(row.team.testFiles.includes('answer.test.cjs'));
+  assert.ok(y.ticket.comments.some(c => /tests-not-red/.test(c.body)), 'The send-back is reported on the ticket');
+  assert.ok(!y.ticket.labels.includes('logjam'));
+});
+
+test('tests that fail on the first run never trigger a send-back', async t => {
+  const y = await fixture(t);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
+});
+
+test('a third green result stops the ticket in logjam with the test output and no implementer run', async t => {
+  const y = await fixture(t);
+  greenWriter(y, 3);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'test-writers']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tests-not-red'); assert.equal(row.bounces, 0);
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+  assert.ok(y.ticket.labels.includes('logjam'));
+  const comments = y.ticket.comments.filter(c => /tests-not-red/.test(c.body));
+  assert.ok(comments.length >= 3, 'Each send-back and the escalation are reported');
+  assert.match(comments.at(-1)!.body, /green-marker 3/);
+});
+
+test('a timeout in the red check is an infrastructure retry, not a green result', async t => {
+  const y = await fixture(t);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 1\n');
+  const command = 'if [ ! -e "$HOME/test-started" ]; then touch "$HOME/test-started"; echo timed-command-started; sleep 5; fi; node answer.test.cjs';
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', `command: '${command}'`).replace('timeout: 30m', 'timeout: 1s'));
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.bounces, 0);
+  assert.equal(y.inputs.filter(r => r.role === 'test-writers').length, 1);
+  assert.equal(row.team.infrastructureAttempts[0].status, 'failed');
+  assert.match(row.team.infrastructureAttempts[0].error, /timed out/i);
+  assert.equal(row.team.infrastructureAttempts.at(-1).status, 'recovered');
+  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
 });
 
 test('accepted merge cleanup retries retain completion and exhaustion can recover without another role or merge', async t => {
