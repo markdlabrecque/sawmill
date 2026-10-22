@@ -182,7 +182,7 @@ test('draft and status reject malformed arguments without reading the tracker or
   const tracker = new FakeTracker([]);
   tracker.offline = true;
   const yard = await configured(t, tracker);
-  for (const args of [[], ['0'], ['-1'], ['1.2'], ['1e2'], ['9007199254740993'], ['--label', 'ready'], ['--spec', '1'], ['--typo', '1']]) {
+  for (const args of [[], ['0'], ['-1'], ['1.2'], ['1e2'], ['9007199254740993'], ['--label'], ['--spec'], ['--typo', '1']]) {
     const result = await yard.cli('run', 'draft', ...args, '--json');
     assert.equal(result.code, 2, result.stdout);
     assert.equal(JSON.parse(result.stdout).status, 'usage-error');

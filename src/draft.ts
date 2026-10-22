@@ -3,11 +3,27 @@ import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { Ticket, TicketReader } from './tracker.js';
+import type { RunSelection } from './selection.js';
 
-export async function draft(cwd: string, project: ProjectConfig, numbers: number[], tracker: TicketReader, replace = false) {
+export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false) {
   await checkMillyard(cwd, project.integration);
   checkDraftable(cwd, replace);
-  const tickets = await Promise.all(numbers.map(number => tracker.getTicket(number)));
+  let tickets: Ticket[];
+  if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
+  else if (selection.kind === 'label') {
+    if (!tracker.listByLabel) throw new CliError('This tracker does not support --label selection; use explicit ticket numbers.', 2);
+    tickets = await tracker.listByLabel(selection.label);
+  } else {
+    if (!tracker.listChildren) throw new CliError('This tracker does not support --spec selection; use explicit ticket numbers.', 2);
+    tickets = await tracker.listChildren(selection.number);
+  }
+  tickets = [...new Map(tickets.map(ticket => [ticket.number, ticket])).values()];
+  if (!tickets.length) {
+    const message = selection.kind === 'label' ? `No tickets found with label ${JSON.stringify(selection.label)}.`
+      : selection.kind === 'spec' ? `No direct children found for spec #${selection.number}.` : 'No tickets selected.';
+    throw new CliError(`${message} Choose another selector or use explicit ticket numbers.`);
+  }
+  const numbers = tickets.map(ticket => ticket.number);
   if (project.test_harness === 'none') {
     const cases = tickets.filter(ticket => /^ {0,3}##\s+User test cases\s*#*\s*$/im.test(ticket.body));
     if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
@@ -29,7 +45,7 @@ export async function draft(cwd: string, project: ProjectConfig, numbers: number
     if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
     ordered.push(...remaining.splice(next, 1));
   }
-  saveDraft(cwd, project, numbers, ordered, edges, replace);
+  saveDraft(cwd, project, numbers, ordered, edges, replace, selection);
   return readRun(cwd);
 }
 

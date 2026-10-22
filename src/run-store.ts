@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import type { Ticket, TicketComment } from './tracker.js';
+import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
 export interface RunTicket extends Omit<Ticket, 'state'> {
@@ -28,7 +29,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
   status: 'ok';
-  run: { id: string; created: string; baseBranch: string; source: { kind: 'numbers'; numbers: number[] }; tracker: ProjectConfig['tracker'] };
+  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker'] };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
@@ -52,7 +53,7 @@ export function checkDraftable(cwd: string, replace: boolean): void {
   if (!replace && snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam')) throw new CliError(activeRunMessage);
 }
 
-export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false): void {
+export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA foreign_keys = ON;
@@ -73,7 +74,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO run VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify({ kind: 'numbers', numbers }), JSON.stringify(project.tracker));
+    db.prepare('INSERT INTO run VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker));
     const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');

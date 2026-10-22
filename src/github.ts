@@ -18,6 +18,8 @@ export interface GitHubApi {
   getIssue(number: number): Promise<GitHubIssue>;
   getComments(number: number): Promise<GitHubComment[]>;
   getBlockers(number: number): Promise<GitHubIssue[]>;
+  listByLabel?(label: string): Promise<GitHubIssue[]>;
+  listChildren?(number: number): Promise<GitHubIssue[]>;
 }
 export class GitHubApiError extends Error {
   constructor(message: string, readonly status: number | undefined) { super(message); }
@@ -25,6 +27,25 @@ export class GitHubApiError extends Error {
 
 export class GitHubDraftReader implements TicketReader {
   constructor(private readonly config: ProjectConfig['tracker'], private readonly api: GitHubApi = githubApi(config)) {}
+  async listByLabel(label: string): Promise<Ticket[]> {
+    if (!this.api.listByLabel) throw new CliError('GitHub API does not support label selection; use explicit ticket numbers.', 2);
+    const issues = await this.api.listByLabel(label);
+    const numbers = [...new Set(issues.filter(issue => !issue.pull_request).map(issue => issue.number))];
+    return Promise.all(numbers.map(number => this.getTicket(number)));
+  }
+  async listChildren(number: number): Promise<Ticket[]> {
+    if (!this.api.listChildren) throw new CliError('GitHub API does not support spec selection; use explicit ticket numbers.', 2);
+    const parent = await this.api.getIssue(number);
+    if (parent.pull_request) throw new CliError(`#${number} is a pull request, not a spec issue.`);
+    if (parent.number !== number || !['open', 'closed'].includes(parent.state)) throw new CliError(`Invalid GitHub issue response for #${number}.`);
+    const issues = await this.api.listChildren(number);
+    for (const issue of issues) {
+      if (issue.repository_url && !issue.repository_url.toLowerCase().endsWith(`/repos/${this.config.repo.toLowerCase()}`)) {
+        throw new CliError(`Spec #${number} has a cross-repository child ${issue.repository_url}#${issue.number}; only this repository can be drafted.`);
+      }
+    }
+    return Promise.all([...new Set(issues.map(issue => issue.number))].map(number => this.getTicket(number)));
+  }
   async getTicket(number: number): Promise<Ticket> {
     const issue = await this.api.getIssue(number);
     if (issue.pull_request) throw new CliError(`#${number} is a pull request, not a ticket.`);
@@ -74,6 +95,8 @@ export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd())
     return value;
   }
   return {
+    listByLabel: async label => await request(`${prefix}?state=all&labels=${encodeURIComponent(label)}&per_page=100`, true) as GitHubIssue[],
+    listChildren: async number => await request(`${prefix}/${number}/sub_issues?per_page=100`, true) as GitHubIssue[],
     getIssue: async number => await request(`${prefix}/${number}`) as GitHubIssue,
     getComments: async number => await request(`${prefix}/${number}/comments?per_page=100`, true) as GitHubComment[],
     getBlockers: async number => await request(`${prefix}/${number}/dependencies/blocked_by?per_page=100`, true) as GitHubIssue[],
