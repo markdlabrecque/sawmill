@@ -20,7 +20,8 @@ import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
 import { answerTicket, closeTicket, requestStop, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
-import { formatRun, readRun, type MirrorWrite } from './run-store.js';
+import { formatRun, readRun, type MirrorWrite, type RunSnapshot } from './run-store.js';
+import { ticketRef } from './links.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 import { resolveMillyard } from './millyard.js';
 
@@ -50,6 +51,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const { cwd: invokedIn = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text) } = options;
   const cwd = args.find(arg => arg !== '--json') === 'build' ? invokedIn : resolveMillyard(invokedIn);
   const json = args.includes('--json');
+  // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
+  const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
   const emit = (value: object, message: string) => stdout((json ? JSON.stringify(value) : message) + '\n');
   try {
     const positional = args.filter(arg => arg !== '--json');
@@ -81,6 +84,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit({ status: 'configuration-error', issues }, issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n'));
         return 2;
       }
+      const ref = (number: number) => ticketRef(config.project.tracker, number, links);
+      const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       if (positional[0] === 'team' && positional[1] === 'tail') {
         if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);
         await tailTicket(cwd, Number(positional[2]), { json, follow: positional[3] !== '--no-follow', stdout, signal: options.signal });
@@ -98,7 +103,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await runTeam(cwd, config.project, config.machine, Number(positional[2]), tracker as IntegrationTracker, { ...options, home });
-        emit(result, `${result.outcome}: #${result.ticket} (${result.stage})${result.error ? `\n${result.error}` : ''}`);
+        emit(result, `${result.outcome}: ${ref(result.ticket)} (${result.stage})${result.error ? `\n${result.error}` : ''}`);
         return result.outcome === 'passed' ? 0 : 1;
       }
       if (positional[0] === 'integrate') {
@@ -107,7 +112,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep, ciPollInterval: config.machine.ci_poll_interval });
-        emit(result, `${result.outcome}: #${result.ticket}${result.mergeCommit ? ` ${result.mergeCommit}` : ''}${result.message ? `\n${result.message}` : ''}`);
+        emit(result, `${result.outcome}: ${ref(result.ticket)}${result.mergeCommit ? ` ${result.mergeCommit}` : ''}${result.message ? `\n${result.message}` : ''}`);
         return result.outcome === 'merged' ? 0 : 1;
       }
       if (positional[0] === 'worktree' && positional[1] === 'gc') {
@@ -117,7 +122,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         const result = await gcWorktrees(cwd, config.project, { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
-        emit(result, [`Removed ${result.removed.length} worktrees.`, ...result.skipped.map(row => `#${row.ticket}: ${row.message}`)].join('\n'));
+        emit(result, [`Removed ${result.removed.length} worktrees.`, ...result.skipped.map(row => `${ref(row.ticket)}: ${row.message}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'worktree' && ['create', 'remove'].includes(positional[1] ?? '')) {
@@ -128,7 +133,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         if (positional[1] === 'remove') {
           const result = await removeWorktree(cwd, config.project, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
-          emit(result, `${result.status === 'ok' ? 'Removed worktree' : 'Tracker logjam for'} #${result.ticket}: ${result.path ?? '(none)'}`);
+          emit(result, `${result.status === 'ok' ? 'Removed worktree' : 'Tracker logjam for'} ${ref(result.ticket)}: ${result.path ?? '(none)'}`);
           return result.status === 'ok' ? 0 : 1;
         }
         const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
@@ -142,7 +147,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         const snapshot = readRun(cwd);
-        emit(snapshot, formatRun(snapshot));
+        emit(snapshot, table(snapshot));
         return 0;
       }
       if (positional[0] === 'run' && positional.length === 1) {
@@ -161,15 +166,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run stop'), 2);
         const number = Number(positional[2]);
         requestStop(cwd, config.project, number);
-        emit({ status: 'stop-requested', ticket: number }, `Stop requested for #${number}; the active stage will finish safely.`);
+        emit({ status: 'stop-requested', ticket: number }, `Stop requested for ${ref(number)}; the active stage will finish safely.`);
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError(usage('run once'), 2);
         const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}.`,
-          ...result.started.map(row => `#${row.ticket}: worker ${row.worker.pid}`),
-          ...result.failures.map(row => `#${row.ticket}: ${row.error}`)].join('\n'));
+          ...result.started.map(row => `${ref(row.ticket)}: worker ${row.worker.pid}`),
+          ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'tickets' && ['comment', 'label'].includes(positional[1] ?? '')) {
@@ -187,7 +192,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const report = positional[1] === 'comment' && positional[4] === '--stage' ? { stage: positional[5] as ReportStage, details: positional[3] } : undefined;
         const ok = await transition(cwd, config.project, tracker, Number(positional[2]), report ? { report } : {}, report ? [] : [write], options);
         const snapshot = readRun(cwd);
-        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, formatRun(snapshot));
+        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, table(snapshot));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && ['close', 'answer'].includes(positional[1] ?? '')) {
@@ -203,7 +208,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           ? await answerTicket(cwd, config.project, writer, Number(words[2]), words[3], { ...options, implementer })
           : await closeTicket(cwd, config.project, writer, Number(words[2]), options);
         const snapshot = readRun(cwd);
-        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, formatRun(snapshot));
+        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, table(snapshot));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {
@@ -215,7 +220,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
         const snapshot = await draft(cwd, config.project, parsed.selection, tracker, parsed.replace);
-        emit(snapshot, formatRun(snapshot));
+        emit(snapshot, table(snapshot));
         return 0;
       }
       const message = unknownCommand(positional);
