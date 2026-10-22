@@ -1,10 +1,56 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader, TicketWriter } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+
+async function ddevYard(t: TestContext) {
+  const yard = await millyard(t, {}, 'sawmill paths with spaces-');
+  await mkdir(join(yard.cwd, '.ddev'));
+  await yard.cli('build');
+  await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8'))
+    .replace('# name: islandhealth', 'name: islandhealth')
+    .replace('# repo: owner/name', 'repo: team/tool')
+    .replace('integration: main', 'integration: integration'));
+  const bin = join(yard.root, 'fake tools');
+  await mkdir(bin);
+  const fake = [
+    '#!/usr/bin/env bash',
+    'set -u',
+    'printf \'%s\\0\' "$PWD" "$MILL_WORKTREE" "$MILL_TICKET" "$MILL_PROJECT" "$MILL_MILLYARD" "$@" >> "$DDEV_RECORD"',
+    'printf \'\\n\' >> "$DDEV_RECORD"',
+    'if [[ "$*" == "${DDEV_FAIL:-}" ]]; then exit 42; fi',
+    'if [[ "$1" == describe && "${DDEV_ABSENT:-0}" == 1 ]]; then exit 1; fi',
+  ].join('\n') + '\n';
+  await writeFile(join(bin, 'ddev'), fake);
+  await chmod(join(bin, 'ddev'), 0o755);
+  const previousPath = process.env.PATH;
+  const previousRecord = process.env.DDEV_RECORD;
+  const previousFail = process.env.DDEV_FAIL;
+  const previousAbsent = process.env.DDEV_ABSENT;
+  const record = join(yard.root, 'ddev calls');
+  process.env.PATH = `${bin}:${previousPath ?? ''}`;
+  process.env.DDEV_RECORD = record;
+  delete process.env.DDEV_FAIL;
+  delete process.env.DDEV_ABSENT;
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousRecord === undefined) delete process.env.DDEV_RECORD; else process.env.DDEV_RECORD = previousRecord;
+    if (previousFail === undefined) delete process.env.DDEV_FAIL; else process.env.DDEV_FAIL = previousFail;
+    if (previousAbsent === undefined) delete process.env.DDEV_ABSENT; else process.env.DDEV_ABSENT = previousAbsent;
+  });
+  return { ...yard, record };
+}
+
+async function ddevCalls(path: string) {
+  const text = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  return text.trimEnd().split('\n').filter(Boolean).map(line => line.replace(/\0$/, '').split('\0'));
+}
 
 class Tracker implements TicketReader, TicketWriter {
   readsAllowed = true;
@@ -386,4 +432,86 @@ test('hand commands validate arguments and gc is an offline no-op without a run'
   assert.equal((await yard.cli('worktree', 'remove', '7')).code, 0);
   assert.equal((await yard.cli('worktree', 'remove', '7')).code, 0);
   await assert.rejects(readFile(join(yard.cwd, '.mill/run.sqlite')), { code: 'ENOENT' });
+});
+
+test('shipped DDEV hooks provision a spaced worktree with the project name and optional Composer and dump steps', async t => {
+  const yard = await ddevYard(t);
+  const worktrees = join(yard.root, 'sandbox roots with spaces');
+  await writeFile(join(yard.home, '.config/sawmill/config.yaml'), `worktrees: ${JSON.stringify(worktrees)}\n`);
+  await writeFile(join(yard.cwd, 'composer.json'), '{"name":"fixture/app"}\n');
+  yard.git('add', 'composer.json');
+  yard.git('commit', '-m', 'Add Composer manifest');
+  await mkdir(join(yard.cwd, '.mill'), { recursive: true });
+  await writeFile(join(yard.cwd, '.mill/db.sql'), 'CREATE DATABASE fixture;\n');
+
+  const created = await yard.cli('worktree', 'create', '155', '--json');
+  const path = join(worktrees, 'islandhealth', '155');
+  assert.equal(created.code, 0, created.stdout);
+  assert.deepEqual(JSON.parse(created.stdout), { status: 'ok', ticket: 155, path, branch: 'mill/155', reused: false });
+  assert.match(await readFile(join(path, '.ddev/config.local.yaml'), 'utf8'), /name: 155-islandhealth\n/);
+  const calls = await ddevCalls(yard.record);
+  assert.deepEqual(calls.map(call => call.slice(5)), [
+    ['start', '-y'], ['composer', 'install'], ['import-db', `--file=${yard.cwd}/.mill/db.sql`],
+  ]);
+  for (const call of calls) {
+    assert.deepEqual(call.slice(0, 5), [path, path, '155', 'islandhealth', yard.cwd]);
+  }
+});
+
+test('shipped DDEV setup skips Composer and a missing dump, and teardown deletes a known project', async t => {
+  const yard = await ddevYard(t);
+  assert.equal((await yard.cli('worktree', 'create', '156')).code, 0);
+  assert.deepEqual((await ddevCalls(yard.record)).map(call => call.slice(5)), [['start', '-y']]);
+  yard.git('-C', join(yard.root, '156'), 'clean', '-fd');
+  const removed = await yard.cli('worktree', 'remove', '156', '--json');
+  assert.equal(removed.code, 0, removed.stdout);
+  assert.deepEqual((await ddevCalls(yard.record)).slice(1).map(call => call.slice(5)), [
+    ['describe', '156-islandhealth'], ['delete', '-yO', '156-islandhealth'],
+  ]);
+});
+
+for (const failedCommand of ['start -y', 'composer install', 'import-db --file=']) {
+  test(`shipped DDEV setup fails and cleans up when ${failedCommand} fails`, async t => {
+    const yard = await ddevYard(t);
+    await writeFile(join(yard.cwd, 'composer.json'), '{"name":"fixture/app"}\n');
+    yard.git('add', 'composer.json');
+    yard.git('commit', '-m', 'Add Composer manifest');
+    await mkdir(join(yard.cwd, '.mill'), { recursive: true });
+    await writeFile(join(yard.cwd, '.mill/db.sql'), 'CREATE DATABASE fixture;\n');
+    const dumpCommand = `import-db --file=${yard.cwd}/.mill/db.sql`;
+    process.env.DDEV_FAIL = failedCommand === 'import-db --file=' ? dumpCommand : failedCommand;
+
+    const result = await yard.cli('worktree', 'create', '157', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /42|failed/i);
+    await assert.rejects(readFile(join(yard.root, '157/README.md')), { code: 'ENOENT' });
+    assert.doesNotMatch(yard.git('worktree', 'list', '--porcelain'), /refs\/heads\/mill\/157/);
+    const commands = (await ddevCalls(yard.record)).map(call => call.slice(5).join(' '));
+    assert.ok(commands.includes(failedCommand === 'import-db --file=' ? dumpCommand : failedCommand));
+    assert.deepEqual(commands.slice(-2), ['describe 157-islandhealth', 'delete -yO 157-islandhealth']);
+  });
+}
+
+test('shipped DDEV teardown treats an absent project as a no-op', async t => {
+  const yard = await ddevYard(t);
+  assert.equal((await yard.cli('worktree', 'create', '158')).code, 0);
+  yard.git('-C', join(yard.root, '158'), 'clean', '-fd');
+  process.env.DDEV_ABSENT = '1';
+  const removed = await yard.cli('worktree', 'remove', '158');
+  assert.equal(removed.code, 0, removed.stdout);
+  assert.deepEqual((await ddevCalls(yard.record)).slice(1).map(call => call.slice(5)), [['describe', '158-islandhealth']]);
+});
+
+test('shipped DDEV teardown failure preserves the worktree', async t => {
+  const yard = await ddevYard(t);
+  assert.equal((await yard.cli('worktree', 'create', '159')).code, 0);
+  yard.git('-C', join(yard.root, '159'), 'clean', '-fd');
+  process.env.DDEV_FAIL = 'delete -yO 159-islandhealth';
+  const removed = await yard.cli('worktree', 'remove', '159', '--json');
+  assert.equal(removed.code, 1, removed.stdout);
+  assert.match(removed.stdout, /42|failed/i);
+  assert.equal(await readFile(join(yard.root, '159/README.md'), 'utf8'), 'Test millyard\n');
+  assert.deepEqual((await ddevCalls(yard.record)).slice(1).map(call => call.slice(5)), [
+    ['describe', '159-islandhealth'], ['delete', '-yO', '159-islandhealth'],
+  ]);
 });
