@@ -62,7 +62,7 @@ Six modules in one Node package, each exposed as CLI subcommands so the orchestr
 | Team runner | Spawn the three roles on the configured agent runtime inside a worktree; pass thin handoffs; enforce bounce cap; retry infrastructure failures without spending a bounce; honour stop; tee role logs; post reporter comments at each stage | `mill team run`, `mill team review`, `mill team tail` |
 | Reporter | Deterministic stage comments and the final summary, posted through the tracker mirror | called by the run and team modules |
 
-Project-level config is `saws.yaml` at the repo root, committed (ticket backend, integration branch, worktree provider, agent runtime with a model and effort per role, hooks directory, test command and timeout, whether to wait for CI). `mill build` creates it by copying your default from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template the first time. Machine settings (concurrency, retry counts) live in `~/.config/sawmill/config.yaml`.
+Project-level config is `saws.yaml` at the repo root, committed (ticket backend, integration branch, worktree provider, agent runtime with a model and effort per role, hooks directory, test command and timeout, whether to wait for CI). `mill build` creates it by copying your default from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template the first time, and fills in `test_harness: ddev` or `test_harness: docker` when it finds `.ddev/` or Docker files in the project (DDEV wins if both). The `test_harness` key is required: every `mill` command aborts without it and tells you to write `test_harness: none` if you mean to opt out of user testing. Machine settings (concurrency, retry counts) live in `~/.config/sawmill/config.yaml`.
 
 ## Worktree providers and hooks
 
@@ -91,6 +91,7 @@ Review rounds stay cheap by scoping each re-review to the fix, with the post-reb
 - First review: reviewer gets the ticket plus the full diff.
 - Bounce: reviewer feedback goes to the implementer; each fix is its own commit.
 - Re-review: reviewer sees only that fix commit's diff plus its own original feedback, and checks whether the feedback was addressed.
+- User testing: if the ticket has a "User test cases" section, the reviewer performs each case as the user in a browser against the worktree's running site. A case the user cannot complete (error, dead control, wrong result, lost data) is a bounce naming the case and step. Everything else is a pass, with recommendations posted by the CLI as a user-testing comment on the ticket. A re-review after such a bounce re-runs the failed cases.
 - Retry cap: after the cap is hit, the ticket is labelled logjam and the team stops.
 - Rebase: before merge, rebase onto integration and re-run the full test suite.
 - Rebase conflict or test failure counts as one more implementer round, not an escalation.
@@ -182,6 +183,8 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Sawmill | This suite: orchestrator, Mill CLI, ticket layer, team runner and the `sawmill` plugin together |
 | Team | The three agents (test writers, implementer, reviewer) spawned for one ticket |
 | Test writers | Team role that turns the ticket into failing tests before any code is written |
+| Test harness | Required `saws.yaml` key (`ddev`, `docker`, or `none`) saying how the reviewer reaches a running site for user test cases; `mill build` detects it, and `none` must be written by hand to opt out |
 | Test timeout | Per-project bound on the test command (default 30 minutes); hitting it is an infrastructure outcome, not a failed test |
 | Ticket | A feature-sized unit of work in GitHub or GitLab issues; the source of truth for work state |
+| User test cases | A "User test cases" section in a ticket body, one case per item; the reviewer performs each as the user in a browser, bounces on a case that cannot be completed, and passes with recommendations otherwise |
 | Worktree | A git worktree cut from integration for one ticket; the team's isolated sandbox |
