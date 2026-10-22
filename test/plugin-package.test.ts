@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { parse } from 'yaml';
@@ -24,10 +24,12 @@ test('installed package ships a discoverable draft plugin and its CLI selections
     return join(install, result.filename);
   };
   const archive = pack(repo);
-  // Install the existing dependency from disk too, so this smoke needs no registry or credentials.
-  const yamlRoot = dirname(fileURLToPath(import.meta.resolve('yaml/package.json')));
-  const yamlArchive = pack(yamlRoot);
-  npm(install, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', archive, yamlArchive);
+  // Install every production dependency from disk, including Markdown's transitive
+  // dependencies, so the installed-package smoke remains strictly offline.
+  const lock = JSON.parse(await readFile(join(repo, 'package-lock.json'), 'utf8'));
+  const dependencies = Object.entries(lock.packages).filter(([path, entry]) => path && !(entry as { dev?: boolean }).dev)
+    .map(([path]) => pack(join(repo, path)));
+  npm(install, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', archive, ...dependencies);
   const installed = join(install, 'node_modules/@markdlabrecque/sawmill');
   const marketplace = JSON.parse(await readFile(join(installed, '.claude-plugin/marketplace.json'), 'utf8'));
   assert.equal(marketplace.name, 'sawmill');

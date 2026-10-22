@@ -30,6 +30,8 @@ export interface TeamProgress {
   checkpointHead?: string;
   repair?: RepairContext;
   infrastructureAttempts?: InfrastructureAttempt[];
+  /** Accumulated user-case results across repair reviews. */
+  userTesting?: import('./user-testing.js').UserTesting;
 }
 /** Infrastructure invocation history, independent of the repair bounce budget. */
 export interface InfrastructureAttempt {

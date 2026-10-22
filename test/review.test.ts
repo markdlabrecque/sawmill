@@ -389,7 +389,7 @@ test('an unsupported test command permission rule is refused before running a pr
   assert.match(JSON.parse(result.stdout).outcome.error, /permission mapping/);
 });
 
-test('user test cases fail explicitly until browser case handling is implemented', async t => {
+test('browser review refuses a pass that omits the requested case result', async t => {
   const yard = await reviewYard(t);
   // Redraft with a supported harness so this exercises the review boundary.
   await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://example.invalid'));
@@ -399,7 +399,7 @@ test('user test cases fail explicitly until browser case handling is implemented
   const runtime = { async run() { return { outcome: { outcome: 'pass' as const } }; } };
   const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
   assert.equal(result.code, 1, result.stdout);
-  assert.match(JSON.parse(result.stdout).outcome.error, /browser|user test cases/i);
+  assert.match(JSON.parse(result.stdout).outcome.error, /coverage/i);
 });
 
 test('documented default model accepts max unchanged and records unreported effective effort honestly', async t => {

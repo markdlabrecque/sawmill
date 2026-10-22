@@ -756,13 +756,32 @@ test('a bouncing reviewer cannot dispatch repair from dirty work or a changed br
   }
 });
 
-test('repair context retains failed cases for a future reviewer without enabling browser handling', async t => {
+test('user-testing repair re-runs only broken cases with the fix diff and retains completed results', async t => {
   const y = await fixture(t);
+  y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit the answer';
+  y.tracker.getTicket = async () => structuredClone(y.ticket);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123/form'));
+  assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   const broken = { case: 'Submit the answer', result: 'broken' as const, step: 'Submit shows an error' };
   let reviews = 0, implementations = 0;
   y.setScript(async (request, sink) => {
-    assert.equal(request.browser, false);
-    if (request.role === 'reviewer' && ++reviews === 1) return { outcome: { outcome: 'bounce', feedback: 'Submit fails.', cases: [{ case: 'Open page', result: 'completed' }, broken] } };
+    if (request.role !== 'reviewer') {
+      assert.equal(request.browser, false);
+      assert.doesNotMatch(request.handoff, /User test cases|http:\/\/localhost:8123/);
+    }
+    if (request.role === 'reviewer') {
+      assert.equal(request.browser, true);
+      const cases = JSON.parse(request.handoff.split('Cases to run, return each exact case name once:\n')[1]!);
+      if (++reviews === 1) {
+        assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit the answer']);
+        return { outcome: { outcome: 'bounce', feedback: 'Submit fails.', cases: [{ case: 'Open page', result: 'completed' }, broken] } };
+      }
+      assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit the answer']);
+      assert.match(request.handoff, /Fix diff:/);
+      assert.match(request.handoff, /\+Fixed submit/);
+      assert.doesNotMatch(request.handoff.split('Fix diff:')[1]!.split('Test command:')[0]!, /answer.test.cjs|module.exports/);
+      return { outcome: { outcome: 'pass', cases: [{ case: 'Submit the answer', result: 'completed' }], recommendations: ['The submit label could be clearer.'] } };
+    }
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.deepEqual((await y.status()).tickets[0].team.repair.failedCases, [broken]);
       await writeFile(join(request.cwd, 'API.md'), 'Fixed submit.\n');
@@ -773,7 +792,52 @@ test('repair context retains failed cases for a future reviewer without enabling
   });
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
-  assert.deepEqual((await y.status()).tickets[0].team.repair.failedCases, [broken]);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 1);
+  assert.deepEqual(row.team.userTesting.cases, [{ case: 'Open page', result: 'completed' }, { case: 'Submit the answer', result: 'completed' }]);
+  const reports = y.ticket.comments.filter(c => c.body.startsWith('[sawmill:user-testing]'));
+  assert.equal(reports.length, 2);
+  assert.match(reports[0]!.body, /Submit the answer: broken\nFailed step: Submit shows an error/);
+  assert.match(reports[1]!.body, /Open page: completed/);
+  assert.match(reports[1]!.body, /Submit the answer: completed/);
+  assert.match(reports[1]!.body, /submit label could be clearer/);
+});
+
+test('a failed user-testing mirror durably retains the bounce and cases for repair after answer', async t => {
+  const y = await fixture(t);
+  y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit answer';
+  y.tracker.getTicket = async () => structuredClone(y.ticket);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+  assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
+  const broken = { case: 'Submit answer', result: 'broken' as const, step: 'Submit returns 500.' };
+  y.setScript(async (request, sink) => request.role === 'reviewer'
+    ? { outcome: { outcome: 'bounce', feedback: 'Fix submit.', cases: [{ case: 'Open page', result: 'completed' }, broken] } }
+    : y.normal(request, sink));
+  y.setBeforeWrite(async body => { if (body?.startsWith('[sawmill:user-testing]')) throw new Error('Tracker offline'); });
+  const first = await y.cli('team', 'run', '12', '--json');
+  assert.equal(first.code, 1);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.reason, 'tracker');
+  assert.equal(row.bounces, 1);
+  assert.deepEqual(row.team.repair.failedCases, [broken]);
+  assert.deepEqual(row.team.userTesting.cases, [{ case: 'Open page', result: 'completed' }, broken]);
+  y.setBeforeWrite(undefined);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const resumed: string[] = [];
+  y.setScript(async request => {
+    resumed.push(request.role);
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'fix.txt'), 'Fixed submit\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Fix submit');
+      return { outcome: { outcome: 'done', summary: 'Fixed submit.' } };
+    }
+    const cases = JSON.parse(request.handoff.split('Cases to run, return each exact case name once:\n')[1]!);
+    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit answer']);
+    return { outcome: { outcome: 'pass', cases: [{ case: 'Submit answer', result: 'completed' }] } };
+  });
+  const second = await y.cli('team', 'run', '12', '--json');
+  assert.equal(second.code, 0, second.stdout);
+  assert.deepEqual(resumed, ['implementer', 'reviewer']);
 });
 
 
