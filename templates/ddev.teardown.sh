@@ -12,7 +12,7 @@ set -euo pipefail
 
 WORKTREE="${1:-${MILL_WORKTREE:?worktree path required}}"
 TICKET="${2:-${MILL_TICKET:?ticket number required}}"
-PROJECT="${MILL_PROJECT:?millyard project name required}"
+PROJECT="${MILL_PROJECT:?project name (name in .mill/config.yaml) required}"
 
 # Must match the name written by setup.sh.
 DDEV_NAME="${TICKET}-${PROJECT}"

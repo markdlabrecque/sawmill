@@ -20,9 +20,9 @@ infrastructure_retries: 3
 # stops dispatching new tickets until a team exits successfully.
 pause_threshold: 3
 
-# Where worktrees are created. Absent: beside the millyard, as
-# <project>.worktrees/<ticket>. Set: <worktrees>/<project>/<ticket>, where
-# <project> is the millyard folder name.
+# Where worktrees are created. Absent: beside the millyard, named by the
+# ticket number (a millyard at code/main gets code/123). Set:
+# <worktrees>/<name>/<ticket>, where <name> is from .mill/config.yaml.
 # worktrees: /home/me/projects
 
 # How often mill integrate asks the tracker whether the pipeline for the

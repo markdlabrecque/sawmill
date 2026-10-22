@@ -20,7 +20,7 @@ DB_PATH=".mill/db.sql"
 
 WORKTREE="${1:-${MILL_WORKTREE:?worktree path required}}"
 TICKET="${2:-${MILL_TICKET:?ticket number required}}"
-PROJECT="${MILL_PROJECT:?millyard project name required}"
+PROJECT="${MILL_PROJECT:?project name (name in .mill/config.yaml) required}"
 MILLYARD="${MILL_MILLYARD:?millyard path required}"
 case "$DB_PATH" in /*) ;; *) DB_PATH="$MILLYARD/$DB_PATH" ;; esac
 

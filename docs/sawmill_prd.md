@@ -62,7 +62,7 @@ Six modules in one Node package, each exposed as CLI subcommands so the orchestr
 | Team runner | Spawn the three roles on the configured agent runtime inside a worktree; pass thin handoffs; enforce bounce cap; retry infrastructure failures without spending a bounce; honour stop; tee role logs; post reporter comments at each stage | `mill team run`, `mill team review`, `mill team tail` |
 | Reporter | Deterministic stage comments and the final summary, posted through the tracker mirror | called by the run and team modules |
 
-Everything Sawmill keeps in a millyard lives in `.mill/` at its root: `config.yaml`, `run.sqlite`, `setup.sh`, `teardown.sh`, an optional `db.sql`, and `logs/`. The whole folder is kept out of git through `.git/info/exclude`, so nothing Sawmill-specific is ever committed to a client repo. `config.yaml` names the ticket backend, integration branch, agent runtime with a model and effort per role, test command and timeout, whether to wait for CI, and the test harness. `mill build` creates the folder, adds the exclude, copies your default from `~/.config/sawmill/default.yaml`, seeding that default from the built-in template the first time, and fills in `test_harness: ddev` or `test_harness: docker` when it finds `.ddev/` or Docker files in the project (DDEV wins if both). The `test_harness` key is required: every `mill` command aborts without it and tells you to write `test_harness: none` if you mean to opt out of user testing. Machine settings (concurrency, retry counts, an optional worktrees root, CI poll interval) live in `~/.config/sawmill/config.yaml`. Both files ship as templates with every key documented in comments, and `mill build` seeds whichever is missing.
+Everything Sawmill keeps in a millyard lives in `.mill/` at its root: `config.yaml`, `run.sqlite`, `setup.sh`, `teardown.sh`, an optional `db.sql`, and `logs/`. The whole folder is kept out of git through `.git/info/exclude`, so nothing Sawmill-specific is ever committed to a client repo. `config.yaml` names the project (a required `name` you set by hand; a missing name halts every command), the ticket backend, integration branch, agent runtime with a model and effort per role, test command and timeout, whether to wait for CI, and the test harness. `mill build` creates the folder, adds the exclude, copies your default from `~/.config/sawmill/default.yaml`, seeding that default from the built-in template the first time, and fills in `test_harness: ddev` or `test_harness: docker` when it finds `.ddev/` or Docker files in the project (DDEV wins if both). The `test_harness` key is required: every `mill` command aborts without it and tells you to write `test_harness: none` if you mean to opt out of user testing. Machine settings (concurrency, retry counts, an optional worktrees root, CI poll interval) live in `~/.config/sawmill/config.yaml`. Both files ship as templates with every key documented in comments, and `mill build` seeds whichever is missing.
 
 ## Worktrees and hooks
 
@@ -70,12 +70,12 @@ Worktrees are plain git worktrees that only Sawmill creates and removes, so the 
 
 **Worktree contract**
 
-- `mill worktree create <n>` runs `git worktree add` from the integration branch. The worktree is named by the bare ticket number: ticket 155 lives at `<project>.worktrees/155` beside the millyard, on branch `mill/155`, and its DDEV project is `155-<project>`. Set `worktrees: /home/me/projects` in `~/.config/sawmill/config.yaml` and it lives at `/home/me/projects/<project>/155` instead.
+- `mill worktree create <n>` runs `git worktree add` from the integration branch. The worktree is a sibling of the millyard named by the bare ticket number: with the millyard at `~/Projects/islandhealth/code/main`, ticket 155 lives at `~/Projects/islandhealth/code/155`, on branch `mill/155`, and its DDEV project is `155-<name>`. Set `worktrees: /home/me/sandboxes` in `~/.config/sawmill/config.yaml` and it lives at `/home/me/sandboxes/<name>/155` instead.
 
 **Lifecycle hooks**
 
 - Per-millyard bash scripts in `.mill/`: `setup.sh` after a worktree is created, `teardown.sh` before one is removed.
-- Receive worktree path and ticket number as arguments and as `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, `MILL_MILLYARD`.
+- Receive worktree path and ticket number as arguments and as `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT` (the `name` from `.mill/config.yaml`), `MILL_MILLYARD`.
 - `mill worktree remove <n>` runs `teardown.sh`, then `git worktree remove`, and deletes the `mill/<n>` branch if merged.
 - Non-zero exit from post-create fails the creation so no half-built sandbox is handed to a team.
 - Typical use: start DDEV, install dependencies, seed a database, tear down containers.
@@ -165,7 +165,7 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | `mill team tail` | Follow the live log of the role currently running for a ticket |
 | `mill tickets comment` | Post a comment on a ticket; how the reporter step logs progress |
 | `mill tickets label` | Add or remove a label on a ticket, such as logjam |
-| `mill worktree create` | Cut a ticket's worktree from integration at `<project>.worktrees/<ticket>` on `mill/<ticket>`, run `setup.sh`, print the path |
+| `mill worktree create` | Cut a ticket's worktree from integration as a sibling of the millyard named `<ticket>`, on `mill/<ticket>`, run `setup.sh`, print the path |
 | `mill worktree gc` | Remove every worktree whose ticket is closed, running the pre-remove hook for each |
 | `mill worktree remove` | Run `teardown.sh`, then remove a ticket's worktree and its merged branch |
 | logjam | Run-file state meaning a human must act: an agent question, an exhausted retry cap, an environment failure, a stopped ticket, or a failed tracker write; mirrored to the tracker as a label; cleared with `mill run answer` |
@@ -175,7 +175,7 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Reporter step | The CLI step that posts progress and the final summary as ticket comments; run by the team runner at each stage change |
 | Retry cap | Maximum review bounces per ticket (three) before it is labelled logjam; infrastructure retries do not count |
 | Reviewer | Team role that checks the diff against the ticket and passes or bounces it |
-| `.mill/config.yaml` | The project config in the millyard, never committed: tracker, integration branch, runtime, a model and effort per role, tests, CI, test harness, labels |
+| `.mill/config.yaml` | The project config in the millyard, never committed: name (required, set by hand), tracker, integration branch, runtime, a model and effort per role, tests, CI, test harness, labels |
 | Sawmill | This suite: orchestrator, Mill CLI, ticket layer, team runner and the `sawmill` plugin together |
 | Team | The three agents (test writers, implementer, reviewer) spawned for one ticket |
 | Test writers | Team role that turns the ticket into failing tests before any code is written |
@@ -183,4 +183,4 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Test timeout | Per-project bound on the test command (default 30 minutes); hitting it is an infrastructure outcome, not a failed test |
 | Ticket | A feature-sized unit of work in GitHub or GitLab issues; the source of truth for work state |
 | User test cases | A "User test cases" section in a ticket body, one case per item; the reviewer performs each as the user in a browser, bounces on a case that cannot be completed, and passes with recommendations otherwise |
-| Worktree | A git worktree cut from integration for one ticket, named by the bare ticket number at `<project>.worktrees/<ticket>` beside the millyard, or `<root>/<project>/<ticket>` when the machine config sets a worktrees root, on branch `mill/<ticket>`; the team's isolated sandbox |
+| Worktree | A git worktree cut from integration for one ticket, a sibling of the millyard named by the bare ticket number (or `<root>/<name>/<ticket>` when the machine config sets a worktrees root), on branch `mill/<ticket>`; the team's isolated sandbox |

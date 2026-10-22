@@ -8,6 +8,11 @@
 # Every valid key is listed. Keys that are commented out are optional or have
 # no sensible default. Everything else is required and shown with its default.
 
+# REQUIRED, no default, never guessed. The project name. Used for the DDEV
+# project (<ticket>-<name>) and for the worktrees root layout
+# (<worktrees>/<name>/<ticket>). Every mill command halts while it is missing.
+# name: islandhealth
+
 # Where the tickets live. backend is github or gitlab. repo is owner/name on
 # GitHub, or group/subgroup/name on GitLab. host is only needed for
 # self-hosted GitLab.
