@@ -575,6 +575,77 @@ test('a repair round that finds nothing to fix ends in one logjam comment saying
   assert.equal(y.inputs.filter(r => r.role === 'implementer').length, 2);
 });
 
+/** Stops ticket 12 as not-reproduced: the final tests fail only because `flag` is missing, and the repair round finds nothing to change. */
+async function stopAsNotReproduced(t: TestContext) {
+  const y = await fixture(t);
+  const flag = join(y.root, 'environment-ready');
+  let implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer') {
+      if (++implementations === 1) {
+        await writeFile(join(request.cwd, 'answer.cjs'), `module.exports = () => require('node:fs').existsSync(${JSON.stringify(flag)}) ? 42 : 41;\n`);
+        y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', '#12: Return answer');
+        return { outcome: { outcome: 'done', summary: 'Implemented answer.' } };
+      }
+      return { outcome: { outcome: 'no-change', summary: 'Tests pass in the worktree.' } } as never;
+    }
+    if (request.role === 'reviewer') return { outcome: { outcome: 'pass', summary: 'Approved.' } };
+    return y.normal(request, sink);
+  });
+  const stopped = await y.cli('team', 'run', '12', '--json');
+  assert.equal(stopped.code, 1, stopped.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'not-reproduced');
+  const comment = y.ticket.comments.at(-1)!.body;
+  assert.match(comment, /mill run answer 12/); assert.match(comment, /--implementer/);
+  return { y, flag, row, implementations: () => implementations };
+}
+
+test('answering a not-reproduced ticket re-runs the final tests and merges without starting any role', async t => {
+  const { y, flag, implementations } = await stopAsNotReproduced(t);
+  await writeFile(flag, 'ready\n');
+  const dispatched = y.inputs.length;
+  assert.equal((await y.cli('run', 'answer', '12', 'The environment is fixed, run the tests again')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(y.inputs.length, dispatched, 'no role runs when integration alone is re-run');
+  assert.equal(implementations(), 2);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done');
+  assert.equal(y.requests.length, 1);
+  assert.equal(y.git('show', `${row.integration.mergedHead}:answer.cjs`).includes('existsSync'), true);
+});
+
+test('answering a not-reproduced ticket with --implementer sends the answer text back to the implementer', async t => {
+  const { y } = await stopAsNotReproduced(t);
+  let handoff = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer') {
+      handoff = request.handoff;
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', '#12: Hardcode answer');
+      return { outcome: { outcome: 'done', summary: 'Fixed.' } };
+    }
+    if (request.role === 'reviewer') return { outcome: { outcome: 'pass', summary: 'Approved.' } };
+    return y.normal(request, sink);
+  });
+  assert.equal((await y.cli('run', 'answer', '12', 'Please make the answer independent of the environment', '--implementer')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.match(handoff, /independent of the environment/);
+  assert.equal((await y.status()).tickets[0].state, 'done');
+});
+
+test('a re-run of the final tests that fails again counts a bounce and still stops cleanly as not-reproduced', async t => {
+  const { y, row: stopped } = await stopAsNotReproduced(t);
+  assert.equal((await y.cli('run', 'answer', '12', 'Run the tests again')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, stopped.bounces + 1);
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'not-reproduced');
+});
+
 test('failed local integration tests return concrete output to the implementer and merge the reviewed fix', async t => {
   const y = await fixture(t);
   let implementations = 0, reviews = 0;
