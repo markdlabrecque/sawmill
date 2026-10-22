@@ -1,0 +1,31 @@
+# Sawmill machine config: ~/.config/sawmill/config.yaml
+#
+# mill build seeds this file if it is missing. These settings apply to every
+# millyard on this desktop. Per-project settings live in .mill/config.yaml,
+# seeded from ~/.config/sawmill/default.yaml.
+#
+# Every valid key is listed. Keys that are commented out are optional.
+# Everything else is shown with its default.
+
+# How many tickets may be working at once, across all millyards. Start low
+# until your model plan proves it can take more.
+concurrency: 2
+
+# How many times a role or mill integrate is retried after an infrastructure
+# failure (runtime would not start, provider down, tool loop, test timeout)
+# before the ticket goes to logjam. These retries never count as bounces.
+infrastructure_retries: 3
+
+# After this many dispatches in a row end in infrastructure failure, mill run
+# stops dispatching new tickets until a team exits successfully.
+pause_threshold: 3
+
+# Where worktrees are created. Absent: beside the millyard, named by the
+# ticket number (a millyard at code/main gets code/123). Set:
+# <worktrees>/<name>/<ticket>, where <name> is from .mill/config.yaml.
+# worktrees: /home/me/projects
+
+# How often mill integrate asks the tracker whether the pipeline for the
+# rebased commit has finished, when ci is wait. Nothing else in mill polls:
+# teams are child processes and the loop is told when one exits.
+ci_poll_interval: 30s
