@@ -186,6 +186,18 @@ test('red tests never push or merge and timeouts kill descendants and report inf
   }
 });
 
+test('the final test run does not inherit the coordinator worker variables', async t => {
+  const names = ['MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; }));
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', 'command: \'env | grep -qE "^MILL_(TICKET|PROJECT|MILLYARD|WORKTREE)=" && exit 7; test -f feature.test.ts\''));
+  for (const name of names) process.env[name] = 'leaked-from-worker';
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'merged');
+});
+
 test('merge refusal is infrastructure and retry reuses the existing PR with configured merge method', async t => {
   const y = await fixture(t);
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('merge_method: squash', 'merge_method: merge'));

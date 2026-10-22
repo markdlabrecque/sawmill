@@ -548,6 +548,33 @@ test('repair must append one separate commit, preserving prior implementation hi
   }
 });
 
+test('a repair round that finds nothing to fix ends in one logjam comment saying the failure could not be reproduced', async t => {
+  const y = await fixture(t);
+  let implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') return { outcome: { outcome: 'bounce', feedback: 'Document answer.' } };
+    if (request.role === 'implementer' && ++implementations >= 2) {
+      return { outcome: { outcome: 'no-change', summary: 'npm test passes: 420 tests, 0 failures.' } } as never;
+    }
+    return y.normal(request, sink);
+  });
+  const before = y.ticket.comments.length;
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.notEqual(value.outcome, 'infrastructure', result.stdout);
+  assert.doesNotMatch(result.stdout, /separate.*commit/i);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam');
+  assert.notEqual(row.reason, 'environment');
+  const added = y.ticket.comments.slice(before).map(c => c.body);
+  const reports = added.filter(body => /could not be reproduced/i.test(body));
+  assert.equal(reports.length, 1, added.join('\n---\n'));
+  assert.match(reports[0]!, /420 tests, 0 failures/);
+  assert.ok(!added.some(body => /separate.*commit/i.test(body)), added.join('\n---\n'));
+  assert.equal(y.inputs.filter(r => r.role === 'implementer').length, 2);
+});
+
 test('failed local integration tests return concrete output to the implementer and merge the reviewed fix', async t => {
   const y = await fixture(t);
   let implementations = 0, reviews = 0;
