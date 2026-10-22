@@ -1,21 +1,24 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { checkMillyard } from './millyard.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
-import type { IntegrationTracker } from './tracker.js';
+import { MergeRefusedError } from './tracker.js';
+import type { IntegrationTracker, Pipeline } from './tracker.js';
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 export interface IntegrationResult {
-  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'infrastructure';
+  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'ci-failed' | 'infrastructure';
   ticket: number;
   message?: string;
+  pipeline?: Pipeline;
   mergeCommit?: string;
   changeRequestUrl?: string;
 }
@@ -38,8 +41,8 @@ async function tests(cwd: string, project: ProjectConfig, home?: string): Promis
   });
 }
 
-export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string } = {}): Promise<IntegrationResult> {
-  if (project.ci === 'wait') throw new CliError('ci: wait is not supported until the exact-head CI gate is implemented (issue #10).', 2);
+export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string } = {}): Promise<IntegrationResult> {
+  if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
   const branch = `mill/${number}`;
   const snapshot = readRun(cwd);
   const ticket = snapshot.tickets.find(row => row.number === number);
@@ -49,7 +52,7 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
   if (ticket.state === 'logjam' || snapshot.pendingWrites.some(write => write.ticket === number)) throw new CliError('Resolve the ticket logjam and pending writes with mill run answer before integrating.');
   if (ticket.completion === 'manual') throw new CliError('Ticket was completed manually.');
   if (ticket.completion === 'merged' && ticket.integration.reported) return { outcome: 'merged', ticket: number, mergeCommit: ticket.mergeCommit!, changeRequestUrl: ticket.integration.changeRequest?.url };
-  if (!ticket.completion && (ticket.state !== 'working' || ticket.blockers.length || !['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'merge'].includes(ticket.stage ?? ''))) throw new CliError('Integrate requires working, unblocked, review-approved work.');
+  if (!ticket.completion && (ticket.state !== 'working' || ticket.blockers.length || !['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(ticket.stage ?? ''))) throw new CliError('Integrate requires working, unblocked, review-approved work.');
   if (branch === project.integration || ticket.branch !== branch || !ticket.worktree) throw new CliError('Ticket must have its own saved mill/<n> worktree and branch.');
   await checkMillyard(cwd, project.integration);
   if (await git(ticket.worktree, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
@@ -59,7 +62,7 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
   let progress: IntegrationProgress = { ...ticket.integration };
   let mergeCommit = ticket.mergeCommit;
   let stage = ticket.stage ?? 'rebase';
-  const result = (outcome: IntegrationResult['outcome'], detail?: string): IntegrationResult => ({ outcome, ticket: number, ...(detail ? { message: detail } : {}), ...(mergeCommit ? { mergeCommit } : {}), ...(progress.changeRequest ? { changeRequestUrl: progress.changeRequest.url } : {}) });
+  const result = (outcome: IntegrationResult['outcome'], detail?: string): IntegrationResult => ({ outcome, ticket: number, ...(detail ? { message: detail } : {}), ...(progress.pipeline ? { pipeline: progress.pipeline } : {}), ...(mergeCommit ? { mergeCommit } : {}), ...(progress.changeRequest ? { changeRequestUrl: progress.changeRequest.url } : {}) });
   const guard = () => {
     const current = readRun(cwd);
     const row = current.tickets.find(row => row.number === number);
@@ -107,8 +110,52 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
       progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements https://${project.tracker.host ?? 'github.com'}/${project.tracker.repo}/issues/${number}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+      const readPipeline = async () => {
+        guard();
+        progress.pipeline = await tracker.getPipeline!(head);
+        if (!progress.pipeline || progress.pipeline.headCommit !== head) throw new Error('Pipeline head differs from the tested, pushed commit.');
+        if (!['pending', 'passed', 'failed', 'none'].includes(progress.pipeline.state)) throw new Error('Tracker returned an invalid pipeline state.');
+        await save();
+        return progress.pipeline;
+      };
+      const ciFailed = async () => {
+        const detail = [`CI failed for ${head}.`, progress.pipeline!.diagnostics, progress.pipeline!.logUrl].filter(Boolean).join('\n');
+        await advance('ci-failed', { report: { stage: 'ci-failed', details: detail, changeRequestUrl: progress.changeRequest!.url } });
+        return result('ci-failed', detail);
+      };
+      if (project.ci === 'wait') {
+        await advance('ci-wait', { report: { stage: 'ci-wait', details: `Waiting for CI on ${head}.`, changeRequestUrl: progress.changeRequest.url } });
+        const interval = options.ciPollInterval ?? '30s';
+        const ms = Number(interval.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[interval.at(-1)!] ?? 0);
+        for (;;) {
+          const pipeline = await readPipeline();
+          if (pipeline.state === 'failed') return await ciFailed();
+          if (pipeline.state === 'passed') break;
+          await (options.sleep ?? sleep)(ms);
+        }
+      }
       await advance('merge');
-      const merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head);
+      if (project.ci === 'wait') {
+        const current = await tracker.getChangeRequest!(progress.changeRequest.id);
+        if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
+      }
+      if (progress.testedHead !== head || progress.pushedHead !== head ||
+          await git(ticket.worktree, 'rev-parse', 'HEAD') !== head ||
+          await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all') ||
+          (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
+      guard();
+      let merged: { mergeCommit: string };
+      try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
+      catch (error) {
+        // A refusal is acknowledged by the server. A lost response is ambiguous
+        // and must never be reclassified as a repairable check failure.
+        if (project.ci === 'wait' && error instanceof MergeRefusedError) {
+          const current = await tracker.getChangeRequest!(progress.changeRequest.id);
+          if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
+          if ((await readPipeline()).state === 'failed') return await ciFailed();
+        }
+        throw error;
+      }
       if (!/^[a-f\d]{40,64}$/i.test(merged.mergeCommit)) throw new Error('Tracker returned an invalid merge commit.');
       mergeCommit = merged.mergeCommit;
       progress.mergedHead = head;

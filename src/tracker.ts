@@ -29,6 +29,14 @@ export interface ChangeRequest {
   headCommit: string;
 }
 
+/** A pipeline observation belongs to one exact commit, never an implicit latest head. */
+export interface Pipeline {
+  headCommit: string;
+  state: 'pending' | 'passed' | 'failed' | 'none';
+  logUrl?: string;
+  diagnostics?: string;
+}
+
 export interface TicketWriter {
   addLabel(number: number, label: string): Promise<void>;
   removeLabel(number: number, label: string): Promise<void>;
@@ -36,8 +44,15 @@ export interface TicketWriter {
   closeTicket(number: number): Promise<void>;
 }
 
+/** A definite server refusal, distinct from transport/authentication failures. */
+export class MergeRefusedError extends Error {}
+
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
 export interface IntegrationTracker extends TicketWriter {
+  /** Required for ci:wait; ci:none adapters need not provide CI reads. */
+  getPipeline?(commit: string): Promise<Pipeline>;
+  /** One final PR/MR read before merging; never an issue read or a polling loop. */
+  getChangeRequest?(id: number | string): Promise<ChangeRequest>;
   findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
   mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }>;
   deleteRemoteBranch(branch: string): Promise<void>;
@@ -46,5 +61,6 @@ export interface IntegrationTracker extends TicketWriter {
 export interface Tracker extends TicketReader, IntegrationTracker {
   listByLabel(label: string): Promise<Ticket[]>;
   listChildren(number: number): Promise<Ticket[]>;
-  getPipeline(commit: string): Promise<{ state: 'pending' | 'passed' | 'failed' | 'none'; logUrl?: string }>;
+  getPipeline(commit: string): Promise<Pipeline>;
+  getChangeRequest(id: number | string): Promise<ChangeRequest>;
 }

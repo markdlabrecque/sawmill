@@ -50,7 +50,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : undefined);
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
-        const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep });
+        const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep, ciPollInterval: config.machine.ci_poll_interval });
         emit(result, `${result.outcome}: #${result.ticket}${result.mergeCommit ? ` ${result.mergeCommit}` : ''}${result.message ? `\n${result.message}` : ''}`);
         return result.outcome === 'merged' ? 0 : 1;
       }

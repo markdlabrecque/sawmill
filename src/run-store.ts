@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import type { Ticket, TicketComment } from './tracker.js';
+import type { Ticket, TicketComment, Pipeline } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
@@ -12,6 +12,7 @@ export interface IntegrationProgress {
   baseCommit?: string;
   testedHead?: string;
   pushedHead?: string;
+  pipeline?: Pipeline;
   changeRequest?: { id: number | string; url: string; headCommit: string };
   mergedHead?: string;
   remoteDeleted?: boolean;
