@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { build } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -41,6 +42,31 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       if (!config.valid) {
         emit({ status: 'configuration-error', issues }, issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n'));
         return 2;
+      }
+      if (positional[0] === 'worktree' && positional[1] === 'gc') {
+        if (positional.length !== 2) {
+          const message = 'Usage: mill worktree gc [--json]';
+          emit({ status: 'usage-error', message }, message);
+          return 2;
+        }
+        const result = await gcWorktrees(cwd, config.project, { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
+        emit(result, [`Removed ${result.removed.length} worktrees.`, ...result.skipped.map(row => `#${row.ticket}: ${row.message}`)].join('\n'));
+        return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'worktree' && ['create', 'remove'].includes(positional[1] ?? '')) {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) {
+          const message = `Usage: mill worktree ${positional[1]} <n> [--json]`;
+          emit({ status: 'usage-error', message }, message);
+          return 2;
+        }
+        if (positional[1] === 'remove') {
+          const result = await removeWorktree(cwd, config.project, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
+          emit(result, `${result.status === 'ok' ? 'Removed worktree' : 'Tracker logjam for'} #${result.ticket}: ${result.path ?? '(none)'}`);
+          return result.status === 'ok' ? 0 : 1;
+        }
+        const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
+        emit(result, result.status === 'ok' ? result.path : `Ticket in logjam: ${result.path}`);
+        return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'status') {
         if (positional.length !== 2) {
