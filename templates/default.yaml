@@ -21,10 +21,8 @@ tracker:
 integration: main
 
 # The agent runtime that runs each role as a child process in the worktree.
-# One of: claude-code, pi, codex, custom. With custom, runtime_command is
-# required and must speak the mill outcome format on stdout.
+# One of: claude-code, pi, codex.
 runtime: claude-code
-# runtime_command: /path/to/my-runner
 
 # Model and effort per role. effort is one of: low, medium, high, max.
 # Model ids are the runtime's own. Pick a cheap model to write tests, a strong
