@@ -10,53 +10,59 @@ The factory takes feature-sized tickets and turns them into merged, tested code 
 - Runs unattended on the always-on Linux desktop.
 - The human user hands in features, never whole product briefs.
 - Visibility without involvement: every step shows on the ticket; nothing waits on the human user unless flagged.
-- Deterministic steps (git, tests, merge, graph checks) live in a CLI; agents decide what to do next, never how it is done.
-- No local database at first: the ticket system holds work state, git holds code state.
+- Deterministic steps (git, tests, merge, graph checks, every state change) live in a CLI; agents decide what to do next, never how it is done, and never write state.
+- Work is organised as runs: a batch of tickets drafted into a local run file in the millyard. The run file holds work state, git holds code state, and the ticket system is a write-only mirror for visibility.
 
 ## Architecture overview
 
-The orchestrator is a plain loop inside the Mill CLI, not an agent. It reads tickets and dispatches teams. Agents only ever run inside a team.
+The orchestrator is a plain loop inside the Mill CLI, not an agent. It reads the run file and dispatches teams. Agents only ever run inside a team.
 
 | Component | Role | Notes |
 | --- | --- | --- |
-| Orchestrator loop | Deterministic polling loop in the CLI; picks unblocked tickets, dispatches teams, reacts to results | Not an agent and not durable: restart at will, work state lives in ticket labels |
-| Mill CLI | Deterministic operations: tickets, worktrees, tests, rebase, merge | Used by the orchestrator and by the human user directly |
-| Ticket layer | Thin interface over GitHub issues (first) and GitLab issues (second) | Source of truth for work state, dependency graph, labels, reporter comments |
+| Millyard | A checkout of the repo on its integration branch, where `mill run` is invoked | Worktrees are cut from it; merges land in it; holds the run file |
+| Run file | `.mill/run.sqlite` in the millyard: which tickets, in what order, and each one's state | Written only by the CLI, written before the tracker mirror; source of truth for a run |
+| Orchestrator loop | Deterministic loop in the CLI; picks ready tickets from the run file, dispatches teams, reacts to results | Not an agent and not durable: restart at will, it continues from the run file |
+| Mill CLI | Deterministic operations: runs, tickets, worktrees, tests, rebase, merge, state changes | Used by the orchestrator, the draft skill, and the human user directly |
+| Ticket layer | Thin interface over GitHub issues (first) and GitLab issues (second) | Read at draft time for tickets and blocked-by links; written during a run as a mirror (reporter comments, logjam label, close) |
+| Sawmill plugin | Claude Code plugin with a `draft` skill | Picks and orders tickets with judgment, then calls `mill run draft`; never writes the run file itself |
 | Worktree per ticket | Isolated sandbox cut from integration | Provider pluggable; hooks run on create and remove |
-| Agent team | Test writers, implementer, reviewer | One team per ticket; each role runs as a process on a pluggable agent runtime (Pi, Codex, Claude Code) |
+| Agent team | Test writers, implementer, reviewer | One team per ticket; each role runs as a process on a pluggable agent runtime (Claude Code, Pi, Codex) with its own model and effort |
 | Integration branch | Auto-merge target for approved features | Sits in front of main; main promotion stays manual |
 
 Language: TypeScript on Node; the GitHub and GitLab SDKs are mature there.
 
 ## Feature lifecycle
 
-A ticket goes from filed to merged with no human step unless something fails or an agent asks.
+A ticket goes from drafted into a run to merged with no human step unless something fails or an agent asks.
 
-1. The human user files a feature ticket with any blocked-by links and likely touch points.
-2. Orchestrator queries the ticket layer for tickets whose dependencies are all closed.
-3. Orchestrator prefers tickets whose touch points do not overlap running work, but dispatches anyway if nothing else is ready.
+1. The human user files feature tickets with any blocked-by links, as the to-tickets skill already does.
+2. The human user drafts a run in the millyard: `/sawmill:draft all tickets with label xyz`, which calls `mill run draft`. The CLI reads the tickets and their blocked-by links from the tracker, orders them, and writes the run file.
+3. The human user starts `mill run`. Each pass, the loop dispatches every ready ticket (all blockers done in the run file) it has a free slot for, each in its own worktree; the blocked-by graph is the only ordering, and file collisions are left to the rebase gate.
 4. CLI creates a worktree from integration; post-create hook runs (DDEV, composer, etc.).
 5. Test writers turn the ticket into failing tests.
 6. Implementer makes the tests pass, running unit tests locally.
 7. Reviewer reviews the diff against the ticket; pass or bounce (see review rules).
 8. CLI rebases onto integration and re-runs tests; a conflict or failure is one more implementer round.
-9. CLI merges into integration; pre-remove hook runs; worktree removed.
-10. CLI reporter step posts a summary comment on the ticket and closes it.
+9. CLI pushes the branch and, when the backend has pipelines, waits for CI on that exact commit; a red pipeline is one more implementer round.
+10. CLI merges into integration; pre-remove hook runs; worktree removed.
+11. CLI reporter step posts a summary comment on the ticket and closes it.
 
-The CLI posts a reporter comment at each stage change, so the ticket thread is the full log of the run.
+The CLI writes every state change to the run file first and mirrors it to the tracker second, so `mill run status` shows the whole run from the file alone and the ticket thread is the full log for reading from anywhere.
 
 ## Module breakdown
 
-Four modules in one Node package, each exposed as CLI subcommands so the orchestrator and the human user use the same surface.
+Six modules in one Node package, each exposed as CLI subcommands so the orchestrator, the draft skill and the human user use the same surface.
 
 | Module | Responsibilities | Key CLI commands |
 | --- | --- | --- |
-| Ticket layer | Backend interface (GitHub first, GitLab second); list ready tickets via blocked-by graph; read touch points; set labels; post comments | `mill tickets ready`, `mill tickets label`, `mill tickets comment` |
-| Worktree manager | Create/remove worktrees via a provider; run bash hooks; rebase, test, merge into integration | `mill worktree create`, `mill worktree remove`, `mill integrate` |
-| Team runner | Spawn the three roles on the configured agent runtime inside a worktree; pass thin handoffs; enforce bounce cap; post reporter comments at each stage | `mill team run`, `mill team review` |
-| Orchestrator loop | Plain CLI daemon; polls ready tickets, dispatches teams respecting the overlap heuristic, handles results and logjam tagging | `mill orchestrate` |
+| Config | Load and validate `saws.yaml` and the machine config; create `saws.yaml` from the user default | `mill build` |
+| Run | Draft a run from the tracker into the run file; own every state change (file first, mirror second); the loop that dispatches ready tickets up to the concurrency limit and pauses when the environment is failing; status, answer, close, stop | `mill run draft`, `mill run`, `mill run once`, `mill run status`, `mill run answer`, `mill run close`, `mill run stop` |
+| Ticket layer | Backend interface (GitHub first, GitLab second); read tickets and blocked-by links at draft time; set labels; post comments; close; read pipeline status for a commit | `mill tickets label`, `mill tickets comment` |
+| Worktree manager | Create/remove worktrees via a provider; run bash hooks; rebase, test, wait for CI, merge into the millyard; garbage-collect worktrees of done tickets | `mill worktree create`, `mill worktree remove`, `mill worktree gc`, `mill integrate` |
+| Team runner | Spawn the three roles on the configured agent runtime inside a worktree; pass thin handoffs; enforce bounce cap; retry infrastructure failures without spending a bounce; honour stop; tee role logs; post reporter comments at each stage | `mill team run`, `mill team review`, `mill team tail` |
+| Reporter | Deterministic stage comments and the final summary, posted through the tracker mirror | called by the run and team modules |
 
-Project-level config lives in the repo (ticket backend, worktree provider, agent runtime, hooks directory, test command).
+Project-level config is `saws.yaml` at the repo root, committed (ticket backend, integration branch, worktree provider, agent runtime with a model and effort per role, hooks directory, test command and timeout, whether to wait for CI). `mill build` creates it by copying your default from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template the first time. Machine settings (concurrency, retry counts) live in `~/.config/sawmill/config.yaml`.
 
 ## Worktree providers and hooks
 
@@ -88,32 +94,44 @@ Review rounds stay cheap by scoping each re-review to the fix, with the post-reb
 - Retry cap: after the cap is hit, the ticket is labelled logjam and the team stops.
 - Rebase: before merge, rebase onto integration and re-run the full test suite.
 - Rebase conflict or test failure counts as one more implementer round, not an escalation.
-- Merge: on a clean rebase and green tests, auto-merge into integration.
+- CI: when the project says so, push the rebased branch and wait for the backend's pipeline on that exact commit. A red pipeline is one more implementer round. Merge never happens on a commit the pipeline did not pass.
+- Test timeout: the test command runs under a project-configured timeout, generous by default (30 minutes). A timeout is an environment failure, not a test failure, and is never handed to the reviewer as a finding.
+- Infrastructure failures: a role that cannot start, loses its provider, or loops on a missing tool returns an infrastructure outcome. The team runner retries it a bounded number of times without spending a bounce. If retries run out, the ticket gets logjam with reason environment. If several tickets hit infrastructure failures in a row, the orchestrator stops dispatching new work until a dispatch succeeds, so one outage does not logjam the whole board.
+- Merge: on a clean rebase, green tests and (when required) green CI, auto-merge into integration.
 - Main: promotion from integration to main is manual and outside the factory.
 - Accepted trade-off: a narrow re-review could miss a fix that breaks already-approved code; the rebase-and-test gate catches that.
+- Accepted trade-off: running independent tickets in parallel will sometimes produce merge conflicts; the rebase gate and one implementer round absorb them. No attempt is made to predict file collisions up front.
 
-The logjam label is also how agents ask questions, so the human user watches one queue. A question does not pause the team, it stops it: any changed files are committed as a WIP commit on the ticket branch and pushed, the reporter step comments the reason for the abort, and the worktree is left in place. The human user either finishes by hand or answers in a comment and removes the label; a fresh team then starts on the existing branch.
+Logjam is the one state that means a human must act: an agent question, an exhausted retry cap, an environment failure, a stopped ticket, or a tracker write that failed after three retries. It is mirrored to the tracker as a label so the human user can see it from anywhere. A question does not pause the team, it stops it: any changed files are committed as a WIP commit on the ticket branch and pushed, the reporter step comments the reason for the abort, and the worktree is left in place. The human user answers through the CLI: `mill run answer <n> "text"` posts the answer as a ticket comment and re-queues the ticket, so a fresh team starts on the existing branch; `mill run close <n>` marks a ticket done by hand; `mill run stop <n>` pulls a working ticket at its next stage boundary. The human user never edits the tracker to move a run.
 
 ## Build order and open questions
 
 Build bottom-up so each layer is testable by hand before the orchestrator depends on it.
 
-- [ ] Ticket layer with GitHub backend: ready-ticket query over blocked-by links, labels, comments
-- [ ] Worktree manager: default git provider, hooks, `mill integrate` (rebase, test, merge)
-- [ ] Team runner: spawn one role at a time on the agent runtime, then chain all three
-- [ ] Orchestrator loop as a plain CLI daemon
-- [ ] Provider override and a second ticket backend (GitLab)
-- [ ] Run one real feature end to end on an internal tool
+- [ ] `saws.yaml` loading and `mill build`
+- [ ] Run file and `mill run draft`, with the ticket layer interface written for both GitHub and GitLab and the GitHub implementation (tickets, native blocked-by links, labels, comments, close, pipeline status)
+- [ ] Worktree manager: default git provider, hooks, `mill worktree gc`, `mill integrate` (rebase, test with timeout, optional CI wait, merge into the millyard)
+- [ ] Team runner: Claude Code adapter first, one role at a time with a model and effort per role, infrastructure retries, role logs and `mill team tail`, then chain all three
+- [ ] `mill run` loop with status, answer, close, stop and the environment-failure pause
+- [ ] The `sawmill` Claude Code plugin with the `draft` skill
+- [ ] Provider override, Pi and Codex adapters, and the GitLab ticket backend
+- [ ] Run one real run on an internal tool (GitHub), then one client ticket into its integration branch (GitLab)
 
 **Decisions on the open questions**
 
-- Touch points: a "Touch points" section in the ticket body listing paths; no per-path labels.
-- Retry cap: three review rounds, then logjam.
-- logjam answers: the human user replies as a ticket comment and removes the label; the orchestrator picks it up on the next poll and dispatches a fresh team on the existing branch. A chat channel may be added later.
-- Questions stop, never pause: WIP commit, push, reporter comment with the reason, team exits.
-- Orchestrator and reporter are not agents: both are deterministic CLI code. The orchestrator is not durable; if it dies, restart it and it rebuilds its view from ticket labels.
-- Agent runtime is pluggable: Pi, Codex, or Claude Code, chosen per project in config. Each role is one process run with the worktree as its working directory.
-- Concurrency: one machine-wide setting, four tickets at a time.
+- State: the run file in the millyard is the source of truth for a run. Only the CLI writes it, and it writes the file before the tracker mirror. Agents never write state; that is what made the earlier orchestrators drift.
+- Tracker: read at draft time, write-only during a run (reporter comments, logjam label, close). The loop never polls it. A mirror write that fails three times puts the ticket in logjam with reason tracker and holds the payload; `mill run answer <n>` retries it.
+- Ordering: the blocked-by graph, resolved once at draft time from native links (GitHub) or the body section (GitLab), is the only ordering. Independent tickets run in parallel, each in its own worktree, up to the concurrency limit. File collisions are not predicted; the rebase gate resolves them.
+- Retry cap: three review rounds, then logjam. Infrastructure retries do not count.
+- logjam answers: `mill run answer <n> "text"` posts the comment, clears logjam and re-queues the ticket; a fresh team starts on the existing branch with the ticket thread in its handoff. `mill run close <n>` finishes a ticket by hand. `mill run stop <n>` pulls one. A chat channel may be added later.
+- Questions stop, never pause: WIP commit, push, reporter comment with the reason, team exits. Roles take the recommended option unless the choice is hard to undo, so questions are rare.
+- Orchestrator and reporter are not agents: both are deterministic CLI code. The orchestrator is not durable; if it dies, run `mill run` again and it continues from the run file, re-queuing any working ticket whose team is gone.
+- Agent runtime is pluggable: Claude Code first, then Pi and Codex, chosen per project in config, with a model and effort per role (test writers, implementer, reviewer). Each role is one child process of the vendor CLI with the worktree as its working directory. No relay, proxy, or control channel between the adapter and the vendor CLI.
+- Peeking: each role's stream is logged under `.mill/logs/<ticket>/`, `mill team tail <n>` follows it, and the session id is recorded so a finished role can be reopened with the vendor's resume command.
+- CI: per project, `mill integrate` waits for the backend pipeline on the exact rebased commit before merging. Off by default for repos with no pipeline.
+- Test timeout: per project, default 30 minutes; a timeout is an environment failure.
+- Worktree cleanup: `mill worktree gc` removes worktrees whose tickets are done, running the pre-remove hook for each. Logjam tickets keep their worktree.
+- Concurrency: one machine-wide setting, two tickets at a time by default, until the Claude plan proves it can take more.
 - Agents run as plain processes; worktrees and DDEV provide the isolation.
 
 ## Glossary
@@ -123,34 +141,47 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Term | Meaning |
 | --- | --- |
 | Blocked-by | A link from one ticket to another it depends on; a ticket is not ready until every blocked-by ticket is closed |
-| Human user | Whoever files tickets and answers logjam; the only person the factory ever waits on |
+| Human user | Whoever files tickets, drafts runs and answers logjam; the only person the factory ever waits on |
+| Millyard | The checkout of the repo on its integration branch where `mill run` is invoked; worktrees are cut from it, merges land in it, and it holds the run file |
+| Run | A batch of tickets drafted into a run file and executed by `mill run` until every ticket is done or logjam; one per millyard at a time |
+| Run file | `.mill/run.sqlite` in the millyard: the tickets in a run, their blocked-by edges and order, each one's state (queued, blocked, working, done, logjam), reason, bounces, session ids, and any tracker writes still pending; written only by the CLI |
 | Bounce | A reviewer sending a change back to the implementer with feedback; each bounce costs one retry |
-| Agent runtime | The pluggable command that runs one role as a process inside the worktree; Pi, Codex, or Claude Code |
+| Agent runtime | The pluggable command that runs one role as a process inside the worktree; Claude Code, Pi, or Codex, with a model and effort configured per role |
+| CI gate | When enabled for a project, `mill integrate` waits for the backend pipeline on the exact rebased commit; red is one more implementer round and merge never happens on an unpassed commit |
 | Hook | A per-project bash script run around worktree creation or removal (`post-worktree-create`, `pre-worktree-remove`) |
 | Implementer | Team role that writes code until the tests pass |
+| Infrastructure outcome | A role result meaning the agent could not do its work for environment reasons (runtime failed to start, provider down, tool loop, test timeout); retried without spending a bounce, never a reviewer finding |
 | Integration branch | The branch approved features auto-merge into; sits in front of main |
 | Main | The release branch; promotion from integration to main is manual and outside the factory |
 | Mill CLI | The `mill` command-line tool holding every deterministic step (tickets, worktrees, tests, rebase, merge, reporter comments); used by the orchestrator and by the human user directly |
-| `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite, and merge on green |
-| `mill orchestrate` | Start the orchestrator loop |
+| `mill build` | Create `saws.yaml` in the millyard from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template if missing; refuses to overwrite without `--force` |
+| `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite under the timeout, wait for CI when the project requires it, and merge on green |
+| `mill run` | Start the orchestrator loop on the run file in the current millyard; `mill run once` does a single dispatch pass |
+| `mill run answer` | Post the human user's answer as a ticket comment, flush any held tracker writes, clear logjam and re-queue the ticket |
+| `mill run close` | Mark a ticket done by hand and close it in the tracker; its dependents become ready |
+| `mill run draft` | Read tickets and blocked-by links from the tracker for a label, spec or list, order them, and write the run file |
+| `mill run status` | Print the run from the run file alone: done, working, queued, blocked, logjam, with detail |
+| `mill run stop` | Stop a working ticket at its next stage boundary with a WIP commit; it goes to logjam with reason stopped |
 | `mill team review` | Run the reviewer against a worktree's diff; returns pass or bounce feedback |
 | `mill team run` | Spawn the three-role team for a ticket inside its worktree |
+| `mill team tail` | Follow the live log of the role currently running for a ticket |
 | `mill tickets comment` | Post a comment on a ticket; how the reporter step logs progress |
 | `mill tickets label` | Add or remove a label on a ticket, such as logjam |
-| `mill tickets ready` | List open tickets whose blocked-by dependencies are all closed, with their touch points |
 | `mill worktree create` | Create a ticket's worktree through the configured provider, run the post-create hook, print the path |
+| `mill worktree gc` | Remove every worktree whose ticket is closed, running the pre-remove hook for each |
 | `mill worktree remove` | Run the pre-remove hook, then tear down a ticket's worktree through the provider |
-| logjam | Ticket label meaning a human must act: an agent question or an exhausted retry cap; the human user answers with a comment and removes the label |
-| Orchestrator | The plain CLI loop that picks ready tickets and dispatches teams; not an agent, not durable |
+| logjam | Run-file state meaning a human must act: an agent question, an exhausted retry cap, an environment failure, a stopped ticket, or a failed tracker write; mirrored to the tracker as a label; cleared with `mill run answer` |
+| Orchestrator | The plain CLI loop (`mill run`) that picks ready tickets from the run file and dispatches teams; not an agent, not durable |
 | Provider | The pluggable script that creates and removes worktrees; default is plain git |
 | Ready ticket | An open ticket whose blocked-by dependencies are all closed |
-| Rebase gate | The mandatory rebase onto integration plus full test run before merge |
+| Rebase gate | The mandatory rebase onto integration plus full test run before merge; also where merge conflicts between parallel tickets are resolved |
 | Reporter step | The CLI step that posts progress and the final summary as ticket comments; run by the team runner at each stage change |
-| Retry cap | Maximum review bounces per ticket (three) before it is labelled logjam |
+| Retry cap | Maximum review bounces per ticket (three) before it is labelled logjam; infrastructure retries do not count |
 | Reviewer | Team role that checks the diff against the ticket and passes or bounces it |
-| Sawmill | This suite: orchestrator, Mill CLI, ticket layer, and team runner together |
+| `saws.yaml` | The committed project config at the repo root: tracker, integration branch, provider, runtime, a model and effort per role, hooks, tests, CI, labels |
+| Sawmill | This suite: orchestrator, Mill CLI, ticket layer, team runner and the `sawmill` plugin together |
 | Team | The three agents (test writers, implementer, reviewer) spawned for one ticket |
 | Test writers | Team role that turns the ticket into failing tests before any code is written |
+| Test timeout | Per-project bound on the test command (default 30 minutes); hitting it is an infrastructure outcome, not a failed test |
 | Ticket | A feature-sized unit of work in GitHub or GitLab issues; the source of truth for work state |
-| Touch points | Paths a ticket is likely to change, listed in a "Touch points" section of its body; used to avoid dispatching overlapping tickets |
 | Worktree | A git worktree cut from integration for one ticket; the team's isolated sandbox |
