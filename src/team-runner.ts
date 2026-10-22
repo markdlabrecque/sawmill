@@ -117,13 +117,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     };
     const stop = async (outcome: Outcome): Promise<TeamResult> => {
       const kind = outcome.outcome;
-      const reason = kind === 'question' ? 'question' : kind === 'bounce' ? 'review-bounce' : 'environment';
-      const detail = kind === 'question' ? outcome.question : kind === 'bounce' ? outcome.feedback : kind === 'infrastructure' ? outcome.error : 'Unexpected role outcome.';
+      const reason = kind === 'question' ? 'question' : kind === 'bounce' ? 'review-bounce' : kind === 'no-change' ? 'not-reproduced' : 'environment';
+      const detail = kind === 'question' ? outcome.question : kind === 'bounce' ? outcome.feedback : kind === 'infrastructure' ? outcome.error
+        : kind === 'no-change' ? `Repair round (${progress.repair?.source ?? 'unknown'}) ended with no change: the failure could not be reproduced in the ticket worktree. A person must decide how to proceed.\n\n${outcome.summary}`
+          : 'Unexpected role outcome.';
       const row = current();
       if (readRun(cwd).run.id === snapshot.run.id && row && row.state !== 'logjam' && (!row.completion || (kind === 'infrastructure' && row.completion === 'merged'))) await transition(cwd, project, tracker, number, {
         state: 'logjam', reason, stage, team: progress,
         bounces: row.bounces + (kind === 'bounce' ? 1 : 0),
-        report: { stage: kind === 'bounce' ? 'review-bounce' : kind === 'question' ? 'aborted' : 'infrastructure', details: detail, reason, reachedStage: stage },
+        report: { stage: kind === 'bounce' ? 'review-bounce' : kind === 'question' || kind === 'no-change' ? 'aborted' : 'infrastructure', details: detail, reason, reachedStage: stage },
       }, [], options);
       const trackerFailed = current()?.reason === 'tracker';
       return { outcome: trackerFailed || kind === 'infrastructure' ? 'infrastructure' : 'aborted', ticket: number, stage,
@@ -294,6 +296,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        if (result.outcome.outcome === 'no-change') {
+          checkStop(cwd, number);
+          // Only an ordinary repair can be left unchanged; a conflict repair must rebase.
+          if (role !== 'implementer' || !progress.repair || progress.repair.source === 'rebase-conflict') return await stop(infrastructure('A no-change outcome is only valid in a repair round.'));
+          if (await git(path, 'rev-parse', 'HEAD') !== beforeRole || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('A no-change repair must leave HEAD and the worktree untouched; work retained.');
+          return await stop(result.outcome);
+        }
         if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
         if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
         if (role === 'test-writers') {

@@ -2,6 +2,8 @@ import type { Effort, Role } from './config.js';
 
 export type Outcome =
   | { outcome: 'done'; summary: string }
+  /** Implementer repair round: the failure could not be reproduced, so nothing was committed. */
+  | { outcome: 'no-change'; summary: string }
   | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[] }
   | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[] }
   | { outcome: 'question'; question: string }
@@ -66,6 +68,7 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
   if (v.cases !== undefined && (!Array.isArray(v.cases) || !v.cases.every(c => c && typeof c === 'object' && nonempty(c.case) && ['completed', 'broken'].includes(c.result) && (c.result !== 'broken' || nonempty(c.step))))) return bad();
   switch (v.outcome) {
     case 'done': if (role === 'reviewer' || !nonempty(v.summary)) return bad(); break;
+    case 'no-change': if (role !== 'implementer' || !nonempty(v.summary)) return bad(); break;
     case 'pass': case 'bounce':
       if (role !== 'reviewer' || (v.outcome === 'bounce' && !nonempty(v.feedback))) return bad();
       break;

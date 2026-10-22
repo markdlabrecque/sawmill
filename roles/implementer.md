@@ -31,6 +31,8 @@ The team runner diffs the test writers' files against the tree after you finish.
 
 When the handoff carries reviewer feedback, a pipeline log, or a conflict: address exactly that, as its own commit. The reviewer will see only that commit's diff plus their own feedback. Do not bundle other changes into it.
 
+If a failed test run or CI log does not reproduce in your worktree and the test command passes, do not invent a fix. Leave HEAD and the worktree untouched and finish with `no-change`, quoting the passing test result in the summary. A person will look at it.
+
 ## Rules
 
 - Do not add dependencies unless the ticket asks for one.
@@ -43,6 +45,10 @@ End with exactly one fenced block tagged `mill-outcome`. Nothing after it.
 
 ```mill-outcome
 {"outcome": "done", "summary": "Implemented X in src/foo.ts; 3 new tests pass, suite green (142 tests). Note: tests/legacy_test.ts was already failing before my change."}
+```
+
+```mill-outcome
+{"outcome": "no-change", "summary": "Fix round only: could not reproduce the reported failure. npm test passes: 142 tests, 0 failures."}
 ```
 
 ```mill-outcome
