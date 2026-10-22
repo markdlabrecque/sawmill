@@ -136,7 +136,7 @@ The local SQLite run is authoritative. Tracker comments and labels mirror it. St
 
 ## Everyday commands
 
-Run these from the millyard root. Drafting and dispatch require a clean checkout on the configured integration branch.
+Run these from the millyard root. Drafting and dispatch require a clean checkout on the configured integration branch. `mill --help` lists every command, and `mill <command> --help` shows its usage; both work without a project config.
 
 | Command | Purpose |
 | --- | --- |
