@@ -107,7 +107,8 @@ export async function integrate(cwd: string, project: ProjectConfig, number: num
       await git(ticket.worktree, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
       progress.pushedHead = head;
       await advance('pr-opened');
-      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements https://${project.tracker.host ?? 'github.com'}/${project.tracker.repo}/issues/${number}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
+      const issueUrl = `https://${project.tracker.host ?? (project.tracker.backend === 'gitlab' ? 'gitlab.com' : 'github.com')}/${project.tracker.repo}/${project.tracker.backend === 'gitlab' ? '-/' : ''}issues/${number}`;
+      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
       const readPipeline = async () => {

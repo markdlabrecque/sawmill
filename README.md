@@ -26,7 +26,7 @@ Both configs are validated together. Every issue names its source file and key. 
 
 Exit codes are `0` for success, `1` for overwrite refusal or an operation failure, and `2` for usage or configuration errors. A first build normally exits `2` after creating the files because required settings need filling in. `--json` emits one JSON object on stdout, with a `status` and, for validation results, `issues` and build `notes`.
 
-This initial package implements `build`. Other command groups reject invalid configuration and otherwise report that they are not implemented yet.
+GitLab projects use the same draft, mirror/recovery, and integration commands. See [GitLab setup and spec membership](docs/gitlab.md) for `glab` configuration, CI behavior, and the pending live smoke check.
 
 Development checks:
 
