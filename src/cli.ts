@@ -20,6 +20,7 @@ import type { ReportStage } from './reporter.js';
 import { answerTicket, closeTicket, requestStop, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
 import { formatRun, readRun, type MirrorWrite } from './run-store.js';
+import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 
 export interface CliOptions {
   runtime?: Runtime;
@@ -47,6 +48,27 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const emit = (value: object, message: string) => stdout((json ? JSON.stringify(value) : message) + '\n');
   try {
     const positional = args.filter(arg => arg !== '--json');
+    if (positional.includes('--help') || positional.includes('-h')) {
+      const words = positional.filter(arg => arg !== '--help' && arg !== '-h');
+      const text = helpText(words);
+      if (text === undefined) {
+        const message = unknownCommand(words);
+        emit({ status: 'usage-error', message }, message);
+        return 2;
+      }
+      stdout(text + '\n');
+      return 0;
+    }
+    if (positional.length === 1 && positional[0] === '--version') {
+      const current = version();
+      emit({ version: current }, current);
+      return 0;
+    }
+    if (!findCommand(positional)) {
+      const message = positional.length ? unknownCommand(positional) : shortHelp();
+      emit({ status: 'usage-error', message }, message);
+      return 2;
+    }
     if (positional[0] !== 'build') {
       const config = await loadConfig(cwd, home);
       const { issues } = config;
@@ -55,18 +77,18 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return 2;
       }
       if (positional[0] === 'team' && positional[1] === 'tail') {
-        if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill team tail <n> [--no-follow] [--json]', 2);
+        if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);
         await tailTicket(cwd, Number(positional[2]), { json, follow: positional[3] !== '--no-follow', stdout, signal: options.signal });
         return 0;
       }
       if (positional[0] === 'team' && positional[1] === 'review') {
-        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill team review <n> [--json]', 2);
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team review'), 2);
         const result = await reviewTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { ...options, home });
         emit(result, JSON.stringify(result.outcome));
         return result.status === 'ok' && result.outcome.outcome === 'pass' ? 0 : 1;
       }
       if (positional[0] === 'team' && positional[1] === 'run') {
-        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill team run <n> [--json]', 2);
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team run'), 2);
         const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
@@ -75,7 +97,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return result.outcome === 'passed' ? 0 : 1;
       }
       if (positional[0] === 'integrate') {
-        if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError('Usage: mill integrate <n> [--json]', 2);
+        if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError(usage('integrate'), 2);
         const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
@@ -85,7 +107,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'worktree' && positional[1] === 'gc') {
         if (positional.length !== 2) {
-          const message = 'Usage: mill worktree gc [--json]';
+          const message = usage('worktree gc');
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
@@ -95,7 +117,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'worktree' && ['create', 'remove'].includes(positional[1] ?? '')) {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) {
-          const message = `Usage: mill worktree ${positional[1]} <n> [--json]`;
+          const message = usage(`worktree ${positional[1]}`);
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
@@ -110,7 +132,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'run' && positional[1] === 'status') {
         if (positional.length !== 2) {
-          const message = 'Usage: mill run status [--json]';
+          const message = usage('run status');
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
@@ -124,14 +146,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'stop') {
-        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill run stop <n> [--json]', 2);
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run stop'), 2);
         const number = Number(positional[2]);
         requestStop(cwd, config.project, number);
         emit({ status: 'stop-requested', ticket: number }, `Stop requested for #${number}; the active stage will finish safely.`);
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
-        if (positional.length !== 2) throw new CliError('Usage: mill run once [--json]', 2);
+        if (positional.length !== 2) throw new CliError(usage('run once'), 2);
         const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}.`,
           ...result.started.map(row => `#${row.ticket}: worker ${row.worker.pid}`),
@@ -139,9 +161,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'tickets' && ['comment', 'label'].includes(positional[1] ?? '')) {
-        const usage = `Usage: mill tickets ${positional[1]} <n> ${positional[1] === 'comment' ? '<text> [--stage <stage>]' : '<label> [--remove]'} [--json]`;
+        const message = usage(`tickets ${positional[1]}`);
         if (!(positional.length === 4 || (positional[1] === 'comment' && positional.length === 6 && positional[4] === '--stage') || (positional[1] === 'label' && positional.length === 5 && positional[4] === '--remove')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2])) || !positional[3]?.trim()) {
-          emit({ status: 'usage-error', message: usage }, usage);
+          emit({ status: 'usage-error', message }, message);
           return 2;
         }
         const tracker = ticketWriter(options, config.project, cwd);
@@ -157,9 +179,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && ['close', 'answer'].includes(positional[1] ?? '')) {
-        const usage = `Usage: mill run ${positional[1]} <n>${positional[1] === 'answer' ? ' [text]' : ''} [--json]`;
+        const message = usage(`run ${positional[1]}`);
         if (positional.length < 3 || positional.length > (positional[1] === 'answer' ? 4 : 3) || (positional[3] !== undefined && !positional[3].trim()) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) {
-          emit({ status: 'usage-error', message: usage }, usage);
+          emit({ status: 'usage-error', message }, message);
           return 2;
         }
         const writer = ticketWriter(options, config.project, cwd);
@@ -173,7 +195,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       if (positional[0] === 'run' && positional[1] === 'draft') {
         const parsed = parseDraftArgs(positional.slice(2));
         if (!parsed) {
-          const message = 'Choose exactly one non-empty selector. Usage: mill run draft (<numbers...> | --label <label> | --spec <number>) [--replace] [--json]';
+          const message = `Choose exactly one non-empty selector. ${usage('run draft')}`;
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
@@ -182,12 +204,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit(snapshot, formatRun(snapshot));
         return 0;
       }
-      const message = 'Unknown or not yet implemented command. Usage: mill build [--force] [--json]';
+      const message = unknownCommand(positional);
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
     if (positional.slice(1).some(arg => arg !== '--force')) {
-      const message = 'Usage: mill build [--force] [--json]';
+      const message = usage('build');
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
