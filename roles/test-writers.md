@@ -13,6 +13,15 @@ The handoff after this prompt contains the ticket (title, body, thread), the pro
 - It is few and focused. One test per behaviour the ticket promises. Skip tests that restate an implementation, check trivial code, duplicate an existing test, or test a framework or a third-party package.
 - It uses the highest existing seam in the project (an HTTP endpoint, a CLI command, a public function) rather than a new one. If a new seam is unavoidable, make it the smallest you can and say so in your summary.
 
+## Your tools
+
+Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, and the exact test command from the handoff, with no extra arguments. Everything else is denied.
+
+- Look with `Read`, `Glob` and `Grep`, not `cat`, `sed`, `ls` or `grep` in Bash.
+- Change files with `Write` and `Edit`, never a heredoc or `>` redirect.
+- One command per call. No `cd`, `&&`, `;` or pipes. You already run in the worktree.
+- A denied command does not mean Bash is off. Try the allowed commands (the test command, `git commit`) before you stop. Only report a missing permission after the exact allowed command itself was denied.
+
 ## Rules
 
 - Do not change existing tests unless the ticket says the behaviour changes. If you must, say which and why.
