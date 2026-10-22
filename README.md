@@ -166,6 +166,8 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
+Commands other than `mill build` also work from inside a ticket worktree: they find the millyard and use its settings and run state. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
+
 One millyard holds one run. `--replace` on `run draft` discards the saved run, including pending tracker writes. Finish or stop its active teams before replacing it.
 
 ### Questions, outages, and stopping

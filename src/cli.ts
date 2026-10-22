@@ -22,6 +22,7 @@ import { answerTicket, closeTicket, requestStop, transition } from './transition
 import { parseDraftArgs } from './selection.js';
 import { formatRun, readRun, type MirrorWrite } from './run-store.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
+import { resolveMillyard } from './millyard.js';
 
 export interface CliOptions {
   runtime?: Runtime;
@@ -46,7 +47,8 @@ export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: s
 }
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
-  const { cwd = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text) } = options;
+  const { cwd: invokedIn = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text) } = options;
+  const cwd = args.find(arg => arg !== '--json') === 'build' ? invokedIn : resolveMillyard(invokedIn);
   const json = args.includes('--json');
   const emit = (value: object, message: string) => stdout((json ? JSON.stringify(value) : message) + '\n');
   try {
