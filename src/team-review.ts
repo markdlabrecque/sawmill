@@ -27,6 +27,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   if (!ticket.provisioned) throw new CliError('Worktree setup has not completed; retry mill worktree create before review.');
   requireBrowserCapability(project, ticket);
   const progress: TeamProgress = { ...ticket.team, next: 'reviewer', outputs: { ...ticket.team.outputs } };
+  delete progress.approvedHead;
   const stopped = async () => {
     const result = await stopAtBoundary(cwd, project, writer, number, 'reviewer', 'reviewer', progress, options);
     return { status: 'logjam', ticket: number, outcome: result.outcome === 'stopped' ? { outcome: 'stopped' as const } : infrastructure(result.error ?? 'Stop preservation failed.') };
@@ -57,9 +58,11 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let diff = '';
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
   let head = '';
+  let committed = false;
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
+    committed = !(await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
     diff = progress.reviewedHead && progress.repair
       ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
       : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;
@@ -86,6 +89,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   }
   if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') {
     progress.reviewedHead = head;
+    if (outcome.outcome === 'pass' && committed) progress.approvedHead = head;
     progress.next = outcome.outcome === 'pass' ? 'integrate' : 'implementer';
     delete progress.question;
     delete progress.stop;

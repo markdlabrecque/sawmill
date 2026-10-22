@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { runCli } from '../src/cli.js';
 import test, { type TestContext } from 'node:test';
 import { millyard } from './helpers.js';
@@ -45,12 +44,15 @@ async function approved(t: TestContext, ci = 'none') {
   const path = join(y.root, '7');
   await writeFile(join(path, 'feature.test.ts'), '// Tested change\n');
   y.git('-C', path, 'add', '.'); y.git('-C', path, 'commit', '-m', 'Implement ticket');
-  // Seed only the review boundary; all integration/recovery behavior enters through the CLI.
-  const approve = () => {
-    const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
-    try { db.exec("UPDATE tickets SET stage='review-pass', session_ids='{\"reviewer\":[\"fixture-review\"]}' WHERE number=7"); } finally { db.close(); }
+  const approve = async () => {
+    let stdout = '';
+    const code = await runCli(['team', 'review', '7', '--json'], {
+      cwd: y.cwd, home: y.home, sleep: async () => {}, stdout: value => { stdout += value; },
+      runtime: { async run(_request, sink) { sink.session('fixture-review'); return { outcome: { outcome: 'pass' } }; } },
+    });
+    assert.equal(code, 0, stdout);
   };
-  approve();
+  await approve();
   const hostState = async () => JSON.parse(await readFile(y.statePath, 'utf8'));
   const changeHost = async (changes: object) => y.save({ ...await hostState(), ...changes });
   return { ...y, path, approve, hostState, changeHost };
@@ -179,11 +181,12 @@ test('GitLab integrate opens then reuses a refused MR and merges the expected he
 
 const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') => ({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
 
-test('GitLab ci wait reports a later-page required descendant failure and never merges', async t => {
+test('GitLab ci wait reports a later-page failed native trigger and its descendant and never merges', async t => {
   const y = await approved(t, 'wait');
+  // A failed downstream gates through its native trigger status, not its existence.
   await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(2, 'success', 'HEAD_SHA', 'parent_pipeline'), pipeline(1, 'failed', 'HEAD_SHA', 'parent_pipeline')], triggers: { 3: [
     { id: 31, allow_failure: true, status: 'success' }, { id: 32, allow_failure: true, status: 'success' },
-    { id: 33, allow_failure: false, status: 'success', downstream_pipeline: pipeline(1, 'failed') },
+    { id: 33, allow_failure: false, status: 'failed', downstream_pipeline: pipeline(1, 'failed') },
   ] } });
   const result = await y.cli('integrate', '7', '--json');
   assert.equal(result.code, 1, result.stdout);
@@ -200,7 +203,7 @@ test('GitLab waits through absent and pending pipelines, reuses the MR after rep
   const y = await approved(t, 'wait');
   await y.changeHost({ pipelines: [pipeline(1, 'failed')] });
   assert.equal((await y.cli('integrate', '7')).code, 1);
-  await writeFile(join(y.path, 'repair'), 'Fix CI\n'); y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Repair CI'); y.approve();
+  await writeFile(join(y.path, 'repair'), 'Fix CI\n'); y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Repair CI'); await y.approve();
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('merge_method: squash', 'merge_method: merge'));
   await y.changeHost({ pipelines: [] });
   let stdout = ''; const delays: number[] = [];
@@ -219,14 +222,14 @@ test('GitLab waits through absent and pending pipelines, reuses the MR after rep
   assert.deepEqual(merges[0].body, { squash: false, sha: (await y.status()).tickets[0].integration.mergedHead, should_remove_source_branch: false });
 });
 
-test('GitLab never authorizes merge from stale, malformed, canceled, skipped, or failed child pipelines', async t => {
+test('GitLab never authorizes merge from stale, malformed, canceled, skipped, or natively failed pipelines', async t => {
   for (const [status, head, source, outcome] of [
     ['success', 'a'.repeat(40), 'push', 'infrastructure'], ['unknown', 'HEAD_SHA', 'push', 'infrastructure'],
     ['canceled', 'HEAD_SHA', 'push', 'ci-failed'], ['skipped', 'HEAD_SHA', 'push', 'ci-failed'],
     ['failed', 'HEAD_SHA', 'parent_pipeline', 'ci-failed'],
   ]) {
     const y = await approved(t, 'wait');
-    await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(4, status!, head, source)], ...(source === 'parent_pipeline' ? { triggers: { 3: [{ id: 31, allow_failure: false, status: 'success', downstream_pipeline: pipeline(4, status!, head, source) }] } } : {}) });
+    await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(4, status!, head, source)], ...(source === 'parent_pipeline' ? { triggers: { 3: [{ id: 31, allow_failure: false, status: 'failed', downstream_pipeline: pipeline(4, status!, head, source) }] } } : {}) });
     const result = await y.cli('integrate', '7', '--json');
     assert.equal(result.code, 1, result.stdout); assert.equal(JSON.parse(result.stdout).outcome, outcome, result.stdout);
     assert.ok(!(await y.requests()).some(request => request.endpoint.endsWith('/merge')));
@@ -264,7 +267,7 @@ test('GitLab follows Link pagination when optional numeric headers are absent', 
   const y = await approved(t, 'wait');
   await y.changeHost({ linkPagination: true, pipelines: [pipeline(3, 'success'), pipeline(1, 'failed', 'HEAD_SHA', 'parent_pipeline')], triggers: { 3: [
     { id: 31, allow_failure: true, status: 'success' }, { id: 32, allow_failure: true, status: 'success' },
-    { id: 33, allow_failure: false, status: 'success', downstream_pipeline: pipeline(1, 'failed') },
+    { id: 33, allow_failure: false, status: 'failed', downstream_pipeline: pipeline(1, 'failed') },
   ] } });
   const result = await y.cli('integrate', '7', '--json');
   assert.equal(result.code, 1, result.stdout);
@@ -421,12 +424,12 @@ test('GitLab uses the current MR attempt despite historical and unrelated failur
   assert.equal((await y.status()).tickets[0].integration.pipeline.state, 'passed');
 });
 
-test('GitLab validates current required descendants including native URL-only pipeline identities', async t => {
+test('GitLab honors native mirrored trigger status and validates URL-only descendants', async t => {
   for (const status of ['running', 'failed', 'success']) {
     const y = await approved(t, 'wait');
     const child = pipeline(10, status, 'HEAD_SHA', 'parent_pipeline');
-    await y.changeHost({ pipelines: [pipeline(3, 'success'), child], triggers: { 3: [
-      { id: 31, allow_failure: false, status: 'success', downstream_pipeline: { ...child, project_id: null } },
+    await y.changeHost({ pipelines: [pipeline(3, status), child], triggers: { 3: [
+      { id: 31, allow_failure: false, status, downstream_pipeline: { ...child, project_id: null } },
     ] } });
     let stdout = '';
     const code = await runCli(['integrate', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: x => { stdout += x; }, sleep: async () => { throw new Error('pending descendant blocks merge'); } });
@@ -437,13 +440,14 @@ test('GitLab validates current required descendants including native URL-only pi
   }
 });
 
-test('GitLab checks required descendants recursively and rejects changed child SHAs', async t => {
+test('GitLab diagnoses descendants recursively while honoring native mirroring and rejecting changed child SHAs', async t => {
   for (const mode of ['optional-failure', 'required-grandchild', 'wrong-child-sha']) {
     const y = await approved(t, 'wait');
-    const child = pipeline(10, 'success', 'b'.repeat(40), 'parent_pipeline');
+    const nativeStatus = mode === 'required-grandchild' ? 'failed' : 'success';
+    const child = pipeline(10, nativeStatus, 'b'.repeat(40), 'parent_pipeline');
     const grandchild = pipeline(11, 'failed', 'c'.repeat(40), 'parent_pipeline');
-    await y.changeHost({ pipelines: [pipeline(3, 'success'), child, grandchild], triggers: {
-      3: [{ id: 31, allow_failure: false, status: 'success', downstream_pipeline: mode === 'wrong-child-sha' ? { ...child, sha: 'd'.repeat(40) } : child }],
+    await y.changeHost({ pipelines: [pipeline(3, nativeStatus), child, grandchild], triggers: {
+      3: [{ id: 31, allow_failure: false, status: nativeStatus, downstream_pipeline: mode === 'wrong-child-sha' ? { ...child, sha: 'd'.repeat(40) } : child }],
       10: [{ id: 32, allow_failure: mode === 'optional-failure', status: 'failed', downstream_pipeline: grandchild }],
     } });
     const result = await y.cli('integrate', '7', '--json');
@@ -455,4 +459,87 @@ test('GitLab checks required descendants recursively and rejects changed child S
     }
     if (mode === 'wrong-child-sha') assert.match(JSON.parse(result.stdout).message, /identity or head changed/);
   }
+});
+
+test('GitLab native green default trigger passes despite a failed non-gating child', async t => {
+  const y = await approved(t, 'wait');
+  const child = pipeline(10, 'failed', 'b'.repeat(40), 'parent_pipeline');
+  await y.changeHost({ pipelines: [pipeline(3, 'success'), child], triggers: { 3: [
+    { id: 31, allow_failure: false, status: 'success', downstream_pipeline: child },
+  ] } });
+  const result = await y.cli('integrate', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.integration.pipeline.state, 'passed');
+  assert.match(row.integration.pipeline.diagnostics, /Pipeline 10: failed/);
+  assert.equal((await y.hostState()).mergeCount, 1);
+});
+
+test('GitLab intentionally skipped triggers do not fail a green current MR pipeline', async t => {
+  const y = await approved(t, 'wait');
+  await y.changeHost({ pipelines: [pipeline(3, 'success')], triggers: { 3: [
+    { id: 31, allow_failure: false, status: 'skipped', downstream_pipeline: null },
+  ] } });
+  const result = await y.cli('integrate', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.hostState()).mergeCount, 1);
+  assert.match((await y.status()).tickets[0].integration.pipeline.diagnostics, /Trigger 31: skipped/);
+});
+
+// Native YAML semantics are visible in statuses, not a strategy field in the API.
+// https://docs.gitlab.com/ci/yaml/#triggerstrategy
+for (const [name, parent, trigger, childStatus, optional, expected] of [
+  ['default child still running', 'success', 'success', 'running', false, 'passed'],
+  ['default child awaits manual action', 'success', 'success', 'manual', false, 'passed'],
+  ['mirror failed', 'failed', 'failed', 'failed', false, 'failed'],
+  ['mirror pending', 'running', 'running', 'running', false, 'pending'],
+  ['mirror blocking manual', 'manual', 'manual', 'manual', false, 'pending'],
+  ['depend blocking manual', 'running', 'running', 'manual', false, 'pending'],
+  ['depend failed', 'failed', 'failed', 'failed', false, 'failed'],
+  ['required trigger failed before parent catches up', 'success', 'failed', 'failed', false, 'failed'],
+  ['required trigger pending before parent catches up', 'success', 'pending', 'pending', false, 'pending'],
+  ['parent remains failed with successful triggers', 'failed', 'success', 'success', false, 'failed'],
+  ['parent remains pending with successful triggers', 'running', 'success', 'success', false, 'pending'],
+  ['optional failed trigger', 'success', 'failed', 'failed', true, 'passed'],
+  ['optional manual trigger', 'success', 'manual', null, true, 'passed'],
+  ['required manual trigger', 'manual', 'manual', null, false, 'pending'],
+  ['failed trigger could not create child', 'failed', 'failed', null, false, 'failed'],
+] as const) {
+  test(`GitLab native gate: ${name}`, async t => {
+    const y = await approved(t, 'wait');
+    const child = childStatus ? pipeline(10, childStatus, 'HEAD_SHA', 'parent_pipeline') : null;
+    await y.changeHost({ pipelines: [pipeline(3, parent), ...(child ? [child] : [])], triggers: { 3: [
+      { id: 31, allow_failure: optional, status: trigger, downstream_pipeline: child },
+    ] } });
+    let stdout = '', waits = 0;
+    const code = await runCli(['integrate', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {
+      waits++;
+      assert.equal((await y.hostState()).mergeCount, undefined);
+      throw new Error('Fixture ends the pending wait without granting approval');
+    } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.pipeline.state, expected, stdout);
+    assert.equal(result.outcome, expected === 'passed' ? 'merged' : expected === 'failed' ? 'ci-failed' : 'infrastructure', stdout);
+    assert.equal(code, expected === 'passed' ? 0 : 1, stdout);
+    assert.equal(waits, expected === 'pending' ? 1 : 0);
+    assert.equal((await y.hostState()).mergeCount ?? 0, expected === 'passed' ? 1 : 0);
+    if (child) assert.match(result.pipeline.diagnostics, new RegExp(`Pipeline 10: ${childStatus}`));
+  });
+}
+
+test('GitLab nested non-gating failures remain diagnostic even when their own triggers are required', async t => {
+  const y = await approved(t, 'wait');
+  const child = pipeline(10, 'failed', 'HEAD_SHA', 'parent_pipeline');
+  const grandchild = pipeline(11, 'failed', 'HEAD_SHA', 'parent_pipeline');
+  await y.changeHost({ pipelines: [pipeline(3, 'success'), child, grandchild], triggers: {
+    3: [{ id: 31, allow_failure: false, status: 'success', downstream_pipeline: child }],
+    10: [{ id: 32, allow_failure: false, status: 'failed', downstream_pipeline: grandchild }],
+  } });
+  const result = await y.cli('integrate', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const evidence = (await y.status()).tickets[0].integration.pipeline;
+  assert.equal(evidence.state, 'passed');
+  assert.match(evidence.diagnostics, /Trigger 32: failed \(diagnostic only\)/);
+  assert.match(evidence.diagnostics, /Pipeline 11: failed \(diagnostic only\)/);
+  assert.equal((await y.hostState()).mergeCount, 1);
 });

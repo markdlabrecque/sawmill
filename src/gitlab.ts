@@ -186,15 +186,15 @@ export class GitLabTracker implements Tracker {
     if (mr.head_pipeline === null) return { headCommit: commit, state: 'none' };
     const root = record(mr.head_pipeline);
     if (!positive(root.id) || root.sha !== commit || root.project_id !== mr.project_id) throw new Error('GitLab returned an invalid current pipeline or mismatched head.');
-    const observations: { state: 'passed' | 'pending' | 'failed'; detail: string; url?: string }[] = [];
+    const observations: { state: 'passed' | 'pending' | 'failed'; gating: boolean; detail: string; url?: string }[] = [];
     const seen = new Set<string>();
-    const observe = (row: RecordValue, label: string) => {
+    const observe = (row: RecordValue, label: string, gating: boolean, trigger = false) => {
       const pending = ['created', 'waiting_for_resource', 'preparing', 'waiting_for_callback', 'pending', 'running', 'canceling', 'manual', 'scheduled'];
       if (typeof row.status !== 'string' || ![...pending, 'success', 'failed', 'canceled', 'skipped'].includes(row.status)) throw new Error('GitLab returned an invalid pipeline status.');
-      observations.push({ state: row.status === 'success' ? 'passed' : pending.includes(row.status) ? 'pending' : 'failed',
+      observations.push({ state: row.status === 'success' || (trigger && row.status === 'skipped') ? 'passed' : pending.includes(row.status) ? 'pending' : 'failed', gating,
         detail: `${label}: ${row.status}`, url: typeof row.web_url === 'string' ? row.web_url : undefined });
     };
-    const visit = async (pipeline: RecordValue): Promise<void> => {
+    const visit = async (pipeline: RecordValue, isRoot = false): Promise<void> => {
       if (!positive(pipeline.id) || !sha(pipeline.sha)) throw new Error('GitLab returned invalid downstream identity.');
       let project: string;
       if (positive(pipeline.project_id)) project = String(pipeline.project_id);
@@ -211,7 +211,7 @@ export class GitLabTracker implements Tracker {
       seen.add(key);
       const detail = record((await this.request('GET', `/pipelines/${pipeline.id}`, undefined, project)).value);
       if (detail.id !== pipeline.id || !positive(detail.project_id) || (positive(pipeline.project_id) && detail.project_id !== pipeline.project_id) || detail.sha !== pipeline.sha) throw new Error('GitLab pipeline identity or head changed.');
-      observe(detail, `Pipeline ${pipeline.id}`);
+      observe(detail, `Pipeline ${pipeline.id}`, isRoot);
       let jobs: unknown[];
       try { jobs = await this.list(`/pipelines/${pipeline.id}/trigger_jobs`, project); }
       catch (error) {
@@ -222,16 +222,17 @@ export class GitLabTracker implements Tracker {
       for (const value of jobs) {
         const job = record(value);
         if (!positive(job.id) || typeof job.allow_failure !== 'boolean') throw new Error('GitLab returned an invalid trigger job.');
-        if (job.allow_failure) continue;
-        observe(job, `Trigger ${job.id}`);
+        // Default triggers complete on creation. GitLab reflects mirror/depend
+        // requirements in native parent/trigger statuses, not allow_failure.
+        observe(job, `Trigger ${job.id}`, isRoot && !job.allow_failure, true);
         if (job.downstream_pipeline != null) await visit(record(job.downstream_pipeline));
-        else if (job.status === 'success') throw new Error('Successful required trigger has no downstream pipeline evidence.');
       }
     };
-    await visit(root);
-    const evidence = observations.find(row => row.state === 'failed') ?? observations.find(row => row.state === 'pending') ?? observations[0]!;
+    await visit(root, true);
+    const requirements = observations.filter(row => row.gating);
+    const evidence = requirements.find(row => row.state === 'failed') ?? requirements.find(row => row.state === 'pending') ?? requirements[0]!;
     return { headCommit: commit, state: evidence.state, ...(evidence.url ? { logUrl: evidence.url } : {}),
-      diagnostics: observations.map(row => row.detail).join('\n') };
+      diagnostics: observations.map(row => `${row.detail}${row.gating ? '' : ' (diagnostic only)'}${row.url ? ` ${row.url}` : ''}`).join('\n') };
   }
 
   async mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }> {
