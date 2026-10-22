@@ -13,6 +13,7 @@ import { CliError } from './errors.js';
 import type { TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
 import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
+import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
 import { answerTicket, closeTicket, transition } from './transitions.js';
@@ -35,7 +36,7 @@ export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: s
     if (tracker.addComment && tracker.addLabel && tracker.removeLabel && tracker.closeTicket) return tracker as TicketWriter;
     throw new CliError('Tracker write adapter is not available.', 2);
   }
-  if (project.tracker.backend !== 'github') throw new CliError('GitLab write adapter is not implemented yet.', 2);
+  if (project.tracker.backend === 'gitlab') return new GitLabTracker(project.tracker, cwd);
   return new GitHubWriter(project.tracker, cwd);
 }
 
@@ -65,7 +66,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'team' && positional[1] === 'run') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill team run <n> [--json]', 2);
-        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : undefined);
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await runTeam(cwd, config.project, config.machine, Number(positional[2]), tracker as IntegrationTracker, { ...options, home });
@@ -74,7 +75,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'integrate') {
         if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError('Usage: mill integrate <n> [--json]', 2);
-        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : undefined);
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep, ciPollInterval: config.machine.ci_poll_interval });
@@ -163,8 +164,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
-        if (!options.tracker && config.project.tracker.backend !== 'github') throw new CliError('GitLab draft adapter is not implemented yet.', 2);
-        const tracker = options.tracker ?? new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd));
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
         const snapshot = await draft(cwd, config.project, parsed.selection, tracker, parsed.replace);
         emit(snapshot, formatRun(snapshot));
         return 0;
