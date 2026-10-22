@@ -1,12 +1,14 @@
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
+import { GitHubIntegration } from './github-integration.js';
+import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { build } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import type { TicketReader, TicketWriter } from './tracker.js';
+import type { TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
 import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { draft } from './draft.js';
@@ -21,7 +23,7 @@ export interface CliOptions {
   cwd?: string;
   home?: string;
   stdout?: (text: string) => void;
-  tracker?: TicketReader & Partial<TicketWriter>;
+  tracker?: TicketReader & Partial<IntegrationTracker>;
   sleep?: (milliseconds: number) => Promise<void>;
 }
 
@@ -58,6 +60,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await reviewTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { ...options, home });
         emit(result, JSON.stringify(result.outcome));
         return result.status === 'ok' && result.outcome.outcome === 'pass' ? 0 : 1;
+      }
+      if (positional[0] === 'integrate') {
+        if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError('Usage: mill integrate <n> [--json]', 2);
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : undefined);
+        if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
+        ticketWriter(options, config.project, cwd);
+        const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep });
+        emit(result, `${result.outcome}: #${result.ticket}${result.mergeCommit ? ` ${result.mergeCommit}` : ''}${result.message ? `\n${result.message}` : ''}`);
+        return result.outcome === 'merged' ? 0 : 1;
       }
       if (positional[0] === 'worktree' && positional[1] === 'gc') {
         if (positional.length !== 2) {

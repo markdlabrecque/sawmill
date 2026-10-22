@@ -8,6 +8,16 @@ import type { Ticket, TicketComment } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
+export interface IntegrationProgress {
+  baseCommit?: string;
+  testedHead?: string;
+  pushedHead?: string;
+  changeRequest?: { id: number | string; url: string; headCommit: string };
+  mergedHead?: string;
+  remoteDeleted?: boolean;
+  fastForwarded?: boolean;
+  reported?: boolean;
+}
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
   position: number;
@@ -20,6 +30,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   branch: string | null;
   mergeCommit: string | null;
   completion: 'manual' | 'merged' | null;
+  integration: IntegrationProgress;
   created: string;
   updated: string;
   stageStarted: string | null;
@@ -100,6 +111,7 @@ export function readRun(cwd: string): RunSnapshot {
       position: Number(row.position), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
       worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
+      integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
     }));

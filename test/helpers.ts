@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
 
-export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'tracker' | 'sleep'> = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'sawmill-'));
+export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'tracker' | 'sleep'> = {}, prefix = 'sawmill-') {
+  const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = join(root, 'main');
   const home = join(root, 'home');
