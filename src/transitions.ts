@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
+import { readRun, runPath, stoppedMergeCleanup, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
@@ -57,6 +57,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'integration')) db.exec('ALTER TABLE tickets ADD COLUMN integration TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'team')) db.exec('ALTER TABLE tickets ADD COLUMN team TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'worker')) db.exec('ALTER TABLE tickets ADD COLUMN worker TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
     const value = work(db);
     db.exec('COMMIT');
     return value;
@@ -70,6 +71,11 @@ function requireTicket(db: DatabaseSync, number: number) {
   const ticket = db.prepare('SELECT * FROM tickets WHERE number = ?').get(number);
   if (!ticket) throw new CliError(`Ticket #${number} is not in the run.`);
   return ticket;
+}
+
+function stoppedCleanup(row: ReturnType<typeof requireTicket>): boolean {
+  return stoppedMergeCleanup({ completion: row.completion as RunTicket['completion'],
+    team: row.team ? JSON.parse(String(row.team)) : {}, integration: row.integration ? JSON.parse(String(row.integration)) : {} });
 }
 
 function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
@@ -102,7 +108,7 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
     const row = requireTicket(db, number);
     const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
     const cleanup = row.completion === 'merged' && JSON.parse(String(row.team ?? '{}')).recovery && !JSON.parse(String(row.integration ?? '{}')).reported;
-    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanup) || (owner && owner.status !== 'finished')) return false;
+    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanup && !stoppedCleanup(row)) || (owner && owner.status !== 'finished')) return false;
     if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
     if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
       WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
@@ -215,6 +221,8 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   checkTracker(cwd, project);
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
+    // An answer must not clear a request while its active role is still saving.
+    if (ticket.stop_requested && ticket.state === 'working') throw new CliError('Wait for the requested stop boundary before answering.');
     if (ticket.state !== 'logjam' && !db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) throw new CliError(`Ticket #${number} is not in logjam and has no pending writes.`);
     const writes: MirrorWrite[] = text === undefined ? [] : [{ kind: 'comment', payload: { body: text } }];
     writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
@@ -223,7 +231,19 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
-    update(db, number, { state: ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
+    db.prepare('UPDATE tickets SET stop_requested = 0 WHERE number = ?').run(number);
+    update(db, number, { state: stoppedCleanup(ticket) ? 'queued' : ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
   });
   return true;
+}
+
+/** Local-only request. Do not contend with the active role lock or touch its process. */
+export function requestStop(cwd: string, project: ProjectConfig, number: number): void {
+  checkTracker(cwd, project);
+  transaction(cwd, db => {
+    const ticket = requireTicket(db, number);
+    if (ticket.state !== 'working') throw new CliError(`Ticket #${number} is not working.`);
+    db.prepare('UPDATE tickets SET stop_requested = 1 WHERE number = ?').run(number);
+    update(db, number, {});
+  });
 }

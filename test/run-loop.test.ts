@@ -246,3 +246,23 @@ test('orphan recovery retains the saved path when its worktree was switched to a
   assert.equal(await readFile(join(before.worktree!, 'keep.txt'), 'utf8'), 'Saved files stay here\n');
   assert.equal((await y.starts()).length, 1);
 });
+
+test('the ordinary loop releases a stopped team and dispatches the next queued ticket', async t => {
+  const y = await fixture(t, [1, 3], true);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 1\n');
+  const running = y.command(['run', '--json']).catch((error: any) => error);
+  await until(y.starts, rows => rows.length === 1);
+  await y.command(['run', 'stop', '1', '--json']);
+  await writeFile(join(y.root, 'release-1'), 'yes');
+  await until(y.starts, rows => rows.some(row => row.number === 3));
+  const stopped = (await y.status()).tickets.find(row => row.number === 1)!;
+  assert.equal(stopped.worker?.status, 'finished');
+  assert.equal(stopped.worker?.result?.outcome, 'stopped');
+  assert.equal(stopped.reason, 'stopped');
+  assert.equal((await y.starts()).filter(row => row.number === 1).length, 1);
+  await writeFile(join(y.root, 'release-3'), 'yes');
+  const result = await running;
+  assert.equal(result.code, 1);
+  assert.equal(JSON.parse(result.stdout).status, 'partial');
+  assert.equal((await y.status()).tickets.find(row => row.number === 3)?.state, 'done');
+});

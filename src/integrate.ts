@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
+import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
@@ -18,7 +19,7 @@ const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 export interface IntegrationResult {
-  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'ci-failed' | 'infrastructure';
+  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'ci-failed' | 'infrastructure' | 'stopped';
   ticket: number;
   message?: string;
   pipeline?: Pipeline;
@@ -83,14 +84,22 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     if (!await transition(cwd, project, tracker, number, { integration: progress, ...change }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
     guard();
   };
-  const advance = async (next: string, change: Transition = {}) => { stage = next; await save({ stage, ...change }); };
+  const boundary = () => checkStop(cwd, number);
+  const advance = async (next: string, change: Transition = {}) => {
+    // Always persist an acknowledged remote merge, even if its response raced a stop.
+    if (!change.mergeCommit) boundary();
+    stage = next; await save({ stage, ...change });
+    boundary();
+  };
   try {
+    boundary();
     if (!mergeCommit) {
       await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
       await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
       await git(cwd, 'merge', '--ff-only', `refs/remotes/origin/${project.integration}`);
       progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD') };
       await save();
+      boundary();
       try { await git(ticket.worktree, 'rebase', progress.baseCommit!); }
       catch (error) {
         const conflicts = await git(ticket.worktree, 'diff', '--name-only', '--diff-filter=U');
@@ -101,7 +110,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       }
       await advance('tests');
       const head = await git(ticket.worktree, 'rev-parse', 'HEAD');
+      boundary();
       const tested = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      boundary();
       if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
       if (tested.code !== 0) {
         await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
@@ -112,6 +123,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await advance('push');
       const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
       const oldHead = remote.split(/\s/)[0] ?? '';
+      boundary();
       await git(ticket.worktree, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
       progress.pushedHead = head;
       await advance('pr-opened');
@@ -121,10 +133,12 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
       const readPipeline = async () => {
         guard();
+        boundary();
         progress.pipeline = await tracker.getPipeline!(head);
         if (!progress.pipeline || progress.pipeline.headCommit !== head) throw new Error('Pipeline head differs from the tested, pushed commit.');
         if (!['pending', 'passed', 'failed', 'none'].includes(progress.pipeline.state)) throw new Error('Tracker returned an invalid pipeline state.');
         await save();
+        boundary();
         return progress.pipeline;
       };
       const ciFailed = async () => {
@@ -153,6 +167,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
           await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all') ||
           (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
       guard();
+      boundary();
       let merged: { mergeCommit: string };
       try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
       catch (error) {
@@ -176,6 +191,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
       if (remote) {
         if (remote.split(/\s/)[0] !== progress.mergedHead) throw new Error('Remote ticket branch contains newer unmerged work; refusing deletion.');
+        boundary();
         await tracker.deleteRemoteBranch(branch);
       }
       progress.remoteDeleted = true; await save();
@@ -191,6 +207,10 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `Local tests passed: ${project.tests.command}\nTested head: ${progress.testedHead}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
     return result('merged');
   } catch (error) {
+    if (error instanceof StopRequested) {
+      const stopped = await stopAtBoundary(cwd, project, tracker, number, stage, 'integrate', readRun(cwd).tickets.find(row => row.number === number)!.team, options);
+      return { ...result(stopped.outcome), ...(stopped.error ? { message: stopped.error } : {}) };
+    }
     const current = readRun(cwd).tickets.find(row => row.number === number)!;
     if (current.state !== 'logjam' && current.completion !== 'manual') {
       try { await save({ report: { stage: 'infrastructure', details: 'Integration could not finish.', error: message(error), reachedStage: stage } }); } catch { /* Durable pending writes retain the report. */ }

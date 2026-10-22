@@ -17,7 +17,7 @@ import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
-import { answerTicket, closeTicket, transition } from './transitions.js';
+import { answerTicket, closeTicket, requestStop, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
 import { formatRun, readRun, type MirrorWrite } from './run-store.js';
 
@@ -122,6 +122,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'run' && positional[1] === 'stop') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError('Usage: mill run stop <n> [--json]', 2);
+        const number = Number(positional[2]);
+        requestStop(cwd, config.project, number);
+        emit({ status: 'stop-requested', ticket: number }, `Stop requested for #${number}; the active stage will finish safely.`);
+        return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError('Usage: mill run once [--json]', 2);

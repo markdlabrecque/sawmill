@@ -22,6 +22,8 @@ export interface IntegrationProgress {
 export interface TeamProgress {
   recovery?: { stage: string };
   activeRole?: { role: Role; beforeHead: string; bounces: number };
+  /** Cooperative boundary checkpoint; retained through answer until work resumes. */
+  stop?: { stage: string; resume: Role | 'integrate'; preserved: boolean; wipHead?: string; error?: string };
   testBase?: string;
   testCommit?: string;
   testCommits?: string[];
@@ -86,6 +88,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   integration: IntegrationProgress;
   team: TeamProgress;
   worker: WorkerOwnership | null;
+  stopRequested: boolean;
   created: string;
   updated: string;
   stageStarted: string | null;
@@ -101,6 +104,11 @@ export interface RunSnapshot {
   pendingWrites: PendingWrite[];
 }
 export interface LoopProgress { cursor: number; consecutiveInfrastructure: number; pausedReason?: string }
+
+/** The merge stays irreversible while an answered stop queues only its remaining cleanup. */
+export function stoppedMergeCleanup(ticket: Pick<RunTicket, 'completion' | 'team' | 'integration'>): boolean {
+  return ticket.completion === 'merged' && ticket.team.stop?.resume === 'integrate' && !ticket.integration.reported;
+}
 
 export type MirrorWrite =
   | { kind: 'comment'; payload: { body: string } }
@@ -171,6 +179,7 @@ export function readRun(cwd: string): RunSnapshot {
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
       team: row.team ? JSON.parse(String(row.team)) as TeamProgress : {},
       worker: row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership : null,
+      stopRequested: Boolean(row.stop_requested),
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
     }));
@@ -190,7 +199,7 @@ export function formatRun(snapshot: RunSnapshot): string {
     if (ticket.state === 'done') detail = ticket.mergeCommit ?? '';
     if (ticket.state === 'blocked') detail = ticket.blockers.map(number => `#${number}`).join(', ');
     if (ticket.state === 'logjam') detail = ticket.reason ?? '';
-    if (ticket.state === 'working') detail = `${ticket.stage ?? 'unknown'}; round ${ticket.bounces + 1}; bounces ${ticket.bounces}; ${ticket.timeInStageSeconds ?? 0}s in stage`;
+    if (ticket.state === 'working') detail = `${ticket.stage ?? 'unknown'}; round ${ticket.bounces + 1}; bounces ${ticket.bounces}; ${ticket.timeInStageSeconds ?? 0}s in stage${ticket.stopRequested ? '; stop requested' : ''}`;
     return [`#${ticket.number}`, ticket.title, ticket.state, detail];
   });
   const table = [['Ticket', 'Title', 'State', 'Detail'], ...rows].map(row => row.map(cell => cell.replace(/[\r\n\t\x1b]/g, ' ')));
