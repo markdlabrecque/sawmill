@@ -353,3 +353,32 @@ test('environment recovery through dispatch retains the original writer checkpoi
   assert.equal((await y.starts()).filter(row => row.role === 'test-writers').length, 1);
   assert.equal((await y.starts()).filter(row => row.role === 'reviewer').length, 1);
 });
+
+
+test('actual dispatcher re-reviews changed approval after reporting rejection and answer', async t => {
+  const y = await fixture(t, [1], true);
+  await y.release();
+  await writeFile(join(y.root, 'hold-review-mirror'), 'yes');
+  await y.once();
+  const reviewed = (await until(y.status, s => s.tickets[0]?.stage === 'review-pass')).tickets[0]!;
+  const path = reviewed.worktree!;
+  await writeFile(join(path, 'unreviewed.txt'), 'Concurrent implementation change.\n');
+  y.git('-C', path, 'add', 'unreviewed.txt');
+  y.git('-C', path, 'commit', '-m', 'Unreviewed implementation');
+  await rm(join(y.root, 'hold-review-mirror'));
+  const stopped = (await until(y.status, s => s.tickets[0]?.worker?.status === 'finished')).tickets[0]!;
+  assert.equal(stopped.state, 'logjam');
+  assert.match(stopped.worker!.result!.error!, /Reviewed HEAD changed/);
+  assert.equal(stopped.mergeCommit, null);
+  await y.command(['run', 'answer', '1', 'Review the concurrent change']);
+  await y.command(['run', '--json']);
+  const roles = await y.starts();
+  assert.deepEqual(roles.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'reviewer']);
+  assert.match(roles.at(-1).handoff, /Full diff:[\s\S]*diff --git a\/unreviewed.txt/);
+  const done = (await y.status()).tickets[0]!;
+  assert.equal(done.state, 'done');
+  assert.equal(done.bounces, 0);
+  assert.equal(done.team.testCommit, reviewed.team.testCommit);
+  assert.deepEqual(done.team.testFiles, reviewed.team.testFiles);
+  assert.equal(await readFile(join(y.cwd, 'unreviewed.txt'), 'utf8'), 'Concurrent implementation change.\n');
+});

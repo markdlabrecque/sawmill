@@ -1,4 +1,5 @@
 import { removeWorktree } from './worktrees.js';
+import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -92,15 +93,25 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     stage = next; await save({ stage, ...change });
     boundary();
   };
+  const requireApproval = async () => {
+    const team = { ...readRun(cwd).tickets.find(row => row.number === number)!.team };
+    if (reviewApprovesHead(team, progress, await git(ticket.worktree!, 'rev-parse', 'HEAD'))) return;
+    invalidateReview(team);
+    await save({ team, stage: 'reviewer' });
+    throw new Error('Review approval no longer matches the ticket HEAD; a fresh review is required.');
+  };
   try {
     boundary();
     if (!mergeCommit) {
+      await requireApproval();
       await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
       await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
       await git(cwd, 'merge', '--ff-only', `refs/remotes/origin/${project.integration}`);
-      progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD') };
+      await requireApproval();
+      progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD'), reviewedHead: progress.reviewedHead, rebasedHead: progress.rebasedHead };
       await save();
       boundary();
+      await requireApproval();
       try { await git(ticket.worktree!, 'rebase', progress.baseCommit!); }
       catch (error) {
         const conflicts = await git(ticket.worktree!, 'diff', '--name-only', '--diff-filter=U');
@@ -109,8 +120,14 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         await save({ report: { stage: 'rebase', details: `Rebase conflict; rebase aborted.\n${conflicts}` } });
         return result('rebase-conflict', conflicts);
       }
-      await advance('tests');
       const head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
+      const team = { ...readRun(cwd).tickets.find(row => row.number === number)!.team };
+      progress.reviewedHead = team.approvedHead;
+      progress.rebasedHead = head;
+      team.checkpointHead = head;
+      await save({ team });
+      await advance('tests');
+      await requireApproval();
       boundary();
       const tested = await tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
       boundary();

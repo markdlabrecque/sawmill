@@ -1,4 +1,5 @@
 import { requireBrowserCapability } from './user-testing.js';
+import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -131,9 +132,18 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     const question = async (path: string, role: Role, outcome: Extract<Outcome, { outcome: 'question' }>): Promise<TeamResult> => {
       return checkpointQuestion(cwd, project, tracker, number, path, role, outcome, progress, options);
     };
-    const integrateWithRetries = () => retryInfrastructure(() => integrate(cwd, project, number, tracker, integrationOptions),
+    const integrateWithRetries = () => retryInfrastructure(async () => {
+      try { return await integrate(cwd, project, number, tracker, integrationOptions); }
+      finally {
+        // Admission invalidation and CLI-owned rebase checkpoints must survive
+        // retry reporting, which also persists the team's progress.
+        progress = { ...current().team, infrastructureAttempts: progress.infrastructureAttempts };
+        resume = progress.next ?? 'integrate';
+      }
+    },
       result => result.outcome === 'infrastructure' ? result.message ?? 'Integration failed.' : undefined,
-      result => ({ integration: result }), result => result.outcome === 'stopped' || Boolean(current().team.stop && current().state === 'logjam'));
+      result => ({ integration: result }), result => result.outcome === 'stopped' ||
+        progress.next === 'reviewer' || Boolean(current().team.stop && current().state === 'logjam'));
     const integrationStop = (result: IntegrationResult): TeamResult | undefined => {
       const row = current();
       if (result.outcome !== 'stopped' && !(row.team.stop && row.state === 'logjam')) return;
@@ -194,7 +204,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const recoveredRole: Role | undefined = recovery ? progress.activeRole?.role ?? (progress.testCommit
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
-      const resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
+      let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
       if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       delete progress.recovery;
@@ -235,6 +245,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (await changedTests(path, progress)) {
           const capped = await bounce(tampered, 'protected-tests');
           if (capped) return capped;
+        } else if (!reviewApprovesHead(progress, current().integration, await git(path, 'rev-parse', 'HEAD'))) {
+          invalidateReview(progress);
+          resume = progress.next = resuming = 'reviewer';
+          await save({});
         } else {
           await save({ state: 'working', stage: 'review-pass' });
           const result = await runIntegration();
@@ -245,16 +259,17 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       if (resuming === 'integrate') role = 'implementer';
       for (;;) {
         resume = progress.next = role;
+        delete progress.approvedHead;
         checkStop(cwd, number);
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
+        const entry = progress.activeRole;
+        const beforeRole = recovery && entry?.role === role && entry.bounces === current().bounces ? entry.beforeHead : await git(path, 'rev-parse', 'HEAD');
         const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
           ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         const duration = project.role_timeout;
-        const entry = progress.activeRole;
-        const beforeRole = recovery && entry?.role === role && entry.bounces === current().bounces ? entry.beforeHead : await git(path, 'rev-parse', 'HEAD');
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});
         const result = await retryInfrastructure(async () => {
@@ -316,7 +331,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           throw new Error('Each repair must append one separate fix commit; prior work retained.');
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
-        if (role === 'reviewer') progress.reviewedHead = beforeRole;
+        if (role === 'reviewer') {
+          progress.reviewedHead = beforeRole;
+          if (result.outcome.outcome === 'pass') progress.approvedHead = beforeRole;
+        }
         delete progress.question;
         delete progress.stop;
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.userTesting) {
@@ -343,7 +361,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           role = 'implementer'; continue;
         }
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Worktree changed during reporting; uncommitted files retained.');
-        if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
+        if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) {
+          invalidateReview(progress);
+          resume = 'reviewer';
+          throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
+        }
         if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
         const integratedResult = await runIntegration();
         if (integratedResult) return integratedResult;

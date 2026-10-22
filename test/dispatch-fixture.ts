@@ -85,7 +85,7 @@ process.stdin.on('end', async () => {
   const number = Number(require('node:path').basename(process.cwd()));
   const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: process.env.FIXTURE_YARD, encoding: 'utf8' }));
   const row = status.tickets.find(x => x.number === number);
-  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
+  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
   const root = process.env.FIXTURE_DIR;
   const repair = row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
   if (repair && !fs.existsSync('repair.txt')) {

@@ -57,27 +57,38 @@ and [branch](https://docs.gitlab.com/api/branches/) APIs.
 
 CI selects the MR's current `head_pipeline`, then verifies that pipeline's exact
 tested source SHA and project identity. Historical runs and unrelated branch
-pipelines cannot override that attempt. Sawmill traverses the required downstream
-pipelines linked by its trigger jobs, checking each advertised ID and SHA against
-the downstream detail. Optional (`allow_failure`) triggers do not gate merging.
-Descendant SHAs may differ from the source SHA; each must match its trigger's
-advertised SHA. Cross-project descendants require a verified project identity or
-a same-host GitLab pipeline URL.
+pipelines cannot override that attempt.
 
-Only a nonempty all-success required tree passes. Failed, canceled and skipped
-pipelines fail; running, manual, scheduled and other waiting states keep waiting.
-Missing head pipelines also keep waiting. Unknown statuses, mismatched SHAs,
-missing required descendants and malformed pagination fail closed. Diagnostics
-include pipeline IDs, statuses and URLs. The adapter uses `/trigger_jobs` on
-GitLab 19.2+, falling back to `/bridges` only on HTTP 404. See the
-[MR API](https://docs.gitlab.com/api/merge_requests/),
-[trigger-job API](https://docs.gitlab.com/api/jobs/#list-pipeline-trigger-jobs), and
-[pipeline API](https://docs.gitlab.com/api/pipelines/), checked October 22, 2026.
+The current parent pipeline and its non-optional trigger jobs gate merging.
+A default trigger succeeds when its downstream pipeline is created; it does not
+wait for that pipeline to pass. GitLab reflects `mirror` and `depend` requirements
+in the native parent and trigger statuses. Sawmill uses those statuses, without
+inferring a strategy from `allow_failure` or an undocumented API field. A skipped
+trigger is successful for this gate. Optional failed or manual triggers do not
+block a green parent; required manual or pending triggers keep waiting.
+See the [trigger strategy contract](https://docs.gitlab.com/ci/yaml/#triggerstrategy)
+and [job evaluation rules](https://docs.gitlab.com/ci/yaml/#when).
 
-A superseding successful MR rerun can pass without a new commit. A current
-required pending or failed descendant still blocks. Merged-results pipelines on
-synthetic SHAs do not prove the tested source SHA and remain unsupported by this
-exact-source-head gate.
+Sawmill traverses downstream pipelines for diagnostics, checking each advertised
+ID, project and SHA against its detail response. Their statuses do not independently
+override the parent or trigger gate. This includes failed grandchildren behind a
+successful default trigger. Diagnostics mark non-gating observations and include
+statuses and available URLs. Descendant SHAs may differ from the source SHA; each
+must match its trigger's advertised SHA. Cross-project descendants require a
+verified project identity or a same-host GitLab pipeline URL.
+
+A successful native gate passes. Failed or canceled required statuses fail;
+a skipped root pipeline has not passed. Running, manual, scheduled and other
+waiting states keep waiting, as does a missing head pipeline. Unknown statuses,
+mismatched identities and malformed pagination return infrastructure failure.
+The adapter uses `/trigger_jobs` on GitLab 19.2+, falling back to `/bridges` only
+on HTTP 404. See the [MR API](https://docs.gitlab.com/api/merge_requests/),
+[trigger-job API](https://docs.gitlab.com/api/jobs/#list-all-trigger-jobs-by-pipeline),
+and [pipeline API](https://docs.gitlab.com/api/pipelines/), checked October 22, 2026.
+
+A superseding successful MR rerun can pass without a new commit. Merged-results
+pipelines on synthetic SHAs do not prove the tested source SHA and remain
+unsupported by this exact-source-head gate.
 
 The existing recovery limits apply: an accepted comment whose response is lost
 may be posted twice, an unacknowledged merge needs reconciliation, and branch

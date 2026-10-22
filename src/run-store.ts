@@ -9,6 +9,9 @@ import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
 export interface IntegrationProgress {
+  /** Review approval carried through a clean rebase performed by integrate. */
+  reviewedHead?: string;
+  rebasedHead?: string;
   baseCommit?: string;
   testedHead?: string;
   pushedHead?: string;
@@ -32,6 +35,8 @@ export interface TeamProgress {
   testFiles?: string[];
   outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
   reviewedHead?: string;
+  /** Set only for a passing review of this committed head. */
+  approvedHead?: string;
   /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
   checkpointHead?: string;
   repair?: RepairContext;

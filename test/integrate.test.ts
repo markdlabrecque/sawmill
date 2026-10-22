@@ -51,9 +51,17 @@ async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = as
   const path = join(yard.root, '9');
   await writeFile(join(path, 'feature.test.ts'), '// Added regression test\n');
   yard.git('-C', path, 'add', '.'); yard.git('-C', path, 'commit', '-m', 'Add tested feature');
-  // Seed the approved boundary owned by the future team runner.
+  // Exercise the public review boundary before integration.
   const seed = (sql: string) => { const db = new DatabaseSync(join(yard.cwd, '.mill/run.sqlite')); try { db.exec(sql); } finally { db.close(); } };
-  seed(`UPDATE tickets SET stage = 'review-pass', session_ids = '{"reviewer":["review-session"]}' WHERE number = 9`);
+  const approve = async () => {
+    let reviewOutput = '';
+    assert.equal(await runCli(['team', 'review', '9', '--json'], {
+      cwd: yard.cwd, home: yard.home, tracker, sleep,
+      runtime: { async run(_request, sink) { sink.session('review-session'); return { outcome: { outcome: 'pass' } }; } },
+      stdout: value => { reviewOutput += value; },
+    }), 0, reviewOutput);
+  };
+  await approve();
   tracker.head = branch => yard.git('ls-remote', 'origin', `refs/heads/${branch}`).split(/\s/)[0]!;
   tracker.merge = async (_id, method, expectedHead) => {
     assert.equal(expectedHead, tracker.head('mill/9'));
@@ -69,7 +77,7 @@ async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = as
   };
   tracker.delete = async branch => { yard.git('push', '--no-follow-tags', 'origin', '--delete', branch); };
   const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
-  return { ...yard, tracker, path, seed, status };
+  return { ...yard, tracker, path, seed, status, approve };
 }
 
 test('integrate rebases, tests and squash-merges through a ticket-linked PR, then reports and closes', async t => {
@@ -153,6 +161,7 @@ test('configuration drift is refused before mutations', async t => {
 test('a conflicting rebase aborts and leaves the original branch with a distinct outcome', async t => {
   const y = await fixture(t);
   await writeFile(join(y.path, 'README.md'), 'Ticket edit\n'); y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Ticket edit');
+  await y.approve();
   const before = y.git('rev-parse', 'mill/9');
   await writeFile(join(y.cwd, 'README.md'), 'Integration edit\n'); y.git('add', '.'); y.git('commit', '-m', 'Integration edit'); y.git('push');
   const result = await y.cli('integrate', '9', '--json');

@@ -1844,3 +1844,113 @@ test('protected-test repair after a stopped review survives its report outage wi
   assert.equal((await y.status()).tickets[0].bounces, 1);
   assert.equal((await y.status()).tickets[0].team.testCommit, before.team.testCommit);
 });
+
+test('answer reentry reviews a commit added during review-pass reporting without restarting writers or spending a bounce', async t => {
+  const y = await fixture(t);
+  let injected = false;
+  y.setBeforeWrite(async body => {
+    if (!injected && body?.startsWith('[sawmill:review-pass]')) {
+      injected = true;
+      await writeFile(join(y.path, 'unreviewed.txt'), 'A concurrent implementation change.\n');
+      y.git('-C', y.path, 'add', 'unreviewed.txt');
+      y.git('-C', y.path, 'commit', '-m', 'Concurrent unreviewed work');
+    }
+  });
+  const first = await y.cli('team', 'run', '12', '--json');
+  assert.equal(first.code, 1, first.stdout);
+  assert.match(first.stdout, /Reviewed HEAD changed during reporting/);
+  const before = (await y.status()).tickets[0];
+  assert.equal(y.requests.length, 0);
+  assert.equal((await y.cli('run', 'answer', '12', 'Retry retained work')).code, 0);
+  const second = await y.cli('team', 'run', '12', '--json');
+  assert.equal(second.code, 0, second.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'reviewer']);
+  assert.match(y.inputs.at(-1)!.handoff, /Full diff:[\s\S]*diff --git a\/unreviewed.txt/);
+  const after = (await y.status()).tickets[0];
+  assert.equal(after.bounces, 0);
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.deepEqual(after.team.testCommits, before.team.testCommits);
+  assert.equal(await readFile(join(y.cwd, 'unreviewed.txt'), 'utf8'), 'A concurrent implementation change.\n');
+});
+
+test('direct integrate repeatedly refuses a stale standalone approval and recovers through review', async t => {
+  const y = await fixture(t);
+  await y.cli('worktree', 'create', '12');
+  await writeFile(join(y.path, 'answer.cjs'), 'module.exports = () => 42;\n');
+  await writeFile(join(y.path, 'answer.test.cjs'), "require('node:assert/strict').equal(require('./answer.cjs')(), 42);\n");
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Handwritten implementation');
+  assert.equal((await y.cli('team', 'review', '12')).code, 0);
+  await writeFile(join(y.path, 'unreviewed.txt'), 'Added after standalone review.\n');
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Unreviewed implementation');
+  for (let retry = 0; retry < 2; retry++) {
+    const result = await y.cli('integrate', '12', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /review/i);
+    assert.equal(y.requests.length, 0);
+  }
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['reviewer', 'reviewer']);
+  assert.match(y.inputs.at(-1)!.handoff, /Full diff:[\s\S]*diff --git a\/unreviewed.txt/);
+  assert.equal((await y.status()).tickets[0].bounces, 0);
+});
+
+test('a clean CLI rebase retains approval across infrastructure answer recovery', async t => {
+  const y = await fixture(t);
+  let advanced = false;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer' && !advanced) {
+      advanced = true;
+      await writeFile(join(y.cwd, 'integration.txt'), 'Other approved work.\n');
+      y.git('add', '.'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+    }
+    return y.normal(request, sink);
+  });
+  const open = y.tracker.findOrOpenChangeRequest;
+  y.tracker.findOrOpenChangeRequest = async () => { throw new Error('Hosting unavailable after rebase'); };
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  const before = (await y.status()).tickets[0];
+  assert.notEqual(before.team.approvedHead, y.git('-C', y.path, 'rev-parse', 'HEAD'));
+  y.tracker.findOrOpenChangeRequest = open;
+  await y.cli('run', 'answer', '12', 'Hosting recovered');
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  const after = (await y.status()).tickets[0];
+  assert.equal(after.bounces, 0);
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.deepEqual(after.team.testCommits, before.team.testCommits);
+  assert.equal(await readFile(join(y.cwd, 'integration.txt'), 'utf8'), 'Other approved work.\n');
+});
+
+test('new work after a CLI rebase requires full review and retains the rebased writer checkpoint on answer', async t => {
+  const y = await fixture(t);
+  let injected = false;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer' && !injected) {
+      await writeFile(join(y.cwd, 'integration.txt'), 'Other approved work.\n');
+      y.git('add', '.'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+    }
+    return y.normal(request, sink);
+  });
+  y.setBeforeWrite(async body => {
+    if (!injected && body?.startsWith('[sawmill:pr-opened]')) {
+      injected = true;
+      await writeFile(join(y.path, 'unreviewed.txt'), 'Added after rebase.\n');
+      y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'New work after rebase');
+    }
+  });
+  const first = await y.cli('team', 'run', '12', '--json');
+  assert.equal(first.code, 1, first.stdout);
+  const before = (await y.status()).tickets[0];
+  assert.equal(before.mergeCommit, null);
+  await y.cli('run', 'answer', '12', 'Review added work');
+  const second = await y.cli('team', 'run', '12', '--json');
+  assert.equal(second.code, 0, second.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'reviewer']);
+  assert.match(y.inputs.at(-1)!.handoff, /Full diff:[\s\S]*diff --git a\/unreviewed.txt/);
+  const after = (await y.status()).tickets[0];
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.equal(after.bounces, 0);
+  assert.equal(await readFile(join(y.cwd, 'unreviewed.txt'), 'utf8'), 'Added after rebase.\n');
+});
