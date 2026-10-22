@@ -5,6 +5,7 @@ import { CliError } from './errors.js';
 import type { TicketReader } from './tracker.js';
 import { GitHubDraftReader, githubApi } from './github.js';
 import { draft } from './draft.js';
+import { parseDraftArgs } from './selection.js';
 import { formatRun, readRun } from './run-store.js';
 
 export interface CliOptions {
@@ -38,15 +39,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {
-        const rawNumbers = positional.slice(2).filter(arg => arg !== '--replace');
-        if (!rawNumbers.length || rawNumbers.some(arg => !/^[1-9]\d*$/.test(arg) || !Number.isSafeInteger(Number(arg)))) {
-          const message = 'Usage: mill run draft <numbers...> [--replace] [--json]';
+        const parsed = parseDraftArgs(positional.slice(2));
+        if (!parsed) {
+          const message = 'Choose exactly one non-empty selector. Usage: mill run draft (<numbers...> | --label <label> | --spec <number>) [--replace] [--json]';
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
         if (!options.tracker && config.project.tracker.backend !== 'github') throw new CliError('GitLab draft adapter is not implemented yet.', 2);
         const tracker = options.tracker ?? new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd));
-        const snapshot = await draft(cwd, config.project, [...new Set(rawNumbers.map(Number))], tracker, positional.includes('--replace'));
+        const snapshot = await draft(cwd, config.project, parsed.selection, tracker, parsed.replace);
         emit(snapshot, formatRun(snapshot));
         return 0;
       }
