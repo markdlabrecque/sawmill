@@ -3,9 +3,9 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { runCli, type CliOptions } from '../src/cli.js';
 
-export async function millyard(t: TestContext) {
+export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'tracker'> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'sawmill-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = join(root, 'main');
@@ -29,7 +29,7 @@ export async function millyard(t: TestContext) {
   const projectConfig = join(cwd, '.mill/config.yaml');
   async function cli(...args: string[]) {
     let stdout = '';
-    const code = await runCli(args, { cwd, home, stdout: (text) => { stdout += text; } });
+    const code = await runCli(args, { ...adapters, cwd, home, stdout: (text) => { stdout += text; } });
     return { code, stdout };
   }
   return { root, cwd, home, remote, env, git, userConfig, projectConfig, cli };

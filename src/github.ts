@@ -1,0 +1,81 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { CliError } from './errors.js';
+import type { ProjectConfig } from './config.js';
+import type { Ticket, TicketReader } from './tracker.js';
+
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed';
+  labels: (string | { name: string })[];
+  repository_url?: string;
+  pull_request?: unknown;
+}
+export interface GitHubComment { body: string; user: { login: string } | null; created_at: string }
+export interface GitHubApi {
+  getIssue(number: number): Promise<GitHubIssue>;
+  getComments(number: number): Promise<GitHubComment[]>;
+  getBlockers(number: number): Promise<GitHubIssue[]>;
+}
+export class GitHubApiError extends Error {
+  constructor(message: string, readonly status: number | undefined) { super(message); }
+}
+
+export class GitHubDraftReader implements TicketReader {
+  constructor(private readonly config: ProjectConfig['tracker'], private readonly api: GitHubApi = githubApi(config)) {}
+  async getTicket(number: number): Promise<Ticket> {
+    const issue = await this.api.getIssue(number);
+    if (issue.pull_request) throw new CliError(`#${number} is a pull request, not a ticket.`);
+    if (issue.number !== number || !['open', 'closed'].includes(issue.state)) throw new CliError(`Invalid GitHub issue response for #${number}.`);
+    const comments = await this.api.getComments(number);
+    let blockers: GitHubIssue[] | null;
+    try { blockers = await this.api.getBlockers(number); }
+    catch (error) {
+      if (!(error instanceof GitHubApiError) || ![404, 410, 501].includes(error.status ?? 0)) throw error;
+      blockers = null;
+    }
+    for (const blocker of blockers ?? []) {
+      if (blocker.repository_url && !blocker.repository_url.toLowerCase().endsWith(`/repos/${this.config.repo.toLowerCase()}`)) {
+        throw new CliError(`Ticket #${number} has a cross-repository blocker ${blocker.repository_url}#${blocker.number}; only this repository can be drafted.`);
+      }
+    }
+    return {
+      number: issue.number, title: issue.title, body: issue.body ?? '', state: issue.state,
+      labels: issue.labels.map(label => typeof label === 'string' ? label : label.name),
+      comments: comments.map(comment => ({ body: comment.body, ...(comment.user ? { author: comment.user.login } : {}), createdAt: comment.created_at })),
+      blockedBy: blockers === null ? null : [...new Set(blockers.map(issue => issue.number))],
+    };
+  }
+}
+
+const execute = promisify(execFile);
+
+export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd()): GitHubApi {
+  const prefix = `repos/${config.repo}/issues`;
+  async function request(path: string, paginated = false): Promise<unknown> {
+    const args = ['api', path, '-H', 'Accept: application/vnd.github+json'];
+    if (config.host) args.push('--hostname', config.host);
+    if (paginated) args.push('--paginate', '--slurp');
+    let stdout: string;
+    try { ({ stdout } = await execute('gh', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })); }
+    catch (error) {
+      const failure = error as Error & { stderr?: string };
+      const message = failure.stderr?.trim() || failure.message;
+      const status = message.match(/HTTP (\d{3})/i)?.[1];
+      throw new GitHubApiError(message, status ? Number(status) : undefined);
+    }
+    const value: unknown = JSON.parse(stdout);
+    if (paginated) {
+      if (!Array.isArray(value) || value.some(page => !Array.isArray(page))) throw new Error(`Invalid GitHub paginated response for ${path}`);
+      return value.flat();
+    }
+    return value;
+  }
+  return {
+    getIssue: async number => await request(`${prefix}/${number}`) as GitHubIssue,
+    getComments: async number => await request(`${prefix}/${number}/comments?per_page=100`, true) as GitHubComment[],
+    getBlockers: async number => await request(`${prefix}/${number}/dependencies/blocked_by?per_page=100`, true) as GitHubIssue[],
+  };
+}
