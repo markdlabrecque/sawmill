@@ -22,6 +22,8 @@ export interface RuntimeRequest {
   signal?: AbortSignal;
 }
 export interface RuntimeSink {
+  /** Optional ownership observation, synchronous before sending role input. */
+  process?(child: import('./run-store.js').OwnedProcess): void;
   stdout(chunk: Buffer): void;
   stderr(chunk: Buffer): void;
   session(id: string): void;

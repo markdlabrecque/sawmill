@@ -2,11 +2,42 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
+import { readRun, runPath, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
+
+/** A new invocation intentionally retries queued work. Historical results do not
+ * trip its pause; subsequent terminal events are consumed once in log order. */
+export function beginLoop(cwd: string): void {
+  transaction(cwd, db => {
+    if (!db.prepare('PRAGMA table_info(run)').all().some(column => column.name === 'loop_control')) db.exec('ALTER TABLE run ADD COLUMN loop_control TEXT');
+    const cursor = Number(db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM log').get()!.id);
+    db.prepare('UPDATE run SET loop_control = ?').run(JSON.stringify({ cursor, consecutiveInfrastructure: 0 }));
+  });
+}
+
+export function consumeResults(cwd: string, threshold: number): LoopProgress {
+  return transaction(cwd, db => {
+    const control: LoopProgress = JSON.parse(String(db.prepare('SELECT loop_control FROM run').get()!.loop_control));
+    const previous = JSON.stringify(control);
+    for (const row of db.prepare('SELECT id,event FROM log WHERE id > ? ORDER BY id').all(control.cursor)) {
+      control.cursor = Number(row.id);
+      const worker = JSON.parse(String(row.event)).change?.worker as WorkerOwnership | undefined;
+      if (worker?.status !== 'finished' || !worker.result) continue;
+      if (worker.result.outcome === 'infrastructure') {
+        control.consecutiveInfrastructure++;
+        if (control.consecutiveInfrastructure >= threshold) control.pausedReason = `Paused after ${control.consecutiveInfrastructure} consecutive infrastructure results. Start a fresh mill run to retry queued work.`;
+      } else {
+        control.consecutiveInfrastructure = 0;
+        if (worker.result.outcome === 'passed') delete control.pausedReason;
+      }
+    }
+    if (JSON.stringify(control) !== previous) db.prepare('UPDATE run SET loop_control = ?').run(JSON.stringify(control));
+    return control;
+  });
+}
 export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team' | 'worker'>> & { report?: StageReport };
 
 function checkTracker(cwd: string, project: ProjectConfig): void {
@@ -70,7 +101,8 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
     if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
     const row = requireTicket(db, number);
     const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
-    if (!['queued', 'blocked'].includes(String(row.state)) || row.completion || (owner && owner.status !== 'finished')) return false;
+    const cleanup = row.completion === 'merged' && JSON.parse(String(row.team ?? '{}')).recovery && !JSON.parse(String(row.integration ?? '{}')).reported;
+    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanup) || (owner && owner.status !== 'finished')) return false;
     if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
     if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
       WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;

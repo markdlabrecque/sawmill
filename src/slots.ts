@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface SlotLease {
@@ -8,7 +8,10 @@ export interface SlotLease {
   runId: string;
   ticket: number;
   launcherPid: number;
+  launcherStart?: string;
   pid: number | null;
+  processStart?: string;
+  processToken?: string;
   created: string;
 }
 export const slotsPath = (home: string) => join(home, '.local/state/sawmill/slots');
@@ -19,6 +22,7 @@ export const slotsPath = (home: string) => join(home, '.local/state/sawmill/slot
 export function claimSlot(home: string, limit: number, owner: Omit<SlotLease, 'path'>): SlotLease | null {
   const root = slotsPath(home);
   mkdirSync(root, { recursive: true });
+  if (listSlots(home).length >= limit) return null;
   for (let index = 0; index < limit; index++) {
     const path = join(root, String(index));
     try { mkdirSync(path); }
@@ -27,7 +31,7 @@ export function claimSlot(home: string, limit: number, owner: Omit<SlotLease, 'p
       throw error;
     }
     const lease = { ...owner, path };
-    try { writeFileSync(join(path, 'owner.json'), JSON.stringify(lease)); }
+    try { writeFileSync(join(path, `${lease.token}.json`), JSON.stringify(lease)); }
     catch (error) { rmSync(path, { recursive: true, force: true }); throw error; }
     return lease;
   }
@@ -35,7 +39,10 @@ export function claimSlot(home: string, limit: number, owner: Omit<SlotLease, 'p
 }
 
 export function readSlot(path: string): SlotLease | null {
-  try { return JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8')) as SlotLease; }
+  try {
+    const file = readdirSync(path).find(name => name.endsWith('.json'));
+    return file ? JSON.parse(readFileSync(join(path, file), 'utf8')) as SlotLease : null;
+  }
   catch { return null; }
 }
 export function listSlots(home: string): { path: string; owner: SlotLease | null }[] {
@@ -45,15 +52,19 @@ export function listSlots(home: string): { path: string; owner: SlotLease | null
 }
 export function transferSlot(lease: SlotLease, pid: number): SlotLease {
   if (readSlot(lease.path)?.token !== lease.token) throw new Error('Machine slot ownership changed during launch.');
-  const next = { ...lease, pid };
+  const next = { ...lease, pid, processStart: processStart(pid) };
   const temporary = join(lease.path, `${lease.token}.tmp`);
   writeFileSync(temporary, JSON.stringify(next));
-  renameSync(temporary, join(lease.path, 'owner.json'));
+  renameSync(temporary, join(lease.path, `${lease.token}.json`));
   return next;
 }
 export function releaseSlot(lease: Pick<SlotLease, 'path' | 'token'>): boolean {
   if (readSlot(lease.path)?.token !== lease.token) return false;
-  rmSync(lease.path, { recursive: true, force: true });
+  // Only the unlink winner may remove the now-empty reservation. A second
+  // reaper cannot recursively delete a newly claimed lease at the same index.
+  try { unlinkSync(join(lease.path, `${lease.token}.json`)); }
+  catch { return false; }
+  try { rmdirSync(lease.path); } catch { /* Incomplete metadata remains occupied. */ }
   return true;
 }
 

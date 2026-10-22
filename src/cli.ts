@@ -1,5 +1,6 @@
 import { runTeam } from './team-runner.js';
 import { dispatchOnce } from './dispatch.js';
+import { runLoop } from './run-loop.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
@@ -116,6 +117,11 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const snapshot = readRun(cwd);
         emit(snapshot, formatRun(snapshot));
         return 0;
+      }
+      if (positional[0] === 'run' && positional.length === 1) {
+        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
+        emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
+        return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError('Usage: mill run once [--json]', 2);

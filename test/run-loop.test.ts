@@ -1,0 +1,174 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { writeFile, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fixture, until } from './dispatch-fixture.js';
+
+test('run waits for a live team and automatically dispatches a newly ready dependent', async t => {
+  const y = await fixture(t, [1, 2], true);
+  const running = y.command(['run', '--json']);
+  // Attach rejection immediately; the first red is the missing public command.
+  const result = running.then(value => ({ code: 0, ...value }), (error: any) => ({ code: error.code, stdout: error.stdout }));
+  await y.release();
+  const terminal = await result;
+  assert.equal(terminal.code, 0, terminal.stdout);
+  assert.deepEqual((await y.status()).tickets.map(row => row.state), ['done', 'done']);
+  assert.deepEqual((await y.starts()).map(row => row.number), [1, 1, 1, 2, 2, 2]);
+});
+
+test('paused dispatch keeps waiting for a live success and resumes queued tickets', async t => {
+  const y = await fixture(t, [1, 3, 4], true);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 2\ninfrastructure_retries: 0\npause_threshold: 1\n');
+  await writeFile(join(y.root, 'infrastructure-1'), 'yes');
+  const running = y.command(['run', '--json']).catch((error: any) => error);
+  await until(y.starts, rows => rows.length === 2);
+  await writeFile(join(y.root, 'release-1'), 'yes');
+  await until(y.status, state => JSON.stringify(state).includes('Paused after 1 consecutive infrastructure result'));
+  assert.equal((await y.starts()).some(row => row.number === 4), false);
+  await writeFile(join(y.root, 'release-3'), 'yes');
+  await until(y.starts, rows => rows.some(row => row.number === 4));
+  assert.equal((await y.status()).run.loop?.pausedReason, undefined);
+  await writeFile(join(y.root, 'release-4'), 'yes');
+  assert.equal(JSON.parse((await running).stdout).status, 'partial');
+  assert.equal((await y.status()).tickets.find(row => row.number === 4)?.state, 'done');
+});
+
+test('restart stops surviving vendors before reusing an orphan branch and its saved checkpoint', async t => {
+  const y = await fixture(t, [1], true);
+  await writeFile(join(y.root, 'save-1'), 'yes');
+  await writeFile(join(y.root, 'hold-implementer-1'), 'yes');
+  await y.release();
+  await y.once();
+  const starts = await until(y.starts, rows => rows.some(row => row.role === 'implementer'));
+  const active = starts.find(row => row.role === 'implementer')!;
+  const before = (await y.status()).tickets[0]!;
+  const descendant = await until(async () => Number(await readFile(join(y.root, 'descendant'), 'utf8').catch(() => '0')), value => value > 0);
+  process.kill(active.parent, 'SIGKILL');
+  process.kill(active.pid, 0); process.kill(descendant, 0);
+  const running = y.command(['run', '--json']).catch((error: any) => error);
+  await until(y.starts, rows => rows.filter(row => row.role === 'implementer').length === 2);
+  await rm(join(y.root, 'hold-implementer-1'));
+  const result = await running;
+  assert.equal(JSON.parse(result.stdout).status, 'ok', result.stdout);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.state, 'done');
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.equal(after.team.testBase, before.team.testBase);
+  assert.equal(await readFile(join(y.cwd, 'saved-work.txt'), 'utf8'), 'Uncommitted work before the coordinator died\n');
+  assert.equal((await y.starts()).filter(row => row.role === 'test-writers').length, 1);
+  assert.equal(await readFile(join(y.root, 'hooks'), 'utf8'), '1\n');
+  // Linux zombies cannot execute and are awaiting the container's init reaper.
+  for (const pid of [active.pid, descendant]) {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => '');
+    assert.ok(!stat || stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z '), `Still running: ${pid}`);
+  }
+});
+
+test('parallel teams wait for the integration gate without spending infrastructure retries', async t => {
+  const y = await fixture(t, [1, 2, 3], true);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 2\ninfrastructure_retries: 0\n');
+  y.env.FIXTURE_MERGE_DELAY = '450';
+  await y.release();
+  const result = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.deepEqual((await y.status()).tickets.map(row => row.state), ['done', 'done', 'done'], result.stdout);
+  assert.equal(JSON.parse(result.stdout).started.length, 3);
+  assert.ok((await y.status()).tickets.every(row => !row.team.infrastructureAttempts?.length));
+  const requests = (await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(requests.filter(args => args.includes('PUT')).length, 3);
+  assert.ok(requests.every(args => !args.some((arg: string) => /\/issues(?:\?|\/\d+$)/.test(arg) && args.includes('GET'))));
+});
+
+test('infrastructure threshold exits visibly paused with queued work and a fresh run tries it', async t => {
+  const y = await fixture(t, [1, 3], true);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 1\ninfrastructure_retries: 0\npause_threshold: 1\n');
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'if [ "$MILL_TICKET" = 1 ]; then echo "fixture setup unavailable" >&2; exit 9; fi\n');
+  await y.release();
+  const result = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.equal(JSON.parse(result.stdout).status, 'paused', result.stdout);
+  const state = await y.status();
+  assert.equal(state.tickets.find(row => row.number === 3)?.state, 'queued');
+  assert.match(JSON.stringify(state), /Paused after 1 consecutive infrastructure result/);
+  const again = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.equal(JSON.parse(again.stdout).status, 'partial');
+  assert.equal((await y.status()).tickets.find(row => row.number === 3)?.state, 'done');
+});
+
+test('a replacement coordinator retains a live worker and its machine lease', async t => {
+  const y = await fixture(t, [1], true);
+  const original = y.command(['run', '--json']);
+  const exited = original.catch((error: any) => error);
+  const [first] = await until(y.starts, rows => rows.length === 1);
+  process.kill(original.child.pid!, 'SIGKILL');
+  await exited;
+  const replacement = y.command(['run', '--json']).catch((error: any) => error);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal((await y.starts()).length, 1);
+  assert.equal((await y.status()).tickets[0]?.worker?.token, first.worker.token);
+  process.kill(first.pid, 0); process.kill(first.parent, 0);
+  await y.release();
+  assert.equal(JSON.parse((await replacement).stdout).status, 'ok');
+  assert.equal((await y.status()).tickets[0]?.worker?.token, first.worker.token);
+});
+
+test('capacity held by another millyard waits without a busy loop and wakes on release', async t => {
+  const a = await fixture(t), b = await fixture(t);
+  await writeFile(join(a.userConfig, 'config.yaml'), 'concurrency: 1\n');
+  await a.once();
+  await until(a.starts, rows => rows.length === 1);
+  const command = b.command(['run', '--json'], a.home);
+  const finished = command.catch((error: any) => error);
+  const ticks = async () => {
+    const stat = await readFile(`/proc/${command.child.pid}/stat`, 'utf8');
+    const parts = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return Number(parts[11]) + Number(parts[12]);
+  };
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const before = await ticks();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.ok(await ticks() - before < 10, 'Waiting coordinator consumed CPU instead of waiting');
+  assert.equal((await b.starts()).length, 0);
+  await a.release();
+  await until(b.starts, rows => rows.length === 1);
+  await b.release();
+  assert.equal(JSON.parse((await finished).stdout).status, 'partial');
+});
+
+test('recovery of an integration kill preserves accepted merge evidence and never merges twice', async t => {
+  const y = await fixture(t, [1], true);
+  await writeFile(join(y.root, 'hold-delete'), 'yes');
+  await y.release();
+  await y.once();
+  await until(async () => readFile(join(y.root, 'deleting'), 'utf8').catch(() => ''), value => value.length > 0);
+  const before = (await y.status()).tickets[0]!;
+  assert.equal(before.completion, 'merged');
+  assert.ok(before.mergeCommit);
+  process.kill(before.worker!.pid!, 'SIGKILL');
+  const command = y.command(['run', '--json']).catch((error: any) => error);
+  await until(async () => (await readFile(join(y.root, 'deleting'), 'utf8')).trim().split('\n'), rows => rows.length === 2);
+  await rm(join(y.root, 'hold-delete'));
+  const result = await command;
+  assert.equal(JSON.parse(result.stdout).status, 'ok', result.stdout);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.mergeCommit, before.mergeCommit);
+  assert.equal(after.state, 'done');
+  assert.equal((await y.starts()).length, 3);
+  assert.equal((await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).trim().split('\n').filter(line => JSON.parse(line).includes('PUT')).length, 1);
+});
+
+test('logjam and blocked-only runs exit without dispatch and still enforce the clean integration guard', async t => {
+  const y = await fixture(t, [1, 2]);
+  await y.release();
+  await y.command(['run', '--json']).catch((error: any) => error);
+  const before = await y.starts();
+  const result = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.equal(JSON.parse(result.stdout).status, 'partial');
+  assert.deepEqual(await y.starts(), before);
+  y.git('checkout', '-b', 'wrong');
+  const wrong = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.match(JSON.parse(wrong.stdout).message ?? '', /integration branch/);
+  y.git('checkout', 'integration');
+  await writeFile(join(y.cwd, 'README.md'), 'dirty');
+  const dirty = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.match(JSON.parse(dirty.stdout).message ?? '', /dirty tree/);
+  y.git('restore', 'README.md');
+});

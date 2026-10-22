@@ -7,6 +7,7 @@ import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
 import { checkMillyard } from './millyard.js';
+import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { readRun, type InfrastructureAttempt, type TeamProgress } from './run-store.js';
@@ -46,7 +47,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (ticket.completion === 'manual' || ticket.blockers.length) throw new CliError('Team requires an unfinished, unblocked ticket.');
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
-    await checkMillyard(cwd, project.integration);
+    await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = 'worktree-create';
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
@@ -173,11 +174,17 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         await save({ stage });
       }
-      if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
+      const recovery = progress.recovery;
+      if (!recovery && await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? createRuntime(project.runtime);
       const repairing = Boolean(progress.repair && progress.testCommit);
-      const resuming = progress.question?.role;
+      const recoveredRole: Role | undefined = recovery ? progress.testCommit
+        ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
+        : 'test-writers' : undefined;
+      const resuming = progress.question?.role ?? recoveredRole;
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
+      delete progress.recovery;
       const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source']): Promise<TeamResult | undefined> => {
         delete progress.question;
         progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
