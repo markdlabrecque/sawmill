@@ -9,7 +9,9 @@ import { createRuntime } from './runtime-factory.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
-import { integrate, type IntegrationResult } from './integrate.js';
+import { integrate, tests, type IntegrationResult } from './integrate.js';
+import { recordChild } from './process-ownership.js';
+import { processStart } from './slots.js';
 import { checkMillyard } from './millyard.js';
 import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
@@ -25,6 +27,8 @@ import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, wri
 
 const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
+const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
+const redCheckCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
 export interface TeamResult {
@@ -245,6 +249,38 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome);
         if (capped) return { ...capped, integration: result };
       };
+      /** Tests that already pass guard nothing. True sends the work back to the test-writers. */
+      const redCheck = async (): Promise<TeamResult | boolean> => {
+        stage = 'tests-written';
+        const head = await git(path, 'rev-parse', 'HEAD');
+        // A timeout or killed run is not green.
+        const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${project.tests.timeout}.\n${run.output}`
+          : run.code === null ? `Tests were killed.\n${run.output}` : undefined;
+        const tested = await retryInfrastructure(() => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true })),
+          unusable, () => ({}));
+        checkStop(cwd, number);
+        const error = unusable(tested);
+        if (error) return await stop(infrastructure(error));
+        if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        delete progress.redPending;
+        if (tested.code !== 0) { delete progress.redFeedback; return false; }
+        const checks = progress.redChecks ?? 0;
+        progress.redFeedback = notRed;
+        // The rerun records a fresh baseline, so a legitimate rewrite is not tampering.
+        delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
+        resume = progress.next = 'test-writers';
+        if (checks >= redCheckCap) {
+          const details = `The tests passed without any new code after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
+          if (!await transition(cwd, project, tracker, number, {
+            state: 'logjam', reason: 'tests-not-red', stage, team: progress,
+            report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage, round: checks + 1 },
+          }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
+          return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
+        }
+        progress.redChecks = checks + 1;
+        await save({ report: { stage: 'tests-not-red', details: `${notRed}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
+        return true;
+      };
       if (resuming === 'integrate') {
         if (await changedTests(path, progress)) {
           const capped = await bounce(tampered, 'protected-tests');
@@ -265,6 +301,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         resume = progress.next = role;
         delete progress.approvedHead;
         checkStop(cwd, number);
+        // Here rather than after the test-writers, so a stop or crash during the check resumes it.
+        if (role === 'implementer' && progress.redPending) {
+          const sent = await redCheck();
+          if (typeof sent === 'object') return sent;
+          if (sent) { role = 'test-writers'; continue; }
+        }
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
@@ -317,6 +359,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             for (const file of stdout.split('\0').filter(Boolean)) files.add(file);
           }
           progress.testFiles = [...files];
+          progress.redPending = true;
         }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');

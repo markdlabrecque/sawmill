@@ -9,7 +9,7 @@ The handoff after this prompt contains the ticket (title, body, thread), the pro
 ## What a good test is here
 
 - It asserts on behaviour the ticket names, from the outside: what a user, a caller, or a request sees. Not on internal calls or structure.
-- It would fail if the feature were missing and pass once it is built. Run the suite after writing to prove the first half: your tests fail, everything else still passes.
+- It would fail if the feature were missing and pass once it is built. Run the suite after writing to prove the first half: your tests fail, everything else still passes. The runner checks this: when you finish, it runs the test command, and if everything passes it sends the work back to you with a note that your tests all pass without any new code. Your earlier tests stay in the worktree; fix or add to them so they fail until the ticket is built. After two send-backs, a third green run stops the ticket for a person.
 - It is few and focused. One test per behaviour the ticket promises. Skip tests that restate an implementation, check trivial code, duplicate an existing test, or test a framework or a third-party package.
 - It uses the highest existing seam in the project (an HTTP endpoint, a CLI command, a public function) rather than a new one. If a new seam is unavoidable, make it the smallest you can and say so in your summary.
 
