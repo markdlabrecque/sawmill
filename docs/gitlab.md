@@ -6,7 +6,7 @@ and configure its authentication yourself. Sawmill uses that existing setup; it
 does not fetch credentials or log in. Project paths and branch names are encoded
 as individual API path parameters.
 
-Use GitLab 17.0 or later for the child-pipeline query. The adapter uses
+The adapter uses
 `glab api --include --hostname` and JSON on stdin with `--input -`. Requests have
 a 60-second timeout. Lists follow numeric or Link pagination and reject reported
 incomplete totals. Pagination is bounded at 10,000 pages.
@@ -55,18 +55,29 @@ state plus a merge commit. Deletion is a separate operation after that completio
 has been saved. These use GitLab's [MR](https://docs.gitlab.com/api/merge_requests/)
 and [branch](https://docs.gitlab.com/api/branches/) APIs.
 
-CI reads all project pipelines filtered to the exact tested SHA, including a
-separate child-pipeline query. Every returned pipeline must prove that SHA.
-Only an observed, nonempty set of all-success pipelines passes. Failed, canceled
-and skipped pipelines fail; running, manual, scheduled and other waiting states
-keep waiting. Missing pipelines also keep waiting. Unknown statuses, stale SHAs
-and malformed pagination return infrastructure. Diagnostics include pipeline
-IDs, statuses and a log URL. See the [pipeline API](https://docs.gitlab.com/api/pipelines/).
+CI selects the MR's current `head_pipeline`, then verifies that pipeline's exact
+tested source SHA and project identity. Historical runs and unrelated branch
+pipelines cannot override that attempt. Sawmill traverses the required downstream
+pipelines linked by its trigger jobs, checking each advertised ID and SHA against
+the downstream detail. Optional (`allow_failure`) triggers do not gate merging.
+Descendant SHAs may differ from the source SHA; each must match its trigger's
+advertised SHA. Cross-project descendants require a verified project identity or
+a same-host GitLab pipeline URL.
 
-This gate is conservative: an older failed pipeline for the same SHA still
-blocks a newly created green pipeline. Retry the failed pipeline or push a repair
-commit. Merged-results pipelines on synthetic SHAs do not prove the source SHA;
-a project with only those pipelines needs an exact-source-head pipeline too.
+Only a nonempty all-success required tree passes. Failed, canceled and skipped
+pipelines fail; running, manual, scheduled and other waiting states keep waiting.
+Missing head pipelines also keep waiting. Unknown statuses, mismatched SHAs,
+missing required descendants and malformed pagination fail closed. Diagnostics
+include pipeline IDs, statuses and URLs. The adapter uses `/trigger_jobs` on
+GitLab 19.2+, falling back to `/bridges` only on HTTP 404. See the
+[MR API](https://docs.gitlab.com/api/merge_requests/),
+[trigger-job API](https://docs.gitlab.com/api/jobs/#list-pipeline-trigger-jobs), and
+[pipeline API](https://docs.gitlab.com/api/pipelines/), checked October 22, 2026.
+
+A superseding successful MR rerun can pass without a new commit. A current
+required pending or failed descendant still blocks. Merged-results pipelines on
+synthetic SHAs do not prove the tested source SHA and remain unsupported by this
+exact-source-head gate.
 
 The existing recovery limits apply: an accepted comment whose response is lost
 may be posted twice, an unacknowledged merge needs reconciliation, and branch

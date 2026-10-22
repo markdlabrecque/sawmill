@@ -19,8 +19,8 @@ function sha(value: unknown): value is string { return typeof value === 'string'
 export class GitLabTracker implements Tracker {
   constructor(private readonly config: ProjectConfig['tracker'], private readonly cwd = process.cwd()) {}
 
-  private async request(method: string, suffix: string, body?: object): Promise<{ value: unknown; headers: Map<string, string> }> {
-    const args = ['api', `projects/${encodeURIComponent(this.config.repo)}${suffix}`, '--method', method,
+  private async request(method: string, suffix: string, body?: object, project = this.config.repo): Promise<{ value: unknown; headers: Map<string, string> }> {
+    const args = ['api', `projects/${encodeURIComponent(project)}${suffix}`, '--method', method,
       '--hostname', this.config.host ?? 'gitlab.com', '--include'];
     if (body) args.push('--input', '-');
     return new Promise((resolve, reject) => {
@@ -46,11 +46,11 @@ export class GitLabTracker implements Tracker {
     });
   }
 
-  private async list(suffix: string): Promise<unknown[]> {
+  private async list(suffix: string, project = this.config.repo): Promise<unknown[]> {
     const rows: unknown[] = [];
     let total: number | undefined;
     for (let page = 1; page <= 10000; page++) {
-      const { value, headers } = await this.request('GET', `${suffix}${suffix.includes('?') ? '&' : '?'}per_page=100&page=${page}`);
+      const { value, headers } = await this.request('GET', `${suffix}${suffix.includes('?') ? '&' : '?'}per_page=100&page=${page}`, undefined, project);
       if (!Array.isArray(value)) throw new Error('GitLab returned an invalid paginated list.');
       rows.push(...value);
       const count = headers.get('x-total');
@@ -64,7 +64,7 @@ export class GitLabTracker implements Tracker {
         const url = new URL(link);
         const linkedPage = url.searchParams.get('page');
         if (url.host.toLowerCase() !== (this.config.host ?? 'gitlab.com').toLowerCase() ||
-            decodeURIComponent(url.pathname) !== `/api/v4/projects/${this.config.repo}${suffix.split('?')[0]}` ||
+            decodeURIComponent(url.pathname) !== `/api/v4/projects/${project}${suffix.split('?')[0]}` ||
             linkedPage === null || (next !== undefined && next !== linkedPage)) throw new Error('GitLab returned inconsistent pagination links.');
         next = linkedPage;
       }
@@ -175,24 +175,63 @@ export class GitLabTracker implements Tracker {
     return result;
   }
 
-  async getPipeline(commit: string): Promise<Pipeline> {
+  async getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline> {
     if (!sha(commit)) throw new Error('GitLab CI requires an exact commit SHA.');
-    const query = new URLSearchParams({ sha: commit, order_by: 'id', sort: 'desc' });
-    const rows = [...await this.list(`/pipelines?${query}`), ...await this.list(`/pipelines?${query}&source=parent_pipeline`)];
-    const observations = rows.map(value => {
-      const pipeline = record(value);
+    if (!changeRequest || changeRequest.headCommit !== commit) throw new Error('GitLab CI requires the exact MR and source head.');
+    const mr = record((await this.request('GET', `/merge_requests/${encodeURIComponent(String(changeRequest.id))}`)).value);
+    const current = this.changeRequest(mr);
+    if (String(current.id) !== String(changeRequest.id) || current.headCommit !== commit) throw new Error('GitLab MR head differs from the tested commit during CI.');
+    // GitLab chooses the MR-relevant current attempt, including MR pipeline
+    // precedence. A SHA-wide project list also contains unrelated and old runs.
+    if (mr.head_pipeline === null) return { headCommit: commit, state: 'none' };
+    const root = record(mr.head_pipeline);
+    if (!positive(root.id) || root.sha !== commit || root.project_id !== mr.project_id) throw new Error('GitLab returned an invalid current pipeline or mismatched head.');
+    const observations: { state: 'passed' | 'pending' | 'failed'; detail: string; url?: string }[] = [];
+    const seen = new Set<string>();
+    const observe = (row: RecordValue, label: string) => {
       const pending = ['created', 'waiting_for_resource', 'preparing', 'waiting_for_callback', 'pending', 'running', 'canceling', 'manual', 'scheduled'];
-      if (!positive(pipeline.id) || pipeline.sha !== commit || typeof pipeline.status !== 'string' ||
-          ![...pending, 'success', 'failed', 'canceled', 'skipped'].includes(pipeline.status)) throw new Error('GitLab returned an invalid pipeline or mismatched head.');
-      return { state: pipeline.status === 'success' ? 'passed' : pending.includes(pipeline.status) ? 'pending' : 'failed',
-        detail: `Pipeline ${pipeline.id}: ${pipeline.status}`, url: typeof pipeline.web_url === 'string' ? pipeline.web_url : undefined };
-    });
-    const failed = observations.find(row => row.state === 'failed');
-    const pending = observations.find(row => row.state === 'pending');
-    const evidence = failed ?? pending ?? observations[0];
-    return { headCommit: commit, state: failed ? 'failed' : pending ? 'pending' : observations.length ? 'passed' : 'none',
-      ...(evidence?.url ? { logUrl: evidence.url } : {}),
-      ...(observations.length ? { diagnostics: observations.map(row => row.detail).join('\n') } : {}) };
+      if (typeof row.status !== 'string' || ![...pending, 'success', 'failed', 'canceled', 'skipped'].includes(row.status)) throw new Error('GitLab returned an invalid pipeline status.');
+      observations.push({ state: row.status === 'success' ? 'passed' : pending.includes(row.status) ? 'pending' : 'failed',
+        detail: `${label}: ${row.status}`, url: typeof row.web_url === 'string' ? row.web_url : undefined });
+    };
+    const visit = async (pipeline: RecordValue): Promise<void> => {
+      if (!positive(pipeline.id) || !sha(pipeline.sha)) throw new Error('GitLab returned invalid downstream identity.');
+      let project: string;
+      if (positive(pipeline.project_id)) project = String(pipeline.project_id);
+      else {
+        // Native trigger responses may identify the downstream project only by URL.
+        if (typeof pipeline.web_url !== 'string') throw new Error('Missing downstream project identity.');
+        const url = new URL(pipeline.web_url);
+        const path = url.pathname.match(/^\/(.+?)(?:\/-)?\/pipelines\/(\d+)$/);
+        if (url.protocol !== 'https:' || url.host.toLowerCase() !== (this.config.host ?? 'gitlab.com').toLowerCase() || !path || Number(path[2]) !== pipeline.id) throw new Error('Invalid downstream project URL.');
+        project = decodeURIComponent(path[1]!);
+      }
+      const key = `${project}/${pipeline.id}`;
+      if (seen.has(key) || seen.size >= 1000) throw new Error('GitLab pipeline graph is cyclic or exceeds the traversal limit.');
+      seen.add(key);
+      const detail = record((await this.request('GET', `/pipelines/${pipeline.id}`, undefined, project)).value);
+      if (detail.id !== pipeline.id || !positive(detail.project_id) || (positive(pipeline.project_id) && detail.project_id !== pipeline.project_id) || detail.sha !== pipeline.sha) throw new Error('GitLab pipeline identity or head changed.');
+      observe(detail, `Pipeline ${pipeline.id}`);
+      let jobs: unknown[];
+      try { jobs = await this.list(`/pipelines/${pipeline.id}/trigger_jobs`, project); }
+      catch (error) {
+        // GitLab before 19.2 exposes the same trigger-job contract as bridges.
+        if (!(error instanceof GitLabApiError) || error.status !== 404) throw error;
+        jobs = await this.list(`/pipelines/${pipeline.id}/bridges`, project);
+      }
+      for (const value of jobs) {
+        const job = record(value);
+        if (!positive(job.id) || typeof job.allow_failure !== 'boolean') throw new Error('GitLab returned an invalid trigger job.');
+        if (job.allow_failure) continue;
+        observe(job, `Trigger ${job.id}`);
+        if (job.downstream_pipeline != null) await visit(record(job.downstream_pipeline));
+        else if (job.status === 'success') throw new Error('Successful required trigger has no downstream pipeline evidence.');
+      }
+    };
+    await visit(root);
+    const evidence = observations.find(row => row.state === 'failed') ?? observations.find(row => row.state === 'pending') ?? observations[0]!;
+    return { headCommit: commit, state: evidence.state, ...(evidence.url ? { logUrl: evidence.url } : {}),
+      diagnostics: observations.map(row => row.detail).join('\n') };
   }
 
   async mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }> {

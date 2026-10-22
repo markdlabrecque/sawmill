@@ -1,3 +1,4 @@
+import { requireBrowserCapability } from './user-testing.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { MachineConfig, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { checkMillyard } from './millyard.js';
-import { readRun, stoppedMergeCleanup, type RunSnapshot, type WorkerOwnership } from './run-store.js';
+import { readRun, mergeCleanupPending, type RunSnapshot, type WorkerOwnership } from './run-store.js';
 import { claimSlot, processStart, releaseSlot, transferSlot, type SlotLease } from './slots.js';
 import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
@@ -23,7 +24,7 @@ export interface DispatchResult {
 export type WorkerEvent = { ticket: number; worker: WorkerOwnership };
 /** Ordered local candidates only. Claiming repeats these checks inside a write transaction. */
 export function readyTickets(snapshot: RunSnapshot): number[] {
-  return snapshot.tickets.filter(row => row.state === 'queued' && (!row.completion || stoppedMergeCleanup(row) || (row.completion === 'merged' && row.team.recovery && !row.integration.reported)) && !row.blockers.length &&
+  return snapshot.tickets.filter(row => row.state === 'queued' && (!row.completion || mergeCleanupPending(row)) && !row.blockers.length &&
     (!row.worker || row.worker.status === 'finished') && !snapshot.pendingWrites.some(write => write.ticket === row.number))
     .sort((a, b) => a.position - b.position).map(row => row.number);
 }
@@ -72,6 +73,7 @@ export async function dispatchPreflight(cwd: string, project: ProjectConfig): Pr
   const snapshot = readRun(cwd);
   const a = snapshot.run.tracker, b = project.tracker;
   if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
+  for (const ticket of snapshot.tickets) if (!ticket.completion && ticket.state !== 'done') requireBrowserCapability(project, ticket);
   return snapshot;
 }
 

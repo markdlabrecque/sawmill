@@ -9,7 +9,7 @@ const endpoint = args[1];
 const statePath = process.env.FAKE_GITLAB_STATE;
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
 const url = new URL('https://fixture.invalid/' + endpoint);
-const prefix = '/projects/group%2Fsubgroup%2Ftool';
+const prefix = url.pathname.startsWith('/projects/71/') ? '/projects/71' : '/projects/group%2Fsubgroup%2Ftool';
 const route = url.pathname.slice(prefix.length);
 const fail = (status, message) => { process.stderr.write(`glab: ${message} (HTTP ${status})\n`); process.exit(1); };
 if (args[0] !== 'api' || !url.pathname.startsWith(prefix) || args[args.indexOf('--hostname') + 1] !== state.host) fail(400, 'Wrong project or hostname');
@@ -20,7 +20,7 @@ function reply(value, next) {
     const link = new URL('https://' + state.host + '/api/v4/' + endpoint); link.searchParams.set('page', next);
     pagination = next ? `Link: <${link}>; rel="next"\r\n` : '';
   }
-  if (state.truncatedPipeline && route === '/pipelines') pagination = 'X-Next-Page: \r\nX-Total: 2\r\n';
+  if (state.truncatedPipeline && /\/pipelines\/\d+\/(trigger_jobs|bridges)$/.test(route)) pagination = 'X-Next-Page: \r\nX-Total: 2\r\n';
   if (args.includes('--include')) process.stdout.write(value === undefined ? 'HTTP/2.0 204 No Content\r\n\r\n' : `HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n${pagination}\r\n`);
   process.stdout.write(value === undefined ? '' : JSON.stringify(value));
   process.exit(0);
@@ -33,9 +33,16 @@ function list(rows) {
 }
 const git = (...argv) => execFileSync('git', argv, { cwd: state.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const head = () => git('ls-remote', 'origin', 'refs/heads/mill/7').split(/\s/)[0];
+const pip = row => ({ project_id: 71, ...row, sha: row.sha === 'HEAD_SHA' ? head() : row.sha });
+function currentPipeline() {
+  const relevant = (state.pipelines || []).filter(p => p.ref === 'mill/7' && p.source !== 'parent_pipeline');
+  const mrs = relevant.filter(p => p.source === 'merge_request_event');
+  const rows = mrs.length ? mrs : relevant;
+  return rows.sort((a, b) => b.id - a.id)[0];
+}
 function mr() {
   return { iid: 42, project_id: 71, source_project_id: 71, target_project_id: 71, source_branch: 'mill/7', target_branch: 'integration',
-    web_url: `https://${state.host}/group/subgroup/tool/-/merge_requests/42`, state: 'opened', sha: head(), ...state.mr, ...state.mrOverride };
+    head_pipeline: currentPipeline() ? pip(currentPipeline()) : null, web_url: `https://${state.host}/group/subgroup/tool/-/merge_requests/42`, state: 'opened', sha: head(), ...state.mr, ...state.mrOverride };
 }
 if (route === '/merge_requests' && method === 'GET') {
   if (url.searchParams.get('source_branch') !== 'mill/7' || url.searchParams.get('target_branch') !== 'integration' || url.searchParams.get('state') !== 'opened') fail(400, 'Wrong MR filters');
@@ -49,6 +56,13 @@ if (route === '/merge_requests' && method === 'POST') {
   fs.writeFileSync(statePath, JSON.stringify(state)); reply(mr());
 }
 if (route === '/merge_requests/42' && method === 'GET') reply({ ...mr(), ...(state.finalMrHead ? { sha: state.finalMrHead } : {}) });
+const pipelineRoute = route.match(/^\/pipelines\/(\d+)(?:\/(trigger_jobs|bridges))?$/);
+if (pipelineRoute && method === 'GET') {
+  if (pipelineRoute[2]) list((state.triggers?.[pipelineRoute[1]] || []).map(j => ({ ...j, downstream_pipeline: j.downstream_pipeline ? pip(j.downstream_pipeline) : null })));
+  const p = (state.pipelines || []).find(p => p.id === Number(pipelineRoute[1]));
+  if (!p) fail(404, 'Pipeline not found');
+  reply(pip(p));
+}
 if (route === '/pipelines' && method === 'GET') {
   if (url.searchParams.get('sha') !== head()) fail(400, 'Pipeline must request the exact pushed SHA');
   list((state.pipelines || []).filter(row => url.searchParams.get('source') === 'parent_pipeline' ? row.source === 'parent_pipeline' : row.source !== 'parent_pipeline')

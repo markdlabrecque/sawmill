@@ -89,8 +89,8 @@ test('integrate rebases, tests and squash-merges through a ticket-linked PR, the
   assert.equal(value.outcome, 'merged');
   assert.equal(value.changeRequestUrl, 'https://github.com/team/tool/pull/42');
   assert.equal(y.git('rev-parse', 'HEAD'), value.mergeCommit);
-  assert.notEqual(y.git('rev-parse', 'mill/9'), before);
-  assert.equal(y.git('rev-parse', 'mill/9^'), base);
+  assert.notEqual((await y.status()).tickets[0].integration.mergedHead, before);
+  assert.equal(y.git('rev-parse', `${(await y.status()).tickets[0].integration.mergedHead}^`), base);
   assert.equal(y.tracker.head('mill/9'), '');
   assert.deepEqual(y.tracker.methods, ['squash']);
   assert.match(y.tracker.requests[0]!.title, /^#9: Integrate approved work/);
@@ -98,7 +98,9 @@ test('integrate rebases, tests and squash-merges through a ticket-linked PR, the
   assert.match(y.tracker.requests[0]!.body, /https:\/\/github.com\/team\/tool\/issues\/9/);
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
-  assert.equal(row.integration.mergedHead, y.git('rev-parse', 'mill/9'));
+  assert.equal(row.integration.mergedHead, y.tracker.requests[0]!.headCommit);
+  assert.equal(row.integration.localRemoved, true);
+  assert.equal(y.git('branch', '--list', 'mill/9'), '');
   assert.equal(y.tracker.ticket.state, 'closed');
   const report = y.tracker.ticket.comments.at(-1)!.body;
   for (const text of ['[sawmill:merged]', 'feature.test.ts', 'review-session', value.mergeCommit, value.changeRequestUrl]) assert.ok(report.includes(text), report);
@@ -110,6 +112,8 @@ test('cleanup recognizes the exact squash-merged head but preserves newer commit
   for (const newer of [false, true]) {
     const y = await fixture(t);
     assert.equal((await y.cli('integrate', '9')).code, 0);
+    const mergedHead = (await y.status()).tickets[0].integration.mergedHead;
+    y.git('worktree', 'add', '-b', 'mill/9', y.path, mergedHead);
     if (newer) {
       await writeFile(join(y.path, 'wip'), 'Keep newer work\n');
       y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'New unmerged work');
@@ -316,7 +320,7 @@ test('the millyard fetches current remote integration before rebasing', async t 
   assert.notEqual(y.git('rev-parse', 'HEAD'), remoteBase);
   const result = await y.cli('integrate', '9', '--json');
   assert.equal(result.code, 0, result.stdout);
-  assert.equal(y.git('rev-parse', 'mill/9^'), remoteBase);
+  assert.equal(y.git('rev-parse', `${(await y.status()).tickets[0].integration.mergedHead}^`), remoteBase);
   assert.equal(await readFile(join(y.cwd, 'concurrent'), 'utf8'), 'Remote integration update\n');
 });
 
@@ -387,7 +391,7 @@ test('ci wait polls at the machine interval and merges only the tested head afte
   const result = await y.cli('integrate', '9', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'merged');
-  const head = y.git('rev-parse', 'mill/9');
+  const head = (await y.status()).tickets[0].integration.mergedHead;
   assert.deepEqual(heads, [head, head]);
   assert.deepEqual(delays, [2000]);
   assert.deepEqual(y.tracker.methods, ['squash']);
@@ -629,8 +633,8 @@ test('native GitHub CI never treats terminal unsuccessful checks as passed', asy
       checks: { total_count: 1, check_runs: [{ head_sha: 'HEAD_SHA', name: 'unit', status: 'completed', conclusion }] },
       status: { sha: 'HEAD_SHA', state: 'success', total_count: 1, statuses: [{ context: 'legacy', state: 'success' }] },
     }, async () => { throw new Error('Terminal checks must not wait'); });
-    assert.equal(result.value.outcome, 'ci-failed', `${conclusion}: ${result.stdout}`);
-    assert.ok(!result.requests.some(r => r.endpoint.endsWith('/merge')));
+    assert.equal(result.value.pipeline.state, ['neutral', 'skipped'].includes(conclusion ?? '') ? 'passed' : 'failed', `${conclusion}: ${result.stdout}`);
+    assert.equal(result.requests.some(r => r.endpoint.endsWith('/merge')), ['neutral', 'skipped'].includes(conclusion ?? ''));
   }
 });
 
@@ -700,4 +704,18 @@ test('a PR head changed at merge refusal remains infrastructure even if the olde
   assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
   assert.match(JSON.parse(result.stdout).message, /head/i);
   assert.equal((await y.status()).tickets[0].completion, null);
+});
+
+test('native GitHub accepts skipped and neutral checks while retaining failed and pending gates', async t => {
+  for (const conclusion of ['skipped', 'neutral']) for (const other of ['success', 'failure', 'pending']) {
+    const y = await nativeCiFixture(t);
+    const result = await y.invoke({
+      checks: { total_count: 2, check_runs: [
+        { head_sha: 'HEAD_SHA', name: 'conditional', status: 'completed', conclusion },
+        { head_sha: 'HEAD_SHA', name: 'required', status: other === 'pending' ? 'in_progress' : 'completed', conclusion: other === 'pending' ? null : other },
+      ] }, status: { sha: 'HEAD_SHA', state: 'pending', total_count: 0, statuses: [] },
+    }, async () => { throw new Error('pending check still blocks'); });
+    assert.equal(result.value.pipeline.state, other === 'success' ? 'passed' : other === 'failure' ? 'failed' : 'pending', result.stdout);
+    assert.equal(result.requests.some(r => r.endpoint.endsWith('/merge')), other === 'success', result.stdout);
+  }
 });

@@ -294,12 +294,19 @@ test('Codex factory refuses browser cases explicitly without starting a vendor p
   const marker = join(y.root, 'codex-started');
   await writeFile(join(y.root, 'codex'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected'); process.exitCode = 1;\n`);
   await chmod(join(y.root, 'codex'), 0o755);
+  await writeFile(join(y.root, 'gh'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected tracker call'); process.exitCode = 71;\n`);
+  await chmod(join(y.root, 'gh'), 0o755);
   const previous = process.env.PATH;
   process.env.PATH = `${y.root}:${previous ?? ''}`;
   t.after(() => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; });
   const result = await y.invoke(['team', 'review', '16', '--json']);
   assert.equal(result.code, 1, result.stdout);
-  assert.match(JSON.parse(result.stdout).outcome.error, /Codex browser capability is unsupported/);
+  assert.match(JSON.parse(result.stdout).message, /Codex browser capability is unsupported/);
+  for (const args of [['team', 'run', '16', '--json'], ['run', 'once', '--json']]) {
+    const refused = await y.invoke(args, { tracker: undefined });
+    assert.equal(refused.code, 1, refused.stdout);
+    assert.match(refused.stdout, /Codex browser capability is unsupported/);
+  }
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
   assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:user-testing]')));
 });

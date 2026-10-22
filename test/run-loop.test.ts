@@ -266,3 +266,90 @@ test('the ordinary loop releases a stopped team and dispatches the next queued t
   assert.equal(JSON.parse(result.stdout).status, 'partial');
   assert.equal((await y.status()).tickets.find(row => row.number === 3)?.state, 'done');
 });
+
+test('actual dispatcher resumes each completed role after its mirror outage without replaying roles', async t => {
+  for (const [stage, count] of [['tests-written', 1], ['implemented', 2], ['review-pass', 3]] as const) {
+    const y = await fixture(t, [1], true);
+    await y.release();
+    await writeFile(join(y.root, 'fail-mirror-stage'), stage);
+    const first = await y.command(['run', '--json']).catch((e: any) => e);
+    assert.equal(JSON.parse(first.stdout).status, 'partial');
+    const before = (await y.status()).tickets[0]!;
+    assert.equal(before.reason, 'tracker');
+    assert.equal((await y.starts()).length, count);
+    assert.ok(before.team.testCommit);
+    await rm(join(y.root, 'fail-mirror-stage'));
+    await y.command(['run', 'answer', '1', '--json']);
+    const resumed = await y.command(['run', '--json']);
+    assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
+    const after = (await y.status()).tickets[0]!;
+    assert.equal(after.team.testCommit, before.team.testCommit);
+    assert.deepEqual(after.team.testFiles, before.team.testFiles);
+    assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  }
+});
+
+test('process recovery keeps the durable successor of a completed reviewer', async t => {
+  const y = await fixture(t, [1], true);
+  await y.release();
+  await writeFile(join(y.root, 'hold-review-mirror'), 'yes');
+  await y.once();
+  const state = await until(y.status, s => s.tickets[0]?.stage === 'review-pass');
+  const row = state.tickets[0]!;
+  assert.equal(row.team.next, 'integrate');
+  process.kill(row.worker!.pid!, 'SIGKILL');
+  await rm(join(y.root, 'hold-review-mirror'));
+  await y.command(['run', '--json']).catch((e: any) => e);
+  const recovered = await y.status();
+  assert.equal(recovered.tickets[0]!.team.recovery?.stage, 'review-pass');
+  await y.command(['run', 'answer', '1']);
+  const resumed = await y.command(['run', '--json']);
+  assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
+  assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  assert.equal((await y.status()).tickets[0]!.team.testCommit, row.team.testCommit);
+});
+
+test('actual dispatch retries failed setup and teardown before allowing any role', async t => {
+  const y = await fixture(t, [1], true);
+  await y.release();
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'echo attempted >> "$FIXTURE_DIR/setup-attempts"; exit 1\n');
+  await writeFile(join(y.cwd, '.mill/teardown.sh'), 'exit 1\n');
+  await y.command(['run', '--json']).catch((e: any) => e);
+  const first = (await y.status()).tickets[0]!;
+  assert.equal(first.reason, 'environment'); assert.equal(first.provisioned, false);
+  assert.ok(first.worktree); assert.equal((await y.starts()).length, 0);
+  await writeFile(join(first.worktree!, 'keep.txt'), 'Retained user work\n');
+  await y.command(['run', 'answer', '1']);
+  await y.command(['run', '--json']).catch((e: any) => e);
+  assert.equal((await y.starts()).length, 0);
+  assert.equal(await readFile(join(first.worktree!, 'keep.txt'), 'utf8'), 'Retained user work\n');
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'git -C "$MILL_WORKTREE" add keep.txt; git -C "$MILL_WORKTREE" commit -m "Preserve retained setup work"\n');
+  await writeFile(join(y.cwd, '.mill/teardown.sh'), 'exit 0\n');
+  await y.command(['run', 'answer', '1']);
+  const resumed = await y.command(['run', '--json']);
+  assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
+  assert.deepEqual((await y.starts()).map(row => row.role), ['test-writers', 'implementer', 'reviewer']);
+  assert.equal(await readFile(join(y.cwd, 'keep.txt'), 'utf8'), 'Retained user work\n');
+});
+
+test('environment recovery through dispatch retains the original writer checkpoint', async t => {
+  const y = await fixture(t, [1], true);
+  await writeFile(join(y.root, 'hold-implementer-1'), 'yes');
+  await y.release();
+  await y.once();
+  await until(y.starts, rows => rows.some(row => row.role === 'implementer'));
+  await writeFile(join(y.root, 'infrastructure-1'), 'yes');
+  await rm(join(y.root, 'hold-implementer-1'));
+  const failed = await until(y.status, state => state.tickets[0]?.worker?.status === 'finished');
+  const before = failed.tickets[0]!;
+  assert.equal(before.reason, 'environment'); assert.ok(before.team.testCommit);
+  await rm(join(y.root, 'infrastructure-1'));
+  await y.command(['run', 'answer', '1']);
+  const resumed = await y.command(['run', '--json']);
+  assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.deepEqual(after.team.testFiles, before.team.testFiles);
+  assert.equal((await y.starts()).filter(row => row.role === 'test-writers').length, 1);
+  assert.equal((await y.starts()).filter(row => row.role === 'reviewer').length, 1);
+});

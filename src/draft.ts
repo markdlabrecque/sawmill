@@ -4,7 +4,7 @@ import { CliError } from './errors.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
-import { userTestSection } from './user-testing.js';
+import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
 export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false) {
   await checkMillyard(cwd, project.integration);
@@ -33,6 +33,7 @@ export async function draft(cwd: string, project: ProjectConfig, selection: RunS
     const cases = sections.filter(({ section }) => section.present).map(({ ticket }) => ticket);
     if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
   }
+  for (const ticket of tickets) requireBrowserCapability(project, ticket);
   const edges: RunEdge[] = tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false })));
   const selected = new Set(numbers);
   const outside = new Map<number, Ticket>();

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { githubRequest } from './github-transport.js';
 import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
 import { GitHubWriter } from './github-writes.js';
@@ -10,21 +10,7 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
   constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd()) { super(trackerConfig, directory); }
 
   private async request(method: string, suffix: string, body?: object): Promise<unknown> {
-    const args = ['api', `repos/${this.trackerConfig.repo}/${suffix}`, '--method', method, '-H', 'Accept: application/vnd.github+json'];
-    if (this.trackerConfig.host) args.push('--hostname', this.trackerConfig.host);
-    if (body) args.push('--input', '-');
-    return new Promise((resolve, reject) => {
-      const child = execFile('gh', args, { cwd: this.directory, encoding: 'utf8', timeout: 60000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) {
-          const message = stderr.trim() || error.message;
-          const status = message.match(/HTTP (\d{3})/i)?.[1];
-          reject(new GitHubApiError(message, status ? Number(status) : undefined)); return;
-        }
-        try { resolve(stdout.trim() ? JSON.parse(stdout) : null); } catch { reject(new Error('GitHub returned invalid JSON.')); }
-      });
-      child.stdin?.on('error', () => {});
-      child.stdin?.end(body ? JSON.stringify(body) : undefined);
-    });
+    return githubRequest(this.trackerConfig, this.directory, method, `repos/${this.trackerConfig.repo}/${suffix}`, body);
   }
 
   async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest> {
@@ -72,7 +58,7 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     const observations: { state: 'pending' | 'passed' | 'failed'; detail: string; url?: string }[] = [];
     for (const check of checks) {
       if (!check || check.head_sha !== commit || typeof check.name !== 'string' || !['queued', 'in_progress', 'completed', 'waiting', 'requested', 'pending'].includes(check.status)) throw new Error('GitHub returned an invalid check or mismatched head.');
-      const state = check.status !== 'completed' ? 'pending' : check.conclusion === 'success' ? 'passed' : 'failed';
+      const state = check.status !== 'completed' ? 'pending' : ['success', 'skipped', 'neutral'].includes(check.conclusion ?? '') ? 'passed' : 'failed';
       observations.push({ state, detail: [check.name + ': ' + (check.conclusion ?? check.status), check.output?.title, check.output?.summary, check.output?.text].filter(value => typeof value === 'string' && value).join('\n'), url: check.html_url || check.details_url });
     }
     for (const status of statuses) {

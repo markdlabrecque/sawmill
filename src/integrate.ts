@@ -1,3 +1,4 @@
+import { removeWorktree } from './worktrees.js';
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -64,10 +65,10 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
   if (ticket.completion === 'manual') throw new CliError('Ticket was completed manually.');
   if (ticket.completion === 'merged' && ticket.integration.reported) return { outcome: 'merged', ticket: number, mergeCommit: ticket.mergeCommit!, changeRequestUrl: ticket.integration.changeRequest?.url };
   if (!ticket.completion && (ticket.state !== 'working' || ticket.blockers.length || !['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(ticket.stage ?? ''))) throw new CliError('Integrate requires working, unblocked, review-approved work.');
-  if (branch === project.integration || ticket.branch !== branch || !ticket.worktree) throw new CliError('Ticket must have its own saved mill/<n> worktree and branch.');
+  if (!ticket.mergeCommit && (branch === project.integration || ticket.branch !== branch || !ticket.worktree)) throw new CliError('Ticket must have its own saved mill/<n> worktree and branch.');
   await checkMillyard(cwd, project.integration);
-  if (await git(ticket.worktree, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
-  if (await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new CliError('Ticket worktree is dirty.');
+  if (!ticket.mergeCommit && (await git(ticket.worktree!, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree!, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree!, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
+  if (!ticket.mergeCommit && await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new CliError('Ticket worktree is dirty.');
   let progress: IntegrationProgress = { ...ticket.integration };
   let mergeCommit = ticket.mergeCommit;
   let stage = ticket.stage ?? 'rebase';
@@ -75,7 +76,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
   const guard = () => {
     const current = readRun(cwd);
     const row = current.tickets.find(row => row.number === number);
-    if (current.run.id !== snapshot.run.id || !row || row.state === 'logjam' || row.completion === 'manual' || (!row.completion && (row.state !== 'working' || row.blockers.length)) || row.branch !== branch || row.worktree !== ticket.worktree || current.pendingWrites.some(write => write.ticket === number)) throw new Error('Local run state no longer permits integration; resolve it before retrying.');
+    if (current.run.id !== snapshot.run.id || !row || row.state === 'logjam' || row.completion === 'manual' || (!row.completion && (row.state !== 'working' || row.blockers.length)) || (!row.mergeCommit && (row.branch !== branch || row.worktree !== ticket.worktree)) || current.pendingWrites.some(write => write.ticket === number)) throw new Error('Local run state no longer permits integration; resolve it before retrying.');
   };
   const save = async (change: Transition = {}) => {
     // A confirmed remote merge is irreversible. Record it even if a stop raced
@@ -100,41 +101,41 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD') };
       await save();
       boundary();
-      try { await git(ticket.worktree, 'rebase', progress.baseCommit!); }
+      try { await git(ticket.worktree!, 'rebase', progress.baseCommit!); }
       catch (error) {
-        const conflicts = await git(ticket.worktree, 'diff', '--name-only', '--diff-filter=U');
-        await git(ticket.worktree, 'rebase', '--abort');
+        const conflicts = await git(ticket.worktree!, 'diff', '--name-only', '--diff-filter=U');
+        await git(ticket.worktree!, 'rebase', '--abort');
         if (!conflicts) throw error;
         await save({ report: { stage: 'rebase', details: `Rebase conflict; rebase aborted.\n${conflicts}` } });
         return result('rebase-conflict', conflicts);
       }
       await advance('tests');
-      const head = await git(ticket.worktree, 'rev-parse', 'HEAD');
+      const head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
       boundary();
-      const tested = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      const tested = await tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
       boundary();
       if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
       if (tested.code !== 0) {
         await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
         return result('tests-failed', tested.output || `Tests exited ${tested.code}.`);
       }
-      if (await git(ticket.worktree, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
+      if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
       progress.testedHead = head;
       await advance('push');
       const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
       const oldHead = remote.split(/\s/)[0] ?? '';
       boundary();
-      await git(ticket.worktree, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
+      await git(ticket.worktree!, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
       progress.pushedHead = head;
       await advance('pr-opened');
       const issueUrl = `https://${project.tracker.host ?? (project.tracker.backend === 'gitlab' ? 'gitlab.com' : 'github.com')}/${project.tracker.repo}/${project.tracker.backend === 'gitlab' ? '-/' : ''}issues/${number}`;
       progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
-      if (progress.changeRequest.headCommit !== head || await git(ticket.worktree, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+      if (progress.changeRequest.headCommit !== head || await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
       const readPipeline = async () => {
         guard();
         boundary();
-        progress.pipeline = await tracker.getPipeline!(head);
+        progress.pipeline = await tracker.getPipeline!(head, progress.changeRequest);
         if (!progress.pipeline || progress.pipeline.headCommit !== head) throw new Error('Pipeline head differs from the tested, pushed commit.');
         if (!['pending', 'passed', 'failed', 'none'].includes(progress.pipeline.state)) throw new Error('Tracker returned an invalid pipeline state.');
         await save();
@@ -163,8 +164,8 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
       }
       if (progress.testedHead !== head || progress.pushedHead !== head ||
-          await git(ticket.worktree, 'rev-parse', 'HEAD') !== head ||
-          await git(ticket.worktree, 'status', '--porcelain', '--untracked-files=all') ||
+          await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
+          await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all') ||
           (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
       guard();
       boundary();
@@ -203,6 +204,13 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await git(cwd, 'merge-base', '--is-ancestor', mergeCommit, `refs/remotes/origin/${project.integration}`);
       await git(cwd, 'merge', '--ff-only', `refs/remotes/origin/${project.integration}`);
       progress.fastForwarded = true; await save();
+    }
+    if (!progress.localRemoved) {
+      await advance('local-remove');
+      if (!progress.mergedHead) throw new Error('Missing accepted ticket head; cannot remove sandbox safely.');
+      await removeWorktree(cwd, project, number, { ...options, writer: () => tracker, mergedHead: progress.mergedHead });
+      progress.localRemoved = true;
+      await save();
     }
     await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `Local tests passed: ${project.tests.command}\nTested head: ${progress.testedHead}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
     return result('merged');

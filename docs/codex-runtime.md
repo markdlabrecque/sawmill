@@ -57,9 +57,12 @@ checkpoint, test-tampering and branch checks still apply.
 These are filesystem/network restrictions, **not a shell command allowlist**.
 The runtime cannot enforce strict exclusion of an arbitrary browser executable
 while allowing general shell commands. `RuntimeRequest.browser: true` therefore
-fails explicitly and every invocation reports the limitation. Browser case
-handling remains a separate capability for issue 16; no prompt is claimed as
-permission enforcement. Builds that require external writable caches, network,
+fails explicitly and every invocation reports the limitation. Draft rejects
+Codex tickets containing actual user test cases before saving the run. Dispatch,
+team run and standalone review repeat that check for existing runs, before any
+writer or implementer starts. An empty section does not request browser cases.
+Codex browser-case support remains unavailable; Sawmill never switches runtime
+or model, broadens permissions, or treats a prompt as enforcement. Builds that require external writable caches, network,
 Docker sockets, or Git hooks writing outside the granted paths can fail. The
 adapter never retries them with broader permissions.
 

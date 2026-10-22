@@ -172,16 +172,19 @@ test('GitLab integrate opens then reuses a refused MR and merges the expected he
   const report = remote.notes[7].at(-1).body;
   for (const text of ['[sawmill:merged]', 'fixture-review', 'feature.test.ts', result.mergeCommit]) assert.ok(report.includes(text), report);
   const merges = (await y.requests()).filter(request => request.endpoint.endsWith('/merge'));
-  assert.deepEqual(merges.at(-1).body, { squash: true, sha: y.git('rev-parse', 'mill/7'), should_remove_source_branch: false });
+  assert.deepEqual(merges.at(-1).body, { squash: true, sha: (await y.status()).tickets[0].integration.mergedHead, should_remove_source_branch: false });
   assert.equal((await y.cli('integrate', '7')).code, 0);
   assert.equal((await y.hostState()).mergeCount, 1);
 });
 
 const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') => ({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
 
-test('GitLab ci wait reports a later-page failed pipeline and never merges', async t => {
+test('GitLab ci wait reports a later-page required descendant failure and never merges', async t => {
   const y = await approved(t, 'wait');
-  await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(2, 'success'), pipeline(1, 'failed')] });
+  await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(2, 'success', 'HEAD_SHA', 'parent_pipeline'), pipeline(1, 'failed', 'HEAD_SHA', 'parent_pipeline')], triggers: { 3: [
+    { id: 31, allow_failure: true, status: 'success' }, { id: 32, allow_failure: true, status: 'success' },
+    { id: 33, allow_failure: false, status: 'success', downstream_pipeline: pipeline(1, 'failed') },
+  ] } });
   const result = await y.cli('integrate', '7', '--json');
   assert.equal(result.code, 1, result.stdout);
   const value = JSON.parse(result.stdout);
@@ -213,7 +216,7 @@ test('GitLab waits through absent and pending pipelines, reuses the MR after rep
   assert.equal(remote.openCount, 1); assert.equal(remote.mergeCount, 1);
   const merges = (await y.requests()).filter(request => request.endpoint.endsWith('/merge'));
   assert.equal(merges.length, 1);
-  assert.deepEqual(merges[0].body, { squash: false, sha: y.git('rev-parse', 'mill/7'), should_remove_source_branch: false });
+  assert.deepEqual(merges[0].body, { squash: false, sha: (await y.status()).tickets[0].integration.mergedHead, should_remove_source_branch: false });
 });
 
 test('GitLab never authorizes merge from stale, malformed, canceled, skipped, or failed child pipelines', async t => {
@@ -223,7 +226,7 @@ test('GitLab never authorizes merge from stale, malformed, canceled, skipped, or
     ['failed', 'HEAD_SHA', 'parent_pipeline', 'ci-failed'],
   ]) {
     const y = await approved(t, 'wait');
-    await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(2, status!, head, source)] });
+    await y.changeHost({ pipelines: [pipeline(3, 'success'), pipeline(4, status!, head, source)], ...(source === 'parent_pipeline' ? { triggers: { 3: [{ id: 31, allow_failure: false, status: 'success', downstream_pipeline: pipeline(4, status!, head, source) }] } } : {}) });
     const result = await y.cli('integrate', '7', '--json');
     assert.equal(result.code, 1, result.stdout); assert.equal(JSON.parse(result.stdout).outcome, outcome, result.stdout);
     assert.ok(!(await y.requests()).some(request => request.endpoint.endsWith('/merge')));
@@ -259,7 +262,10 @@ test('GitLab refuses cross-project issue identity and preserves the previous dra
 
 test('GitLab follows Link pagination when optional numeric headers are absent', async t => {
   const y = await approved(t, 'wait');
-  await y.changeHost({ linkPagination: true, pipelines: [pipeline(3, 'success'), pipeline(2, 'success'), pipeline(1, 'failed')] });
+  await y.changeHost({ linkPagination: true, pipelines: [pipeline(3, 'success'), pipeline(1, 'failed', 'HEAD_SHA', 'parent_pipeline')], triggers: { 3: [
+    { id: 31, allow_failure: true, status: 'success' }, { id: 32, allow_failure: true, status: 'success' },
+    { id: 33, allow_failure: false, status: 'success', downstream_pipeline: pipeline(1, 'failed') },
+  ] } });
   const result = await y.cli('integrate', '7', '--json');
   assert.equal(result.code, 1, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'ci-failed');
@@ -399,4 +405,54 @@ test('GitLab native selection also carries the newly integrated team CLI through
   assert.equal(remote.issues[0].state, 'closed'); assert.equal(remote.mergeCount, 1);
   assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/7'), '');
   for (const role of roles) assert.ok(remote.notes[7].at(-1).body.includes(`${role}-gitlab-fixture`));
+});
+
+test('GitLab uses the current MR attempt despite historical and unrelated failures', async t => {
+  const y = await approved(t, 'wait');
+  await y.changeHost({ pipelines: [
+    pipeline(2, 'success', 'HEAD_SHA', 'merge_request_event'),
+    pipeline(1, 'failed', 'HEAD_SHA', 'merge_request_event'),
+    { ...pipeline(99, 'failed'), ref: 'unrelated' },
+    pipeline(98, 'failed', 'HEAD_SHA', 'parent_pipeline'),
+  ] });
+  const result = await y.cli('integrate', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.hostState()).mergeCount, 1);
+  assert.equal((await y.status()).tickets[0].integration.pipeline.state, 'passed');
+});
+
+test('GitLab validates current required descendants including native URL-only pipeline identities', async t => {
+  for (const status of ['running', 'failed', 'success']) {
+    const y = await approved(t, 'wait');
+    const child = pipeline(10, status, 'HEAD_SHA', 'parent_pipeline');
+    await y.changeHost({ pipelines: [pipeline(3, 'success'), child], triggers: { 3: [
+      { id: 31, allow_failure: false, status: 'success', downstream_pipeline: { ...child, project_id: null } },
+    ] } });
+    let stdout = '';
+    const code = await runCli(['integrate', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: x => { stdout += x; }, sleep: async () => { throw new Error('pending descendant blocks merge'); } });
+    const result = JSON.parse(stdout);
+    assert.equal(result.pipeline?.state, status === 'running' ? 'pending' : status === 'success' ? 'passed' : 'failed', stdout);
+    assert.equal(code, status === 'success' ? 0 : 1, stdout);
+    assert.equal((await y.hostState()).mergeCount ?? 0, status === 'success' ? 1 : 0);
+  }
+});
+
+test('GitLab checks required descendants recursively and rejects changed child SHAs', async t => {
+  for (const mode of ['optional-failure', 'required-grandchild', 'wrong-child-sha']) {
+    const y = await approved(t, 'wait');
+    const child = pipeline(10, 'success', 'b'.repeat(40), 'parent_pipeline');
+    const grandchild = pipeline(11, 'failed', 'c'.repeat(40), 'parent_pipeline');
+    await y.changeHost({ pipelines: [pipeline(3, 'success'), child, grandchild], triggers: {
+      3: [{ id: 31, allow_failure: false, status: 'success', downstream_pipeline: mode === 'wrong-child-sha' ? { ...child, sha: 'd'.repeat(40) } : child }],
+      10: [{ id: 32, allow_failure: mode === 'optional-failure', status: 'failed', downstream_pipeline: grandchild }],
+    } });
+    const result = await y.cli('integrate', '7', '--json');
+    assert.equal(result.code, mode === 'optional-failure' ? 0 : 1, result.stdout);
+    assert.equal((await y.hostState()).mergeCount ?? 0, mode === 'optional-failure' ? 1 : 0);
+    if (mode === 'required-grandchild') {
+      assert.equal(JSON.parse(result.stdout).pipeline.state, 'failed');
+      assert.match(JSON.parse(result.stdout).pipeline.diagnostics, /Pipeline 11: failed/);
+    }
+    if (mode === 'wrong-child-sha') assert.match(JSON.parse(result.stdout).message, /identity or head changed/);
+  }
 });

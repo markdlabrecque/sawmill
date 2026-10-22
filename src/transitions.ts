@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, stoppedMergeCleanup, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
+import { readRun, runPath, mergeCleanupPending, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
@@ -38,7 +38,7 @@ export function consumeResults(cwd: string, threshold: number): LoopProgress {
     return control;
   });
 }
-export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team' | 'worker'>> & { report?: StageReport };
+export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'provisioned' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team' | 'worker'>> & { report?: StageReport };
 
 function checkTracker(cwd: string, project: ProjectConfig): void {
   const drafted = readRun(cwd).run.tracker;
@@ -58,6 +58,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'team')) db.exec('ALTER TABLE tickets ADD COLUMN team TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'worker')) db.exec('ALTER TABLE tickets ADD COLUMN worker TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'provisioned')) db.exec('ALTER TABLE tickets ADD COLUMN provisioned INTEGER NOT NULL DEFAULT 0');
     const value = work(db);
     db.exec('COMMIT');
     return value;
@@ -73,9 +74,9 @@ function requireTicket(db: DatabaseSync, number: number) {
   return ticket;
 }
 
-function stoppedCleanup(row: ReturnType<typeof requireTicket>): boolean {
-  return stoppedMergeCleanup({ completion: row.completion as RunTicket['completion'],
-    team: row.team ? JSON.parse(String(row.team)) : {}, integration: row.integration ? JSON.parse(String(row.integration)) : {} });
+function cleanupPending(row: ReturnType<typeof requireTicket>): boolean {
+  return mergeCleanupPending({ completion: row.completion as RunTicket['completion'],
+    integration: row.integration ? JSON.parse(String(row.integration)) : {} });
 }
 
 function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
@@ -90,9 +91,9 @@ function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
 
 function update(db: DatabaseSync, number: number, change: Transition, writes: MirrorWrite[] = []) {
   requireTicket(db, number);
-  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team', worker: 'worker' } as const;
+  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', provisioned: 'provisioned', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team', worker: 'worker' } as const;
   for (const key of Object.keys(columns) as (keyof typeof columns)[]) {
-    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' || key === 'worker' ? JSON.stringify(change[key]) : change[key] as string | number | null, number);
+    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' || key === 'worker' ? JSON.stringify(change[key]) : key === 'provisioned' ? Number(change[key]) : change[key] as string | number | null, number);
   }
   const now = new Date().toISOString();
   db.prepare('UPDATE tickets SET updated = ? WHERE number = ?').run(now, number);
@@ -107,8 +108,7 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
     if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
     const row = requireTicket(db, number);
     const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
-    const cleanup = row.completion === 'merged' && JSON.parse(String(row.team ?? '{}')).recovery && !JSON.parse(String(row.integration ?? '{}')).reported;
-    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanup && !stoppedCleanup(row)) || (owner && owner.status !== 'finished')) return false;
+    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanupPending(row)) || (owner && owner.status !== 'finished')) return false;
     if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
     if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
       WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
@@ -158,6 +158,8 @@ export async function transition(cwd: string, project: ProjectConfig, tracker: T
     next.reason = null;
     if (!pending.some(write => write.kind === 'close')) pending.push({ kind: 'close', payload: {} });
   }
+  // A late merge acknowledgement records its SHA without undoing a manual close.
+  if (ticket.completion === 'manual' && next.completion === 'merged') next.completion = 'manual';
   if (next.state === 'logjam' && !pending.some(write => write.kind === 'add-label' && write.payload.label === project.labels.logjam)) {
     pending.push({ kind: 'add-label', payload: { label: project.labels.logjam } });
   }
@@ -212,7 +214,7 @@ export async function closeTicket(cwd: string, project: ProjectConfig, tracker: 
     const writes: MirrorWrite[] = [];
     if (!db.prepare("SELECT id FROM pending_writes WHERE ticket = ? AND kind = 'close'").get(number)) writes.push({ kind: 'close', payload: {} });
     if (ticket.state === 'logjam') writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
-    update(db, number, { state: 'done', reason: null, completion: ticket.merge_commit ? 'merged' : 'manual' }, writes);
+    update(db, number, { state: 'done', reason: null, completion: 'manual' }, writes);
   });
   return flushPending(cwd, project, tracker, number, options);
 }
@@ -232,7 +234,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     db.prepare('UPDATE tickets SET stop_requested = 0 WHERE number = ?').run(number);
-    update(db, number, { state: stoppedCleanup(ticket) ? 'queued' : ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
+    update(db, number, { state: cleanupPending(ticket) ? 'queued' : ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
   });
   return true;
 }

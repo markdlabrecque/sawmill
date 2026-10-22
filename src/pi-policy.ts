@@ -53,6 +53,11 @@ export default function policy(pi: PiAPI) {
       if (subcommand && flags[subcommand]) allowed = rest.every(token => token.startsWith('-') ? flags[subcommand]!.includes(token) : /^[A-Za-z0-9_./@:+^=-]+$/.test(token));
       if (writer && subcommand === 'add') allowed = rest.length > 0 && rest.every(token => token === '--' || /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(token));
       if (writer && subcommand === 'commit') allowed = rest.length === 2 && rest[0] === '-m' && Boolean(rest[1]?.trim());
+      if (request.role === 'implementer' && /^[a-f0-9]{40,64}$/.test(request.conflictBase ?? '')) {
+        if (JSON.stringify(args) === JSON.stringify(['git', 'rebase', request.conflictBase])
+          || JSON.stringify(args) === JSON.stringify(['git', '-c', 'core.editor=true', 'rebase', '--continue'])
+          || JSON.stringify(args) === JSON.stringify(['git', 'rebase', '--abort'])) allowed = true;
+      }
       if (allowed && ['diff', 'show'].includes(subcommand!)) args.splice(2, 0, '--no-ext-diff', '--no-textconv');
     }
     if (!allowed) return deny();
