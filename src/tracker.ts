@@ -37,11 +37,14 @@ export interface TicketWriter {
 }
 
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
-export interface Tracker extends TicketReader, TicketWriter {
+export interface IntegrationTracker extends TicketWriter {
+  findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
+  mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }>;
+  deleteRemoteBranch(branch: string): Promise<void>;
+}
+
+export interface Tracker extends TicketReader, IntegrationTracker {
   listByLabel(label: string): Promise<Ticket[]>;
   listChildren(number: number): Promise<Ticket[]>;
   getPipeline(commit: string): Promise<{ state: 'pending' | 'passed' | 'failed' | 'none'; logUrl?: string }>;
-  findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
-  mergeChangeRequest(id: number | string, method: 'squash' | 'merge'): Promise<{ mergeCommit: string }>;
-  deleteRemoteBranch(branch: string): Promise<void>;
 }

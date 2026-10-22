@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { CliError } from './errors.js';
-import { readRun, runPath } from './run-store.js';
+import { readRun, runPath, type RunTicket } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import type { MachineConfig, ProjectConfig } from './config.js';
@@ -53,10 +53,16 @@ function failure(error: unknown): string {
   return [error.message, output.stdout, output.stderr].filter(Boolean).join('\n');
 }
 
-async function deleteMergedBranch(cwd: string, project: ProjectConfig, branch: string) {
+async function deleteMergedBranch(cwd: string, project: ProjectConfig, branch: string, ticket?: RunTicket) {
   if (!await hasBranch(cwd, branch)) return false;
   try { await git(cwd, 'merge-base', '--is-ancestor', `refs/heads/${branch}`, `refs/heads/${project.integration}`); }
-  catch { return false; }
+  catch {
+    // Squash commits do not contain the ticket head in their ancestry. Only the
+    // saved merged head is disposable; any later WIP must survive cleanup.
+    if (ticket?.completion !== 'merged' || !ticket.mergeCommit || !ticket.integration.mergedHead || await git(cwd, 'rev-parse', `refs/heads/${branch}`) !== ticket.integration.mergedHead) return false;
+    try { await git(cwd, 'merge-base', '--is-ancestor', ticket.mergeCommit, `refs/heads/${project.integration}`); }
+    catch { return false; }
+  }
   // Git's -d can consult an unrelated upstream; ancestry was checked against integration.
   await git(cwd, 'branch', '-D', branch);
   return true;
@@ -134,7 +140,7 @@ export async function removeWorktree(cwd: string, project: ProjectConfig, number
     await hook(cwd, project, number, existing.path, 'teardown', options);
     await git(cwd, 'worktree', 'remove', existing.path);
   }
-  const branchDeleted = await deleteMergedBranch(cwd, project, branch);
+  const branchDeleted = await deleteMergedBranch(cwd, project, branch, ticket);
   const ok = !tracker || await transition(cwd, project, tracker, number, { worktree: null, branch: branchDeleted ? null : ticket!.branch }, [], options);
   return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing?.path ?? null, branch, removed: Boolean(existing), branchDeleted };
 }
