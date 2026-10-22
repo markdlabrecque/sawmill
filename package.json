@@ -10,7 +10,9 @@
   "files": [
     "dist/src",
     "templates",
-    "roles"
+    "roles",
+    ".claude-plugin",
+    "plugins"
   ],
   "engines": {
     "node": ">=22.13"
