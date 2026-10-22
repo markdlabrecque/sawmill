@@ -43,6 +43,9 @@ writes; pending mirror payloads remain available for answer recovery.
 
 Development checks:
 
+Process-permission regressions require Linux and Python 3's standard library.
+`npm test` runs them after the main suite to isolate their temporary process-access changes.
+
 ```sh
 npm test
 npm run typecheck

@@ -4,6 +4,8 @@ import { readRun, type OwnedProcess } from './run-store.js';
 import { processStart } from './slots.js';
 import { recordWorker } from './transitions.js';
 
+class ProcessOwnershipUnavailable extends Error {}
+
 function info(pid: number) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -58,7 +60,7 @@ function owned(token: string, groups: OwnedProcess[]) {
     } catch (error) {
       if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
       // A same-user unreadable process could contain our token. Refuse recovery.
-      throw new Error(`Cannot establish process ownership for PID ${pid}: ${String(error)}`);
+      throw new ProcessOwnershipUnavailable(`Cannot establish process ownership for PID ${pid}: ${String(error)}`, { cause: error });
     }
     if (marked || eligible.has(current.group)) found.push({ pid, start: current.start });
   }
@@ -82,11 +84,19 @@ export async function stopDescendants(token: string, groups: OwnedProcess[] = []
   };
   const deadline = Date.now() + 5000;
   for (;;) {
-    const children = owned(token, groups);
-    if (!children.length) return;
-    for (const child of children) signal(child, 'SIGSTOP');
-    const frozen = owned(token, groups);
-    for (const child of frozen) signal(child, 'SIGKILL');
+    try {
+      const children = owned(token, groups);
+      if (!children.length) return;
+      for (const child of children) signal(child, 'SIGSTOP');
+      const frozen = owned(token, groups);
+      for (const child of frozen) signal(child, 'SIGKILL');
+    } catch (error) {
+      if (!(error instanceof ProcessOwnershipUnavailable)) throw error;
+      const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (!['EACCES', 'EPERM'].includes(code ?? '') || Date.now() >= deadline) throw error;
+      // Exec/credential changes can temporarily deny /proc reads. Retry the
+      // complete proof; never release capacity or signal an unverified PID.
+    }
     if (Date.now() >= deadline) throw new Error('Owned descendants have not stopped; capacity retained.');
     await sleep(25);
   }
