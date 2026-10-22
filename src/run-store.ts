@@ -29,6 +29,8 @@ export interface TeamProgress {
   /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
   checkpointHead?: string;
   repair?: RepairContext;
+  /** A question ends the invocation; an answer re-enters this role on its saved branch. */
+  question?: { role: Role; question: string; wipHead?: string; preserved: boolean; error?: string };
 }
 /** Last repair request, retained after success for reporting and later case re-runs. */
 export interface RepairContext {

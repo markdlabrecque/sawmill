@@ -6,6 +6,7 @@ import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
 import { checkMillyard } from './millyard.js';
+import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { readRun, type TeamProgress } from './run-store.js';
 import { infrastructure, type Runtime, type Outcome } from './runtime.js';
@@ -72,6 +73,26 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       return { outcome: trackerFailed || kind === 'infrastructure' ? 'infrastructure' : 'aborted', ticket: number, stage,
         reason: trackerFailed ? 'tracker' : reason, error: trackerFailed ? 'Tracker mirror failed; pending writes retained.' : detail, roleOutcome: outcome };
     };
+    const question = async (path: string, role: Role, outcome: Extract<Outcome, { outcome: 'question' }>): Promise<TeamResult> => {
+      progress.question = { role, question: outcome.question, preserved: false };
+      // Save the question before git I/O, including when a session mirror failed.
+      await transition(cwd, project, tracker, number, { team: progress }, [], options);
+      try {
+        progress.question.wipHead = await preserveWip(path, number);
+        progress.question.preserved = true;
+      } catch (error) {
+        progress.question.error = `WIP preservation failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const error = progress.question.error;
+      const mirrored = await transition(cwd, project, tracker, number, {
+        state: 'logjam', reason: error ? 'environment' : 'question', stage: role, team: progress,
+        report: { stage: 'aborted', details: `${outcome.question}\n\n${error ?? `WIP pushed: ${progress.question.wipHead}`}`,
+          reason: error ? 'environment' : 'question', reachedStage: role },
+      }, [], options);
+      return { outcome: !mirrored || error ? 'infrastructure' : 'aborted', ticket: number, stage: role,
+        reason: !mirrored ? 'tracker' : error ? 'environment' : 'question',
+        error: !mirrored ? 'Tracker mirror failed; pending writes retained.' : error ?? outcome.question, roleOutcome: outcome };
+    };
     try {
       guard();
       if (ticket.bounces >= 3) {
@@ -83,15 +104,37 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
         return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: feedback };
       }
+      if (progress.question) {
+        stage = progress.question.role;
+        // A switched/detached retained sandbox must not be treated as a missing
+        // worktree: creation failure would overwrite its recovery path.
+        if (ticket.worktree && await git(ticket.worktree, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) {
+          throw new Error('Ticket worktree is on the wrong branch; retained for recovery.');
+        }
+      }
       const tree = await createWorktree(cwd, project, machine, number, { ...options, writer: () => tracker });
       guard();
       const path = tree.path;
       if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Ticket worktree is on the wrong branch.');
+      if (progress.question && !progress.question.preserved) {
+        stage = progress.question.role;
+        try {
+          progress.question.wipHead = await preserveWip(path, number);
+          progress.question.preserved = true;
+          delete progress.question.error;
+        } catch (error) {
+          progress.question.error = `WIP preservation failed: ${error instanceof Error ? error.message : String(error)}`;
+          return await stop(infrastructure(progress.question.error));
+        }
+        await save({ stage });
+      }
       if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
       const repairing = Boolean(progress.repair && progress.testCommit);
-      if (!repairing) progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      const resuming = progress.question?.role;
+      if (!repairing && !resuming) progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
       const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source']): Promise<TeamResult | undefined> => {
+        delete progress.question;
         progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
         const bounces = current().bounces + 1;
         const exhausted = bounces >= 3;
@@ -104,7 +147,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (exhausted) return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: outcome.feedback, roleOutcome: outcome };
         guard();
       };
-      let role: Role = repairing ? 'implementer' : 'test-writers';
+      let role: Role = resuming ?? (repairing ? 'implementer' : 'test-writers');
       for (;;) {
         stage = role;
         await save({ state: 'working', stage });
@@ -121,6 +164,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: false, signal: options.signal,
         }, options);
         progress.outputs![role] = result;
+        if (result.outcome.outcome === 'question') return await question(path, role, result.outcome);
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
         if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) return await stop(result.outcome);
@@ -161,6 +205,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
         if (role === 'reviewer') progress.reviewedHead = beforeRole;
+        delete progress.question;
         if (result.outcome.outcome === 'bounce') {
           const stopped = await bounce(result.outcome, 'reviewer');
           if (stopped) return stopped;

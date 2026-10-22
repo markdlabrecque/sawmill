@@ -207,8 +207,13 @@ test('every role stops on question or infrastructure, preserving files, session 
     assert.equal(row.stage, role); assert.deepEqual(row.sessionIds[role], [`${role}-session`]);
     assert.equal(y.inputs.at(-1)!.role, role); assert.equal(y.requests.length, 0);
     assert.equal(await readFile(join(y.path, 'saved-work'), 'utf8'), 'unfinished work');
-    assert.match(y.git('-C', y.path, 'status', '--porcelain'), /saved-work/);
-    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+    if (kind === 'question') {
+      assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+      assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], y.git('rev-parse', 'mill/12'));
+    } else {
+      assert.match(y.git('-C', y.path, 'status', '--porcelain'), /saved-work/);
+      assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+    }
     assert.ok(y.ticket.labels.includes('logjam'));
   }
 });
@@ -773,4 +778,329 @@ test('repair context retains failed cases for a future reviewer without enabling
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual((await y.status()).tickets[0].team.repair.failedCases, [broken]);
+});
+
+test('questions publish WIP from every role and retain the stopped team evidence and worktree', async t => {
+  for (const role of ['test-writers', 'implementer', 'reviewer'] as const) {
+    const y = await fixture(t);
+    const integration = y.git('rev-parse', 'integration');
+    let rolePid = 0;
+    await writeFile(join(y.cwd, '.mill/teardown.sh'), 'touch "$MILL_MILLYARD/torn-down"\n');
+    y.setScript(async (request, sink) => {
+      if (request.role !== role) return y.normal(request, sink);
+      await writeFile(join(request.cwd, 'README.md'), 'Unfinished tracked work\n');
+      await writeFile(join(request.cwd, 'new file.txt'), 'Untracked saved work\n');
+      const child = JSON.parse(execFileSync(process.execPath, ['-e',
+        'console.log(JSON.stringify({pid: process.pid, outcome: {outcome: "question", question: "Which API should we expose?"}}))'],
+      { cwd: request.cwd, env: y.env, encoding: 'utf8' }));
+      rolePid = child.pid;
+      return { outcome: child.outcome };
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    assert.equal(JSON.parse(result.stdout).outcome, 'aborted');
+    assert.ok(rolePid > 0);
+    assert.throws(() => process.kill(rolePid, 0), { code: 'ESRCH' });
+    const head = y.git('-C', y.path, 'rev-parse', 'HEAD');
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], head);
+    assert.match(y.git('log', '-1', '--format=%s', head), /#12: WIP/);
+    assert.equal(y.git('show', `${head}:new file.txt`), 'Untracked saved work');
+    assert.equal(y.git('show', `${head}:README.md`), 'Unfinished tracked work');
+    assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0], integration);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'question'); assert.equal(row.stage, role);
+    assert.equal(row.bounces, 0); assert.equal(row.worktree, y.path); assert.equal(row.branch, 'mill/12');
+    assert.equal(row.team.question.question, 'Which API should we expose?');
+    assert.equal(row.team.question.role, role); assert.equal(row.team.question.wipHead, head);
+    assert.equal(row.team.outputs[role].outcome.outcome, 'question');
+    assert.deepEqual(row.sessionIds[role], [`${role}-session`]);
+    assert.equal(y.inputs.at(-1)!.role, role); assert.equal(y.requests.length, 0);
+    const report = y.ticket.comments.find(c => c.body.startsWith('[sawmill:aborted]'))!.body;
+    assert.match(report, /Which API should we expose/); assert.ok(report.includes(`Stage reached: ${role}`));
+    assert.ok(report.includes(`${role}-session`)); assert.ok(report.includes(head));
+    assert.ok(y.ticket.labels.includes('logjam'));
+    const meta = JSON.parse(await readFile(join(y.cwd, '.mill/logs/12', `${role}-1.jsonl.meta.json`), 'utf8'));
+    assert.equal(meta.running, false);
+    await assert.rejects(readFile(join(y.cwd, '.mill/logs/12/role.lock')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(y.cwd, 'torn-down')), { code: 'ENOENT' });
+    assert.equal((await y.cli('team', 'run', '12')).code, 1);
+    assert.match((await y.cli('run', 'status')).stdout, /logjam.*question/);
+  }
+});
+
+test('answer re-enters the questioning role on its WIP branch with the cached thread and original checkpoints', async t => {
+  for (const role of ['test-writers', 'implementer', 'reviewer'] as const) {
+    const y = await fixture(t);
+    let asked = false;
+    y.setScript(async (request, sink) => {
+      if (request.role === role && !asked) {
+        asked = true;
+        if (role === 'test-writers') await y.normal(request, sink);
+        await writeFile(join(request.cwd, 'notes.txt'), 'Saved before the answer\n');
+        return { outcome: { outcome: 'question', question: 'Should the API stay synchronous?' } };
+      }
+      if (request.role === role) {
+        assert.match(request.handoff, /Should the API stay synchronous/);
+        assert.match(request.handoff, /Yes, keep it synchronous/);
+        assert.match(request.handoff, /Keep the public API synchronous/);
+        assert.equal(await readFile(join(request.cwd, 'notes.txt'), 'utf8'), 'Saved before the answer\n');
+        if (role === 'test-writers') {
+          await writeFile(join(request.cwd, 'extra.test.cjs'), '// Checkpoint after answer\n');
+          y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', '#12: Finish tests');
+          return { outcome: { outcome: 'done', summary: 'Committed failing answer test and final checkpoint.' } };
+        }
+      }
+      return y.normal(request, sink);
+    });
+    const stopped = await y.cli('team', 'run', '12');
+    assert.equal(stopped.code, 1); assert.match(stopped.stdout, /aborted: #12/);
+    const original = (await y.status()).tickets[0];
+    const before = y.inputs.length;
+    assert.equal((await y.cli('run', 'answer', '12', 'Yes, keep it synchronous', '--json')).code, 0);
+    assert.equal((await y.status()).tickets[0].state, 'queued');
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(y.inputs[before]!.role, role);
+    assert.equal(y.inputs[before]!.cwd, y.path);
+    assert.equal(y.git('-C', y.path, 'branch', '--show-current'), 'mill/12');
+    assert.equal(y.git('merge-base', '--is-ancestor', original.team.question.wipHead, 'mill/12'), '');
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.team.testBase, original.team.testBase);
+    if (role !== 'test-writers') {
+      assert.equal(row.team.testCommit, original.team.testCommit);
+      assert.deepEqual(row.team.testCommits, original.team.testCommits);
+      assert.deepEqual(row.team.testFiles, original.team.testFiles);
+    } else assert.equal(row.team.testCommits.length, 3);
+    assert.equal(row.team.question, undefined); assert.equal(row.state, 'done');
+    assert.equal(row.bounces, 0); assert.equal(y.requests.length, 1);
+    assert.equal(y.ticket.comments.filter(c => c.body === 'Yes, keep it synchronous').length, 1);
+    assert.equal(y.ticket.labels.includes('logjam'), false);
+    assert.match(await readFile(join(y.cwd, '.mill/logs/12', `${role}-2.jsonl`), 'utf8'), new RegExp(role));
+    const finishedInputs = y.inputs.length;
+    assert.equal((await y.cli('team', 'run', '12')).code, 0);
+    assert.equal(y.inputs.length, finishedInputs); assert.equal(y.requests.length, 1);
+  }
+});
+
+test('failed WIP publication prevents roles after an answer until the same commit can be pushed', async t => {
+  const y = await fixture(t);
+  const remoteHead = y.git('rev-parse', 'integration');
+  const { chmod } = await import('node:fs/promises');
+  const reject = join(y.remote, 'hooks/pre-receive');
+  await writeFile(reject, '#!/bin/sh\necho WIP push refused >&2\nexit 1\n'); await chmod(reject, 0o755);
+  let asked = false;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && !asked) {
+      asked = true;
+      await writeFile(join(request.cwd, 'saved.txt'), 'Keep through failed push\n');
+      return { outcome: { outcome: 'question', question: 'Confirm the API?' } };
+    }
+    return y.normal(request, sink);
+  });
+  const first = await y.cli('team', 'run', '12', '--json');
+  assert.equal(first.code, 1); assert.equal(JSON.parse(first.stdout).outcome, 'infrastructure');
+  assert.match(first.stdout, /WIP preservation failed/);
+  const head = y.git('rev-parse', 'mill/12');
+  assert.equal(y.git('show', `${head}:saved.txt`), 'Keep through failed push');
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+  let row = (await y.status()).tickets[0];
+  assert.equal(row.team.question.preserved, false); assert.equal(row.stage, 'implementer');
+  assert.equal(row.bounces, 0); assert.match(row.team.question.error, /push/);
+  assert.ok(y.ticket.comments.some(c => c.body.startsWith('[sawmill:aborted]') && c.body.includes('Confirm the API?') && c.body.includes('WIP preservation failed')));
+  const count = y.inputs.length;
+  assert.equal((await y.cli('run', 'answer', '12', 'Yes, continue')).code, 0);
+  const blocked = await y.cli('team', 'run', '12', '--json');
+  assert.equal(blocked.code, 1, blocked.stdout);
+  assert.equal(y.inputs.length, count, 'No role can run before WIP publication succeeds');
+  assert.equal(y.git('rev-parse', 'mill/12'), head);
+  await writeFile(reject, '#!/bin/sh\nexit 0\n');
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  y.setScript(async (request, sink) => {
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], head);
+    assert.match(request.handoff, /Confirm the API/); assert.match(request.handoff, /Yes, continue/);
+    return y.normal(request, sink);
+  });
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/integration').split(/\s/)[0], remoteHead);
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.bounces, 0);
+});
+
+test('WIP keeps both staged and disk versions, deletions, renames and hidden tracked edits on only the ticket ref', async t => {
+  for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+    const y = await fixture(t);
+    await writeFile(join(y.cwd, 'rename-me'), 'Original name\n');
+    y.git('add', 'rename-me'); y.git('commit', '-m', 'Seed rename'); y.git('push');
+    y.git('branch', 'unrelated');
+    y.git('config', '--add', 'remote.origin.push', 'refs/heads/unrelated:refs/heads/unrelated');
+    y.git('config', 'push.followTags', 'true');
+    y.setScript(async request => {
+      y.git('-C', request.cwd, 'mv', 'rename-me', 'renamed');
+      await writeFile(join(request.cwd, 'README.md'), 'Staged README\n');
+      y.git('-C', request.cwd, 'add', 'README.md');
+      await writeFile(join(request.cwd, 'README.md'), 'Disk README\n');
+      await writeFile(join(request.cwd, 'staged-only'), 'Saved only in index\n');
+      y.git('-C', request.cwd, 'add', 'staged-only');
+      const { unlink } = await import('node:fs/promises');
+      await unlink(join(request.cwd, 'staged-only'));
+      y.git('-C', request.cwd, 'update-index', flag, 'answer.cjs');
+      await writeFile(join(request.cwd, 'answer.cjs'), 'Hidden saved edit\n');
+      y.git('-C', request.cwd, 'tag', '-a', 'do-not-push', '-m', 'Unrelated tag');
+      await writeFile(join(request.cwd, 'new\nname.txt'), 'Filename with newline\n');
+      return { outcome: { outcome: 'question', question: 'Keep both saved versions?' } };
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(JSON.parse(result.stdout).outcome, 'aborted', result.stdout);
+    const head = y.git('rev-parse', 'mill/12');
+    assert.equal(y.git('show', `${head}:answer.cjs`), 'Hidden saved edit');
+    assert.equal(y.git('show', `${head}:README.md`), 'Disk README');
+    assert.equal(y.git('show', `${head}^:README.md`), 'Staged README');
+    assert.equal(y.git('show', `${head}^:staged-only`), 'Saved only in index');
+    assert.throws(() => y.git('show', `${head}:staged-only`));
+    assert.equal(y.git('show', `${head}:new\nname.txt`), 'Filename with newline');
+    assert.equal(y.git('show', `${head}:renamed`), 'Original name');
+    assert.throws(() => y.git('show', `${head}:rename-me`));
+    assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+    const refs = y.git('ls-remote', 'origin');
+    assert.match(refs, /refs\/heads\/mill\/12/); assert.doesNotMatch(refs, /unrelated|do-not-push/);
+  }
+});
+
+test('questions during repair resume the interrupted implementer or reviewer with the same feedback and test evidence', async t => {
+  for (const role of ['implementer', 'reviewer'] as const) {
+    const y = await fixture(t);
+    let implementations = 0, reviews = 0, asked = false;
+    const broken = { case: 'Use the API', result: 'broken' as const, step: 'Missing docs' };
+    y.setScript(async (request, sink) => {
+      if (request.role === 'implementer') implementations++;
+      if (request.role === 'reviewer') reviews++;
+      sink.session(`${request.role}-${request.role === 'reviewer' ? reviews : implementations}-repair-session`);
+      if (request.role === 'reviewer' && reviews === 1) return { outcome: { outcome: 'bounce', feedback: 'Document synchronous return.', cases: [broken] } };
+      const inRepair = implementations > 1;
+      if (request.role === role && inRepair && !asked) {
+        asked = true;
+        await writeFile(join(request.cwd, 'question-notes.txt'), 'Keep repair investigation\n');
+        return { outcome: { outcome: 'question', question: 'Should the docs include an example?' } };
+      }
+      if (request.role === 'implementer' && inRepair) {
+        await writeFile(join(request.cwd, 'API.md'), 'Return 42 synchronously. Example: answer().\n');
+        y.git('-C', request.cwd, 'add', 'API.md'); y.git('-C', request.cwd, 'commit', '-m', '#12: Fix API docs');
+        return { outcome: { outcome: 'done', summary: 'Added example.' } };
+      }
+      return y.normal(request, sink);
+    });
+    const first = await y.cli('team', 'run', '12', '--json');
+    assert.equal(JSON.parse(first.stdout).outcome, 'aborted', first.stdout);
+    const original = (await y.status()).tickets[0];
+    assert.equal(original.stage, role); assert.equal(original.bounces, 1);
+    assert.equal(original.team.repair.feedback, 'Document synchronous return.');
+    assert.deepEqual(original.team.repair.failedCases, [broken]);
+    const count = y.inputs.length;
+    assert.equal((await y.cli('run', 'answer', '12', 'Yes, include an example')).code, 0);
+    const resumed = await y.cli('team', 'run', '12', '--json');
+    assert.equal(resumed.code, 0, resumed.stdout);
+    assert.equal(y.inputs[count]!.role, role);
+    assert.match(y.inputs[count]!.handoff, /Should the docs include an example/);
+    assert.match(y.inputs[count]!.handoff, /Yes, include an example/);
+    const review = y.inputs.at(-1)!.handoff;
+    assert.match(review, /Fix diff:/); assert.match(review, /Document synchronous return/);
+    assert.match(review, /diff --git a\/API.md/); assert.match(review, /diff --git a\/question-notes.txt/);
+    assert.doesNotMatch(review.split('Fix diff:\n')[1]!, /diff --git a\/answer/);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.bounces, 1); assert.equal(row.team.testCommit, original.team.testCommit);
+    assert.deepEqual(row.team.testCommits, original.team.testCommits);
+    assert.deepEqual(row.team.repair, original.team.repair);
+    assert.equal(y.inputs.filter(r => r.role === 'test-writers').length, 1);
+    assert.equal(row.sessionIds[role].length, original.sessionIds[role].length + 1);
+    assert.equal(y.requests.length, 1);
+  }
+});
+
+test('failed WIP commits, wrong branches and unresolved conflicts retain index and files without further roles', async t => {
+  for (const mode of ['commit', 'branch', 'conflict']) {
+    const y = await fixture(t);
+    const { mkdir, chmod } = await import('node:fs/promises');
+    const hooks = join(y.root, 'hooks'); await mkdir(hooks);
+    y.setScript(async (request, sink) => {
+      if (request.role !== 'implementer') return y.normal(request, sink);
+      if (mode === 'branch') y.git('-C', request.cwd, 'switch', '-c', 'wrong-branch');
+      if (mode === 'conflict') {
+        y.git('-C', request.cwd, 'switch', '-c', 'conflicting');
+        await writeFile(join(request.cwd, 'README.md'), 'Other branch\n');
+        y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Other work');
+        y.git('-C', request.cwd, 'switch', 'mill/12');
+        await writeFile(join(request.cwd, 'README.md'), 'Ticket branch\n');
+        y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Ticket work');
+        assert.throws(() => y.git('-C', request.cwd, 'merge', 'conflicting'));
+      } else {
+        await writeFile(join(request.cwd, 'README.md'), 'Staged version\n');
+        y.git('-C', request.cwd, 'add', 'README.md');
+        await writeFile(join(request.cwd, 'README.md'), 'Disk version\n');
+      }
+      await writeFile(join(request.cwd, 'untracked'), 'Keep untracked\n');
+      if (mode === 'commit') {
+        await writeFile(join(hooks, 'pre-commit'), '#!/bin/sh\necho Commit refused >&2\nexit 1\n');
+        await chmod(join(hooks, 'pre-commit'), 0o755);
+        y.git('config', 'core.hooksPath', hooks);
+      }
+      return { outcome: { outcome: 'question', question: 'Can this work continue?' } };
+    });
+    const first = await y.cli('team', 'run', '12', '--json');
+    assert.equal(first.code, 1); assert.equal(JSON.parse(first.stdout).outcome, 'infrastructure', first.stdout);
+    assert.match(first.stdout, /WIP preservation failed/);
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.team.question.preserved, false); assert.equal(row.stage, 'implementer');
+    assert.equal(row.team.question.question, 'Can this work continue?'); assert.equal(row.bounces, 0);
+    assert.equal(await readFile(join(y.path, 'untracked'), 'utf8'), 'Keep untracked\n');
+    if (mode === 'conflict') {
+      assert.match(y.git('-C', y.path, 'ls-files', '--unmerged'), /README/);
+      assert.match(await readFile(join(y.path, 'README.md'), 'utf8'), /<<<<<<< HEAD/);
+    } else {
+      assert.equal(y.git('-C', y.path, 'show', ':README.md'), 'Staged version');
+      assert.equal(await readFile(join(y.path, 'README.md'), 'utf8'), 'Disk version\n');
+    }
+    const status = y.git('-C', y.path, 'status', '--porcelain');
+    const count = y.inputs.length;
+    assert.equal((await y.cli('run', 'answer', '12', 'Try after fixing preservation')).code, 0);
+    assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+    assert.equal(y.inputs.length, count); assert.equal(y.requests.length, 0);
+    assert.equal(y.git('-C', y.path, 'status', '--porcelain'), status);
+    const retained = (await y.status()).tickets[0];
+    assert.equal(retained.worktree, y.path); assert.equal(retained.stage, 'implementer');
+  }
+});
+
+test('a failed aborted mirror retains the question and WIP while answer recovery reuses the cached thread', async t => {
+  const y = await fixture(t);
+  let fail = true, asked = false;
+  y.setBeforeWrite(async body => { if (fail && body?.startsWith('[sawmill:aborted]')) throw new Error('Mirror unavailable'); });
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && !asked) {
+      asked = true;
+      await writeFile(join(request.cwd, 'notes'), 'Unfinished investigation\n');
+      return { outcome: { outcome: 'question', question: 'Keep the synchronous API?' } };
+    }
+    if (request.role === 'implementer') {
+      assert.match(request.handoff, /Keep the synchronous API/); assert.match(request.handoff, /Keep it synchronous/);
+    }
+    return y.normal(request, sink);
+  });
+  const stopped = await y.cli('team', 'run', '12', '--json');
+  assert.equal(JSON.parse(stopped.stdout).reason, 'tracker');
+  const saved = (await y.status()).tickets[0];
+  assert.equal(saved.stage, 'implementer'); assert.equal(saved.team.question.preserved, true);
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], saved.team.question.wipHead);
+  assert.equal((await y.cli('run', 'answer', '12', 'Keep it synchronous')).code, 1);
+  assert.equal((await y.cli('team', 'run', '12')).code, 1);
+  assert.equal(y.inputs.length, 2);
+  fail = false;
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(y.ticket.comments.filter(c => c.body.startsWith('[sawmill:aborted]')).length, 1);
+  assert.equal(y.ticket.comments.filter(c => c.body === 'Keep it synchronous').length, 1);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'implementer', 'reviewer']);
 });
