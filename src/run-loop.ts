@@ -20,10 +20,10 @@ function changes(cwd: string, home: string) {
   return { waiting, close() { clearTimeout(timer); watchers.forEach(watcher => watcher.close()); } };
 }
 
-export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {
+export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, onLocked?: () => void) {
   readRun(cwd);
   await recoverWorkers(cwd, home);
-  return withRunLock(cwd, 'loop', () => runLocked(cwd, project, machine, home, writer));
+  return withRunLock(cwd, 'loop', () => { onLocked?.(); return runLocked(cwd, project, machine, home, writer); });
 }
 
 async function runLocked(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {

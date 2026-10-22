@@ -11,7 +11,9 @@ if (roleCommand) {
   process.once('SIGTERM', interrupt);
 }
 process.env.MILL_WORKER_TOKEN ??= randomUUID();
-try { process.exitCode = await runCli(args, { signal: controller.signal }); }
+// A background parent (src/run-background.ts) waits on IPC for the loop lock.
+const onRunLocked = process.send ? () => { process.send!({ type: 'locked' }); } : undefined;
+try { process.exitCode = await runCli(args, { signal: controller.signal, onRunLocked }); }
 finally {
   if (roleCommand) {
     process.removeListener('SIGINT', interrupt);
