@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fixture, until } from './dispatch-fixture.js';
 
@@ -42,6 +42,7 @@ test('restart stops surviving vendors before reusing an orphan branch and its sa
   const starts = await until(y.starts, rows => rows.some(row => row.role === 'implementer'));
   const active = starts.find(row => row.role === 'implementer')!;
   const before = (await y.status()).tickets[0]!;
+  assert.ok(before.worker?.processes?.some(child => child.pid === active.pid && child.group && child.processStart));
   const descendant = await until(async () => Number(await readFile(join(y.root, 'descendant'), 'utf8').catch(() => '0')), value => value > 0);
   process.kill(active.parent, 'SIGKILL');
   process.kill(active.pid, 0); process.kill(descendant, 0);
@@ -85,12 +86,43 @@ test('infrastructure threshold exits visibly paused with queued work and a fresh
   await y.release();
   const result = await y.command(['run', '--json']).catch((error: any) => error);
   assert.equal(JSON.parse(result.stdout).status, 'paused', result.stdout);
+  assert.equal(result.code, 1);
   const state = await y.status();
   assert.equal(state.tickets.find(row => row.number === 3)?.state, 'queued');
   assert.match(JSON.stringify(state), /Paused after 1 consecutive infrastructure result/);
   const again = await y.command(['run', '--json']).catch((error: any) => error);
   assert.equal(JSON.parse(again.stdout).status, 'partial');
   assert.equal((await y.status()).tickets.find(row => row.number === 3)?.state, 'done');
+});
+
+test('a synchronous launch failure pauses the same dispatch pass and prints its reason', async t => {
+  const y = await fixture(t, [1, 3]);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 2\npause_threshold: 1\n');
+  await mkdir(join(y.cwd, '.mill/logs'));
+  await writeFile(join(y.cwd, '.mill/logs/1'), 'not a log directory');
+  const result = await y.command(['run']).catch((error: any) => error);
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /Paused after 1 consecutive infrastructure results/);
+  const state = await y.status();
+  assert.equal(state.tickets.find(row => row.number === 1)?.worker?.result?.outcome, 'infrastructure');
+  assert.equal(state.tickets.find(row => row.number === 3)?.worker, null);
+});
+
+test('another millyard recovers a dead machine lease while leaving its ticket queued for its own run', async t => {
+  const a = await fixture(t), b = await fixture(t);
+  await writeFile(join(a.userConfig, 'config.yaml'), 'concurrency: 1\n');
+  await a.once();
+  const [old] = await until(a.starts, rows => rows.length === 1);
+  process.kill(old.parent, 'SIGKILL');
+  const command = b.command(['run', '--json'], a.home).catch((error: any) => error);
+  await until(b.starts, rows => rows.length === 1);
+  const recovered = (await a.status()).tickets[0]!;
+  assert.equal(recovered.state, 'queued');
+  assert.equal(recovered.worker?.status, 'finished');
+  assert.equal(recovered.worker?.result?.outcome, 'stopped');
+  assert.equal((await a.starts()).length, 1);
+  await b.release();
+  assert.equal(JSON.parse((await command).stdout).status, 'partial');
 });
 
 test('a replacement coordinator retains a live worker and its machine lease', async t => {
@@ -171,4 +203,46 @@ test('logjam and blocked-only runs exit without dispatch and still enforce the c
   const dirty = await y.command(['run', '--json']).catch((error: any) => error);
   assert.match(JSON.parse(dirty.stdout).message ?? '', /dirty tree/);
   y.git('restore', 'README.md');
+});
+
+test('orphaned repair resumes its original role entry HEAD after a partial commit', async t => {
+  const y = await fixture(t, [1], true);
+  await writeFile(join(y.root, 'repair-crash'), 'yes');
+  await writeFile(join(y.root, 'hold-repair'), 'yes');
+  await y.release();
+  await y.once();
+  await until(y.starts, rows => rows.some(row => row.role === 'implementer' && row.bounces === 1));
+  const before = (await y.status()).tickets[0]!;
+  await until(async () => readFile(join(before.worktree!, 'repair.txt'), 'utf8').catch(() => ''), value => value.length > 0);
+  // The fixture holds after the separate repair commit has been written.
+  await until(async () => y.git('-C', before.worktree!, 'log', '-1', '--format=%s'), value => value === 'Repair checkpoint');
+  process.kill(before.worker!.pid!, 'SIGKILL');
+  const running = y.command(['run', '--json']).catch((error: any) => error);
+  await until(y.starts, rows => rows.filter(row => row.role === 'implementer' && row.bounces === 1).length === 2);
+  await rm(join(y.root, 'hold-repair'));
+  const result = await running;
+  assert.equal(JSON.parse(result.stdout).status, 'ok', result.stdout);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.bounces, 1);
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.equal(after.state, 'done');
+  assert.equal(await readFile(join(y.cwd, 'repair.txt'), 'utf8'), 'Committed repair before crash\n');
+});
+
+test('orphan recovery retains the saved path when its worktree was switched to another branch', async t => {
+  const y = await fixture(t);
+  await y.once();
+  const [active] = await until(y.starts, rows => rows.length === 1);
+  const before = (await y.status()).tickets[0]!;
+  process.kill(active.parent, 'SIGKILL');
+  process.kill(-active.pid, 'SIGKILL');
+  y.git('-C', before.worktree!, 'checkout', '-b', 'saved-work');
+  await writeFile(join(before.worktree!, 'keep.txt'), 'Saved files stay here\n');
+  const result = await y.command(['run', '--json']).catch((error: any) => error);
+  assert.equal(JSON.parse(result.stdout).status, 'partial');
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.worktree, before.worktree);
+  assert.equal(y.git('-C', before.worktree!, 'branch', '--show-current'), 'saved-work');
+  assert.equal(await readFile(join(before.worktree!, 'keep.txt'), 'utf8'), 'Saved files stay here\n');
+  assert.equal((await y.starts()).length, 1);
 });

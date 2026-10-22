@@ -80,8 +80,14 @@ process.stdin.on('end', async () => {
   const number = Number(require('node:path').basename(process.cwd()));
   const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: process.env.FIXTURE_YARD, encoding: 'utf8' }));
   const row = status.tickets.find(x => x.number === number);
-  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, pid: process.pid, parent: process.ppid, state: row.state, worker: row.worker }) + '\\n');
+  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
   const root = process.env.FIXTURE_DIR;
+  const repair = row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
+  if (repair && !fs.existsSync('repair.txt')) {
+    fs.writeFileSync('repair.txt', 'Committed repair before crash\\n');
+    cp.execFileSync('git', ['add', 'repair.txt']);
+    cp.execFileSync('git', ['commit', '-m', 'Repair checkpoint']);
+  }
   if (row.stage === 'implementer' && fs.existsSync(root + '/save-' + number)) {
     fs.writeFileSync('saved-work.txt', 'Uncommitted work before the coordinator died\\n');
     if (!fs.existsSync(root + '/descendant')) {
@@ -90,7 +96,7 @@ process.stdin.on('end', async () => {
       child.unref();
     }
   }
-  while ((!fs.existsSync(root + '/release') && !fs.existsSync(root + '/release-' + number)) || fs.existsSync(root + '/hold-' + row.stage + '-' + number)) await new Promise(r => setTimeout(r, 30));
+  while ((!fs.existsSync(root + '/release') && !fs.existsSync(root + '/release-' + number)) || fs.existsSync(root + '/hold-' + row.stage + '-' + number) || (repair && fs.existsSync(root + '/hold-repair'))) await new Promise(r => setTimeout(r, 30));
   const args = process.argv.slice(2);
   console.log(JSON.stringify({type:'system', subtype:'init', model:args[args.indexOf('--model')+1], effort:args[args.indexOf('--effort')+1]}));
   let outcome = {outcome:'question', question:'Fixture finished'};
@@ -102,11 +108,12 @@ process.stdin.on('end', async () => {
     if (row.stage === 'test-writers') {
       fs.writeFileSync(tests, "require('node:assert/strict').equal(require('./" + source + "')(), 42);\\n");
       git('add', tests); git('commit', '-m', 'Specify answer');
-    } else if (row.stage === 'implementer') {
+    } else if (row.stage === 'implementer' && !repair) {
       fs.writeFileSync(source, 'module.exports = () => 42;\\n');
       git('add', '.'); git('commit', '-m', 'Return answer');
     }
     outcome = {outcome:row.stage === 'reviewer' ? 'pass' : 'done', summary:'Fixture role complete'};
+    if (row.stage === 'reviewer' && row.bounces === 0 && fs.existsSync(root + '/repair-crash')) outcome = {outcome:'bounce', feedback:'Add the repair checkpoint'};
   }
   console.log(JSON.stringify({type:'result', subtype:'success', is_error:false, result:'\`\`\`mill-outcome\\n' + JSON.stringify(outcome) + '\\n\`\`\`'}));
 });
@@ -130,4 +137,3 @@ process.stdin.on('end', async () => {
   });
   return { ...y, env, status, starts, once, command, release: () => writeFile(join(y.root, 'release'), 'yes') };
 }
-

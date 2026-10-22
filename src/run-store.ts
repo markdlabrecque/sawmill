@@ -21,6 +21,7 @@ export interface IntegrationProgress {
 }
 export interface TeamProgress {
   recovery?: { stage: string };
+  activeRole?: { role: Role; beforeHead: string; bounces: number };
   testBase?: string;
   testCommit?: string;
   testCommits?: string[];
