@@ -66,7 +66,7 @@ Everything Sawmill keeps in a millyard lives in `.mill/` at its root: `config.ya
 
 ## Worktrees and hooks
 
-Worktrees are plain git worktrees that only Sawmill creates and removes, so the hooks always run. Tools that manage worktrees for interactive agents (T3 Code, Orca, Herdr) have no role here: the roles are headless.
+Worktrees are plain git worktrees that only Sawmill creates and removes, so the hooks always run. Integration with T3 Code, Orca, or Herdr is out of scope. Those tools exist to put an interactive agent in front of a person; Sawmill's roles are non-interactive and run headless, so there is nothing for them to show or control.
 
 **Worktree contract**
 
