@@ -29,3 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Show worker diagnostics on failure
+        if: failure()
+        run: |
+          find /tmp -path '/tmp/sawmill-*/main/.mill/logs/*/worker-*.log' -type f -print -exec tail -n 80 {} \;
