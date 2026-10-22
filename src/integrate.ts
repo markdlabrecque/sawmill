@@ -9,6 +9,7 @@ import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
+import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import { MergeRefusedError } from './tracker.js';
@@ -156,7 +157,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await git(ticket.worktree!, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
       progress.pushedHead = head;
       await advance('pr-opened');
-      const issueUrl = `https://${project.tracker.host ?? (project.tracker.backend === 'gitlab' ? 'gitlab.com' : 'github.com')}/${project.tracker.repo}/${project.tracker.backend === 'gitlab' ? '-/' : ''}issues/${number}`;
+      const issueUrl = ticketUrl(project.tracker, number);
       progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
