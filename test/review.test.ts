@@ -415,6 +415,7 @@ test('documented default model accepts max unchanged and records unreported effe
   assert.equal(argv[argv.indexOf('--effort') + 1], 'max');
   assert.equal(argv[argv.indexOf('--model') + 1], 'claude-opus-5-5');
   assert.equal(argv[argv.indexOf('--setting-sources') + 1], '');
+  assert.deepEqual(JSON.parse(argv[argv.indexOf('--settings') + 1]!), { attribution: { commit: '', pr: '' } });
   assert.ok(argv.includes('--strict-mcp-config'));
   assert.ok(argv.includes('--no-chrome'));
   assert.ok(!argv.includes('Bash'));
