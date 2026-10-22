@@ -1,0 +1,72 @@
+# Sawmill project config.
+#
+# mill build seeds this file to ~/.config/sawmill/default.yaml and copies it
+# into each millyard as .mill/config.yaml. Edit the ~/.config copy to change
+# your house defaults; edit .mill/config.yaml to change one millyard.
+# .mill/ is never committed, so this file never reaches the repo.
+#
+# Every valid key is listed. Keys that are commented out are optional or have
+# no sensible default. Everything else is required and shown with its default.
+
+# Where the tickets live. backend is github or gitlab. repo is owner/name on
+# GitHub, or group/subgroup/name on GitLab. host is only needed for
+# self-hosted GitLab.
+tracker:
+  backend: github
+  # repo: owner/name
+  # host: git.example.com
+
+# The branch worktrees are cut from and merged into. The millyard must be on
+# this branch, clean, before mill run draft or mill run will start.
+integration: main
+
+# The agent runtime that runs each role as a child process in the worktree.
+# One of: claude-code, pi, codex, custom. With custom, runtime_command is
+# required and must speak the mill outcome format on stdout.
+runtime: claude-code
+# runtime_command: /path/to/my-runner
+
+# Model and effort per role. effort is one of: low, medium, high, max.
+# Model ids are the runtime's own. Pick a cheap model to write tests, a strong
+# one to implement, and the strongest you can afford to review.
+roles:
+  test-writers:
+    model: claude-sonnet-5-5
+    effort: medium
+  implementer:
+    model: claude-opus-5-5
+    effort: high
+  reviewer:
+    model: claude-fable-5-1
+    effort: high
+
+# How long one role may run before it is treated as an infrastructure failure
+# and retried. Suffixes: s, m, h.
+role_timeout: 60m
+
+# The project's test command, run in the worktree by the implementer and by
+# mill integrate before merge. timeout is an infrastructure failure, never a
+# test failure and never a reviewer finding.
+tests:
+  command: npm test
+  timeout: 30m
+
+# wait: after the rebase gate, push the branch and wait for the tracker's
+# pipeline on that exact commit before merging; red is one more implementer
+# round. none: merge on green local tests.
+ci: none
+
+# REQUIRED, no default. How the reviewer reaches a running site to perform the
+# ticket's "User test cases". ddev: the URL comes from `ddev describe` in the
+# worktree. docker: set test_url below. none: opt out of user testing on
+# purpose; a run containing a ticket with user test cases is then refused at
+# draft time. mill build fills this in when it finds .ddev/ or Docker files,
+# and every mill command aborts while it is missing.
+# test_harness: none
+
+# The site URL the reviewer drives when test_harness is docker.
+# test_url: http://localhost:8080
+
+# Names of the labels Sawmill writes to the tracker. Only logjam exists.
+# labels:
+#   logjam: logjam
