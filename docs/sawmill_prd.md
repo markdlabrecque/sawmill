@@ -23,11 +23,11 @@ The orchestrator is a plain loop inside the Mill CLI, not an agent. It reads the
 | Run file | `.mill/run.sqlite` in the millyard: which tickets, in what order, and each one's state | Written only by the CLI, written before the tracker mirror; source of truth for a run |
 | Orchestrator loop | Deterministic loop in the CLI; picks ready tickets from the run file, dispatches teams, reacts to results | Not an agent and not durable: restart at will, it continues from the run file |
 | Mill CLI | Deterministic operations: runs, tickets, worktrees, tests, rebase, merge, state changes | Used by the orchestrator, the draft skill, and the human user directly |
-| Ticket layer | Thin interface over GitHub issues (first) and GitLab issues (second) | Read at draft time for tickets and blocked-by links; written during a run as a mirror (reporter comments, logjam label, close) |
+| Ticket layer | Thin interface over GitHub (first) and GitLab (second): issues, PRs or MRs, pipelines | Read at draft time for tickets and blocked-by links; during a run it opens and merges PRs or MRs, reads pipeline status, and mirrors state (reporter comments, logjam label, close) |
 | Sawmill plugin | Claude Code plugin with a `draft` skill | Picks and orders tickets with judgment, then calls `mill run draft`; never writes the run file itself |
 | Worktree per ticket | Isolated sandbox cut from integration, plain git worktree owned by Sawmill | Hooks run on create and remove |
 | Agent team | Test writers, implementer, reviewer | One team per ticket; each role runs as a process on a pluggable agent runtime (Claude Code, Pi, Codex) with its own model and effort |
-| Integration branch | Auto-merge target for approved features | Sits in front of main; main promotion stays manual |
+| Integration branch | Merge target for approved features, through a PR or MR | Sits in front of main; main promotion stays manual |
 
 Language: TypeScript on Node; the GitHub and GitLab SDKs are mature there.
 
@@ -43,8 +43,8 @@ A ticket goes from drafted into a run to merged with no human step unless someth
 6. Implementer makes the tests pass, running unit tests locally.
 7. Reviewer reviews the diff against the ticket; pass or bounce (see review rules).
 8. CLI rebases onto integration and re-runs tests; a conflict or failure is one more implementer round.
-9. CLI pushes the branch and, when the backend has pipelines, waits for CI on that exact commit; a red pipeline is one more implementer round.
-10. CLI merges into integration; pre-remove hook runs; worktree removed.
+9. CLI pushes the branch and opens a PR or MR against integration; when the project says so, it waits for CI on that head commit. A red pipeline is one more implementer round.
+10. CLI merges the PR or MR through the tracker; teardown hook runs; worktree removed.
 11. CLI reporter step posts a summary comment on the ticket and closes it.
 
 The CLI writes every state change to the run file first and mirrors it to the tracker second, so `mill run status` shows the whole run from the file alone and the ticket thread is the full log for reading from anywhere.
@@ -88,14 +88,15 @@ Review rounds stay cheap by scoping each re-review to the fix, with the post-reb
 - First review: reviewer gets the ticket plus the full diff.
 - Bounce: reviewer feedback goes to the implementer; each fix is its own commit.
 - Re-review: reviewer sees only that fix commit's diff plus its own original feedback, and checks whether the feedback was addressed.
-- User testing: if the ticket has a "User test cases" section, the reviewer performs each case as the user in a browser against the worktree's running site. A case the user cannot complete (error, dead control, wrong result, lost data) is a bounce naming the case and step. Everything else is a pass, with recommendations posted by the CLI as a user-testing comment on the ticket. A re-review after such a bounce re-runs the failed cases.
+- User testing: if the ticket has a "User test cases" section, the reviewer performs each case as the user in a browser (the `chrome-devtools-axi` CLI) against the worktree's running site. A case the user cannot complete (error, dead control, wrong result, lost data) is a bounce naming the case and step. Everything else is a pass, with recommendations posted by the CLI as a user-testing comment on the ticket. A re-review after such a bounce re-runs the failed cases.
 - Retry cap: after the cap is hit, the ticket is labelled logjam and the team stops.
 - Rebase: before merge, rebase onto integration and re-run the full test suite.
 - Rebase conflict or test failure counts as one more implementer round, not an escalation.
-- CI: when the project says so, push the rebased branch and wait for the backend's pipeline on that exact commit. A red pipeline is one more implementer round. Merge never happens on a commit the pipeline did not pass.
+- PR or MR: after the rebase gate, push the branch and open a pull request or merge request against integration, reusing one if it exists. The merge happens through the tracker, never by a local push to integration, so protected branches work as they are.
+- CI: when the project says so, wait for the pipeline on the PR or MR head commit. A red pipeline is one more implementer round, pushed to the same branch. Merge never happens on a commit the pipeline did not pass.
 - Test timeout: the test command runs under a project-configured timeout, generous by default (30 minutes). A timeout is an environment failure, not a test failure, and is never handed to the reviewer as a finding.
 - Infrastructure failures: a role that cannot start, loses its provider, or loops on a missing tool returns an infrastructure outcome. The team runner retries it a bounded number of times without spending a bounce. If retries run out, the ticket gets logjam with reason environment. If several tickets hit infrastructure failures in a row, the orchestrator stops dispatching new work until a dispatch succeeds, so one outage does not logjam the whole board.
-- Merge: on a clean rebase, green tests and (when required) green CI, auto-merge into integration.
+- Merge: on a clean rebase, green tests and (when required) green CI, merge the PR or MR through the tracker (squash by default), delete the remote branch, fast-forward the millyard.
 - Main: promotion from integration to main is manual and outside the factory.
 - Accepted trade-off: a narrow re-review could miss a fix that breaks already-approved code; the rebase-and-test gate catches that.
 - Accepted trade-off: running independent tickets in parallel will sometimes produce merge conflicts; the rebase gate and one implementer round absorb them. No attempt is made to predict file collisions up front.
@@ -126,7 +127,7 @@ Build bottom-up so each layer is testable by hand before the orchestrator depend
 - Orchestrator and reporter are not agents: both are deterministic CLI code. The orchestrator is not durable; if it dies, run `mill run` again and it continues from the run file, re-queuing any working ticket whose team is gone.
 - Agent runtime is pluggable: Claude Code first, then Pi and Codex, chosen per project in config, with a model and effort per role (test writers, implementer, reviewer). Each role is one child process of the vendor CLI with the worktree as its working directory. No relay, proxy, or control channel between the adapter and the vendor CLI.
 - Peeking: each role's stream is logged under `.mill/logs/<ticket>/`, `mill team tail <n>` follows it, and the session id is recorded so a finished role can be reopened with the vendor's resume command.
-- CI: per project, `mill integrate` waits for the backend pipeline on the exact rebased commit before merging. Off by default for repos with no pipeline.
+- CI: per project, `mill integrate` waits for the pipeline on the PR or MR head before merging. Off by default for repos with no pipeline.
 - Test timeout: per project, default 30 minutes; a timeout is an environment failure.
 - Worktree cleanup: `mill worktree gc` removes worktrees whose tickets are done, running the pre-remove hook for each. Logjam tickets keep their worktree.
 - Concurrency: one machine-wide setting, two tickets at a time by default, until the Claude plan proves it can take more.
@@ -149,11 +150,11 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Hook | A per-project bash script run around worktree creation or removal (`.mill/setup.sh`, `.mill/teardown.sh`); gets the worktree path and ticket number as arguments and `MILL_*` variables |
 | Implementer | Team role that writes code until the tests pass |
 | Infrastructure outcome | A role result meaning the agent could not do its work for environment reasons (runtime failed to start, provider down, tool loop, test timeout); retried without spending a bounce, never a reviewer finding |
-| Integration branch | The branch approved features auto-merge into; sits in front of main |
+| Integration branch | The branch approved features merge into through PRs or MRs; sits in front of main |
 | Main | The release branch; promotion from integration to main is manual and outside the factory |
 | Mill CLI | The `mill` command-line tool holding every deterministic step (tickets, worktrees, tests, rebase, merge, reporter comments); used by the orchestrator and by the human user directly |
 | `mill build` | Create `.mill/` in the millyard, add it to `.git/info/exclude`, write `config.yaml` from `~/.config/sawmill/default.yaml` (seeding that default from the built-in template if missing), detect the test harness and install the default DDEV hooks; refuses to overwrite without `--force` |
-| `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite under the timeout, wait for CI when the project requires it, and merge on green |
+| `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite under the timeout, push and open a PR or MR, wait for CI when the project requires it, and merge through the tracker on green |
 | `mill run` | Start the orchestrator loop on the run file in the current millyard; `mill run once` does a single dispatch pass |
 | `mill run answer` | Post the human user's answer as a ticket comment, flush any held tracker writes, clear logjam and re-queue the ticket |
 | `mill run close` | Mark a ticket done by hand and close it in the tracker; its dependents become ready |

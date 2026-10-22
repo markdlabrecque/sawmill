@@ -59,6 +59,9 @@ tests:
 # round. none: merge on green local tests.
 ci: none
 
+# How mill integrate merges the PR or MR through the tracker: squash or merge.
+merge_method: squash
+
 # REQUIRED, no default. How the reviewer reaches a running site to perform the
 # ticket's "User test cases". ddev: the URL comes from `ddev describe` in the
 # worktree. docker: set test_url below. none: opt out of user testing on
