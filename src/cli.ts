@@ -180,14 +180,16 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'run' && ['close', 'answer'].includes(positional[1] ?? '')) {
         const message = usage(`run ${positional[1]}`);
-        if (positional.length < 3 || positional.length > (positional[1] === 'answer' ? 4 : 3) || (positional[3] !== undefined && !positional[3].trim()) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) {
+        const implementer = positional[1] === 'answer' && positional.includes('--implementer');
+        const words = implementer ? positional.filter(arg => arg !== '--implementer') : positional;
+        if (words.length < 3 || words.length > (positional[1] === 'answer' ? 4 : 3) || (words[3] !== undefined && !words[3].trim()) || !/^[1-9]\d*$/.test(words[2]!) || !Number.isSafeInteger(Number(words[2]))) {
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
         const writer = ticketWriter(options, config.project, cwd);
         const ok = positional[1] === 'answer'
-          ? await answerTicket(cwd, config.project, writer, Number(positional[2]), positional[3], options)
-          : await closeTicket(cwd, config.project, writer, Number(positional[2]), options);
+          ? await answerTicket(cwd, config.project, writer, Number(words[2]), words[3], { ...options, implementer })
+          : await closeTicket(cwd, config.project, writer, Number(words[2]), options);
         const snapshot = readRun(cwd);
         emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, formatRun(snapshot));
         return ok ? 0 : 1;

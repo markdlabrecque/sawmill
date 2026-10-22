@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, mergeCleanupPending, type LoopProgress, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
+import { readRun, runPath, mergeCleanupPending, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
@@ -77,6 +77,18 @@ function requireTicket(db: DatabaseSync, number: number) {
 function cleanupPending(row: ReturnType<typeof requireTicket>): boolean {
   return mergeCleanupPending({ completion: row.completion as RunTicket['completion'],
     integration: row.integration ? JSON.parse(String(row.integration)) : {} });
+}
+
+/** A not-reproduced repair left HEAD untouched. Drop the repair and resume at
+ * integration; the team runner re-checks the restored approval against HEAD. */
+function integrateAgain(row: ReturnType<typeof requireTicket>): TeamProgress {
+  const team: TeamProgress = row.team ? JSON.parse(String(row.team)) : {};
+  const integration: IntegrationProgress = row.integration ? JSON.parse(String(row.integration)) : {};
+  delete team.repair;
+  delete team.activeRole;
+  if (integration.reviewedHead) team.approvedHead = integration.reviewedHead;
+  team.next = 'integrate';
+  return team;
 }
 
 function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
@@ -219,16 +231,18 @@ export async function closeTicket(cwd: string, project: ProjectConfig, tracker: 
   return flushPending(cwd, project, tracker, number, options);
 }
 
-export async function answerTicket(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, text: string | undefined, options: MirrorOptions = {}) {
+export async function answerTicket(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, text: string | undefined, options: MirrorOptions & { implementer?: boolean } = {}) {
   checkTracker(cwd, project);
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     // An answer must not clear a request while its active role is still saving.
     if (ticket.stop_requested && ticket.state === 'working') throw new CliError('Wait for the requested stop boundary before answering.');
     if (ticket.state !== 'logjam' && !db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) throw new CliError(`Ticket #${number} is not in logjam and has no pending writes.`);
+    const notReproduced = ticket.state === 'logjam' && ticket.reason === 'not-reproduced';
+    if (options.implementer && !notReproduced) throw new CliError(`--implementer applies only to a not-reproduced ticket; #${number} is not one.`, 2);
     const writes: MirrorWrite[] = text === undefined ? [] : [{ kind: 'comment', payload: { body: text } }];
     writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
-    update(db, number, {}, writes);
+    update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : {}, writes);
   });
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {

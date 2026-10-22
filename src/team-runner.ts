@@ -119,7 +119,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const kind = outcome.outcome;
       const reason = kind === 'question' ? 'question' : kind === 'bounce' ? 'review-bounce' : kind === 'no-change' ? 'not-reproduced' : 'environment';
       const detail = kind === 'question' ? outcome.question : kind === 'bounce' ? outcome.feedback : kind === 'infrastructure' ? outcome.error
-        : kind === 'no-change' ? `Repair round (${progress.repair?.source ?? 'unknown'}) ended with no change: the failure could not be reproduced in the ticket worktree. A person must decide how to proceed.\n\n${outcome.summary}`
+        : kind === 'no-change' ? `Repair round (${progress.repair?.source ?? 'unknown'}) ended with no change: the failure could not be reproduced in the ticket worktree. A person must decide how to proceed:\n` +
+          `- \`mill run answer ${number} [text]\` re-runs the final tests from the current branch and, if they pass, carries on to the pull request and merge.\n` +
+          `- \`mill run answer ${number} --implementer "<guidance>"\` sends the ticket back to the implementer with the answer text.\n\n${outcome.summary}`
           : 'Unexpected role outcome.';
       const row = current();
       if (readRun(cwd).run.id === snapshot.run.id && row && row.state !== 'logjam' && (!row.completion || (kind === 'infrastructure' && row.completion === 'merged'))) await transition(cwd, project, tracker, number, {
