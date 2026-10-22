@@ -29,12 +29,17 @@ export interface IntegrationResult {
   changeRequestUrl?: string;
 }
 
+/** Hook variables describe the coordinator's ticket; tests that build their own millyards must not see them. */
+const hookVariables = ['MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+
 /** A timeout kills the whole test process group, including shell grandchildren. */
 async function tests(cwd: string, project: ProjectConfig, home?: string, childStarted?: (pid: number) => void): Promise<{ code: number | null; timedOut: boolean; output: string }> {
   const duration = project.tests.timeout;
   const ms = Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}) };
+  for (const name of hookVariables) delete env[name];
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', ['-c', project.tests.command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}) } });
+    const child = spawn('bash', ['-c', project.tests.command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
     let output = '', timedOut = false;
     const collect = (data: Buffer) => { output = (output + data.toString()).slice(-1024 * 1024); };
     child.stdout.on('data', collect); child.stderr.on('data', collect);
