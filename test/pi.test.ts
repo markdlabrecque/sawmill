@@ -258,7 +258,7 @@ test('Pi policy validates effective startup model/effort and rejects unsupported
 test('scripted direct Pi children run the complete team with real red/green tests, native policy, git, SQLite and fake tracker integration', async t => {
   const y = await piYard(t);
   assert.equal((await y.cli('worktree', 'remove', '21')).code, 0);
-  await writeFile(join(y.cwd, '.mill/setup.sh'), 'echo "$MILL_TICKET" > "$MILL_WORKTREE/.git-fixture-hook"\n');
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'echo "$MILL_TICKET" > "$MILL_WORKTREE/.git-fixture-hook"; echo "$MILL_TICKET" > "$MILL_MILLYARD/.mill/setup-evidence"\n');
   await writeFile(join(y.cwd, '.git/info/exclude'), '.mill/\n.git-fixture-hook\n');
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: npm test', 'command: node answer.test.cjs')
     .replace('model: openai/gpt-6.1\n    effort: max', 'model: openai/gpt-6.1-sol\n    effort: medium'));
@@ -331,7 +331,7 @@ test('scripted direct Pi children run the complete team with real red/green test
   const row = await y.status(); assert.equal(row.state, 'done'); assert.equal(y.ticket.state, 'closed');
   assert.equal(y.git('rev-parse', 'HEAD'), JSON.parse(result.stdout).mergeCommit);
   assert.match(opened[0]!, /^#21: /); assert.equal(opened.length, 1);
-  assert.equal(await readFile(join(y.worktree, '.git-fixture-hook'), 'utf8'), '21\n');
+  assert.equal(await readFile(join(y.cwd, '.mill/setup-evidence'), 'utf8'), '21\n');
   assert.equal(await readFile(join(y.cwd, 'answer.cjs'), 'utf8'), 'module.exports = () => 42;\n');
   const calls = (await readFile(callsPath, 'utf8')).trim().split('\n').map(s => JSON.parse(s));
   assert.deepEqual(calls.map(c => c.role), ['test-writers', 'implementer', 'reviewer']);

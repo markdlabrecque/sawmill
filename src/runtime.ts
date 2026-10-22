@@ -19,6 +19,8 @@ export interface RuntimeRequest {
   timeoutMs: number;
   /** Browser case handling is a separate capability; never silently grant it. */
   browser: boolean;
+  /** Exact CLI-selected integration commit, only during implementer conflict repair. */
+  conflictBase?: string;
   signal?: AbortSignal;
 }
 export interface RuntimeSink {

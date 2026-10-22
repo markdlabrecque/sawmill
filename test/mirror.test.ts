@@ -1,3 +1,4 @@
+import { GitHubWriter } from '../src/github-writes.js';
 import assert from 'node:assert/strict';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -350,4 +351,50 @@ test('recovery after a partial mirror failure does not repost the successful ans
   assert.deepEqual(tracker.ticket(1).comments, [{ body: 'Keep the existing design.' }]);
   assert.deepEqual(tracker.ticket(1).labels, []);
   assert.equal(JSON.parse(result.stdout).tickets[0].state, 'queued');
+});
+
+test('a completed loop can draft another batch and reset its loop metadata', async t => {
+  const tracker = new WriteTracker([ticket(1)]);
+  const y = await configured(t, tracker);
+  assert.equal((await y.cli('run', 'close', '1')).code, 0);
+  assert.equal((await y.cli('run', '--json')).code, 0);
+  const old = JSON.parse((await y.cli('run', 'status', '--json')).stdout);
+  assert.ok(old.run.loop);
+  tracker.readsAllowed = true;
+  const drafted = await y.cli('run', 'draft', '1', '--json');
+  assert.equal(drafted.code, 0, drafted.stdout);
+  const next = JSON.parse(drafted.stdout);
+  assert.notEqual(next.run.id, old.run.id);
+  assert.equal(next.run.loop, undefined);
+  assert.equal(next.tickets[0].state, 'queued');
+  assert.equal((await y.cli('run', 'draft', '1', '--replace', '--json')).code, 0);
+});
+
+test('stalled GitHub mirror processes time out with durable writes available to answer', async t => {
+  const y = await configured(t, new WriteTracker([ticket(1)]));
+  const bin = join(y.root, 'bin'); await mkdir(bin);
+  const stalled = join(y.root, 'stall'); await writeFile(stalled, 'yes');
+  await writeFile(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+if (fs.existsSync(${JSON.stringify(stalled)})) setTimeout(() => console.log('{}'), 700);
+else console.log('{}');
+`);
+  await chmod(join(bin, 'gh'), 0o755);
+  const old = process.env.PATH; process.env.PATH = `${bin}:${old}`;
+  t.after(() => { process.env.PATH = old; });
+  const writer = Object.assign(new GitHubWriter({ backend: 'github', repo: 'team/tool' }, y.cwd, 100), { async getTicket(): Promise<Ticket> { throw new Error('No reads during mirror recovery'); } });
+  const cli = async (...args: string[]) => {
+    let stdout = '';
+    const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker: writer, sleep: async () => {}, stdout: s => { stdout += s; } });
+    return { code, stdout };
+  };
+  const result = await cli('tickets', 'comment', '1', 'Keep this report', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const held = JSON.parse((await y.cli('run', 'status', '--json')).stdout);
+  assert.equal(held.tickets[0].reason, 'tracker');
+  assert.equal(held.pendingWrites[0].payload.body, 'Keep this report');
+  assert.equal(held.pendingWrites[0].attempts, 4);
+  await import('node:fs/promises').then(fs => fs.rm(stalled));
+  assert.equal((await cli('run', 'answer', '1', '--json')).code, 0);
+  assert.deepEqual(JSON.parse((await y.cli('run', 'status', '--json')).stdout).pendingWrites, []);
 });

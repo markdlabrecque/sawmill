@@ -1,3 +1,5 @@
+import { requireBrowserCapability } from './user-testing.js';
+import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { createRuntime } from './runtime-factory.js';
 import { stopAtBoundary } from './cooperative-stop.js';
 import { preserveWip } from './preserve-wip.js';
@@ -7,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun } from './run-store.js';
+import { readRun, type TeamProgress } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { infrastructure, type Runtime } from './runtime.js';
@@ -22,12 +24,20 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const ticket = readRun(cwd).tickets.find(row => row.number === number);
   if (!ticket?.worktree) throw new CliError(`Ticket #${number} needs an existing drafted worktree.`);
   if (ticket.state === 'logjam' || ticket.state === 'done') throw new CliError(`Ticket #${number} is ${ticket.state}.`);
-  const progress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
+  if (!ticket.provisioned) throw new CliError('Worktree setup has not completed; retry mill worktree create before review.');
+  requireBrowserCapability(project, ticket);
+  const progress: TeamProgress = { ...ticket.team, next: 'reviewer', outputs: { ...ticket.team.outputs } };
   const stopped = async () => {
     const result = await stopAtBoundary(cwd, project, writer, number, 'reviewer', 'reviewer', progress, options);
     return { status: 'logjam', ticket: number, outcome: result.outcome === 'stopped' ? { outcome: 'stopped' as const } : infrastructure(result.error ?? 'Stop preservation failed.') };
   };
   if (ticket.stopRequested) return stopped();
+  const questionError = await preserveQuestion(ticket.worktree, number, progress);
+  if (questionError) {
+    await transition(cwd, project, writer, number, { state: 'logjam', reason: 'environment', team: progress,
+      report: { stage: 'aborted', details: `${progress.question!.question}\n\n${questionError}`, reachedStage: 'reviewer' } }, [], options);
+    return { status: 'logjam', ticket: number, outcome: infrastructure(questionError) };
+  }
   if (progress.stop && !progress.stop.preserved) {
     try {
       progress.stop.wipHead = await preserveWip(ticket.worktree, number);
@@ -40,7 +50,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
       return { status: 'logjam', ticket: number, outcome: infrastructure(progress.stop.error) };
     }
   }
-  if (!await transition(cwd, project, writer, number, { state: 'working', stage: 'reviewer' }, [], options)) {
+  if (!await transition(cwd, project, writer, number, { state: 'working', stage: 'reviewer', team: progress }, [], options)) {
     return { status: 'logjam', outcome: infrastructure('Tracker writes failed before review.') };
   }
   let prompt = '';
@@ -66,21 +76,30 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
     testCommand: project.tests.command, timeoutMs: duration, browser: browser.browser, signal: options.signal,
   }, options);
   const outcome = result.outcome;
-  progress.outputs.reviewer = result;
+  progress.outputs!.reviewer = result;
   if (readRun(cwd).tickets.find(row => row.number === number)!.stopRequested) return stopped();
   const testing = userTestingResult(browser, outcome, progress.userTesting);
   if (testing) progress.userTesting = testing;
-  if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') progress.reviewedHead = head;
+  if (outcome.outcome === 'question') {
+    const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', outcome, progress, options);
+    return { status: 'logjam', ticket: number, ...result, preservation: saved };
+  }
+  if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') {
+    progress.reviewedHead = head;
+    progress.next = outcome.outcome === 'pass' ? 'integrate' : 'implementer';
+    delete progress.question;
+    delete progress.stop;
+  }
   if (outcome.outcome === 'bounce') progress.repair = { source: 'reviewer', feedback: outcome.feedback, baseCommit: head,
     ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
   if (testing && !await transition(cwd, project, writer, number, {
     team: progress,
     report: { stage: 'user-testing', details: userTestingComment(testing), reachedStage: 'reviewer', round: result.round },
   }, [], options)) return { status: 'logjam', ticket: number, ...result };
-  const stage = outcome.outcome === 'pass' ? 'review-pass' : outcome.outcome === 'bounce' ? 'review-bounce' : outcome.outcome === 'question' ? 'aborted' : 'infrastructure';
+  const stage = outcome.outcome === 'pass' ? 'review-pass' : outcome.outcome === 'bounce' ? 'review-bounce' : 'infrastructure';
   const ok = await transition(cwd, project, writer, number, {
     team: progress,
-    stage, ...(outcome.outcome === 'question' || outcome.outcome === 'infrastructure' ? { state: 'logjam', reason: outcome.outcome === 'question' ? 'question' : 'environment' } : {}),
+    stage, ...(outcome.outcome === 'infrastructure' ? { state: 'logjam', reason: 'environment' } : {}),
     report: { stage, details: JSON.stringify({ ...outcome, diagnostics: result.diagnostics, model: project.roles.reviewer.model, effort: project.roles.reviewer.effort }), reachedStage: 'reviewer', round: result.round },
   }, [], options);
   return { status: ok && result.mirrored ? 'ok' : 'logjam', ticket: number, ...result };

@@ -288,6 +288,7 @@ test('scripted Codex processes carry all three roles through real tests, commits
     },
     async deleteRemoteBranch(branch: string) { y.git('push', 'origin', '--delete', branch); },
   };
+  const ticketGitDir = y.git('-C', y.worktree, 'rev-parse', '--absolute-git-dir');
   const result = await y.invoke(['team', 'run', '22', '--json'], { tracker });
   assert.equal(result.code, 0, result.stdout); assert.equal(JSON.parse(result.stdout).outcome, 'passed');
   const row = await y.status(); assert.equal(row.state, 'done'); assert.equal(y.ticket.state, 'closed');
@@ -300,7 +301,7 @@ test('scripted Codex processes carry all three roles through real tests, commits
     const grants = call.argv.flatMap((arg: string, n: number) => arg === '--add-dir' ? [call.argv[n + 1]] : []);
     if (i === 2) assert.deepEqual(grants, []);
     else assert.deepEqual(grants, [
-      y.git('-C', y.worktree, 'rev-parse', '--absolute-git-dir'),
+      ticketGitDir,
       join(y.cwd, '.git'),
     ]);
     assert.equal(call.argv[call.argv.indexOf('--model') + 1], i === 0 ? 'gpt-6.1-sol' : 'gpt-6-astra');

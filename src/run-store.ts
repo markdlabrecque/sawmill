@@ -18,8 +18,10 @@ export interface IntegrationProgress {
   remoteDeleted?: boolean;
   fastForwarded?: boolean;
   reported?: boolean;
+  localRemoved?: boolean;
 }
 export interface TeamProgress {
+  next?: Role | 'integrate';
   recovery?: { stage: string };
   activeRole?: { role: Role; beforeHead: string; bounces: number };
   /** Cooperative boundary checkpoint; retained through answer until work resumes. */
@@ -82,6 +84,7 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   bounces: number;
   sessionIds: Partial<Record<Role, string[]>>;
   worktree: string | null;
+  provisioned: boolean;
   branch: string | null;
   mergeCommit: string | null;
   completion: 'manual' | 'merged' | null;
@@ -105,9 +108,9 @@ export interface RunSnapshot {
 }
 export interface LoopProgress { cursor: number; consecutiveInfrastructure: number; pausedReason?: string }
 
-/** The merge stays irreversible while an answered stop queues only its remaining cleanup. */
-export function stoppedMergeCleanup(ticket: Pick<RunTicket, 'completion' | 'team' | 'integration'>): boolean {
-  return ticket.completion === 'merged' && ticket.team.stop?.resume === 'integrate' && !ticket.integration.reported;
+/** Merge acceptance is irreversible; every unfinished cleanup remains retryable. */
+export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'integration'>): boolean {
+  return ticket.completion === 'merged' && Boolean(ticket.integration.mergedHead) && !ticket.integration.reported;
 }
 
 export type MirrorWrite =
@@ -150,7 +153,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO run VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker));
+    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker));
     const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
@@ -175,7 +178,7 @@ export function readRun(cwd: string): RunSnapshot {
       trackerState: row.tracker_state as Ticket['state'], comments: JSON.parse(String(row.comments)) as TicketComment[], blockedBy: JSON.parse(String(row.blocked_by)) as number[] | null,
       position: Number(row.position), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
-      worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
+      provisioned: Boolean(row.provisioned), worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
       team: row.team ? JSON.parse(String(row.team)) as TeamProgress : {},
       worker: row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership : null,

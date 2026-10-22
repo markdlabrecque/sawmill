@@ -1,3 +1,4 @@
+import { CliError } from './errors.js';
 import { Parser, type Node } from 'commonmark';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -140,4 +141,11 @@ export function writerTicket(ticket: RunTicket): RunTicket {
 export function userTestingComment(result: UserTesting): string {
   return [`Site: ${result.url}`, ...result.cases.map(c => `${c.case}: ${c.result}${c.result === 'broken' ? `\nFailed step: ${c.step}` : ''}`),
     ...(result.recommendations.length ? [`Recommendations:\n${result.recommendations.map(r => `- ${r}`).join('\n')}`] : [])].join('\n\n');
+}
+
+/** Refuse unsupported native capabilities before spending any role work. */
+export function requireBrowserCapability(project: ProjectConfig, ticket: { number: number; body: string }): void {
+  if (project.runtime === 'codex' && userTestSection(ticket.body).cases.length) {
+    throw new CliError(`#${ticket.number}: Codex browser capability is unsupported: native CLI settings cannot enforce the required per-command browser allowlist.`);
+  }
 }

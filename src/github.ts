@@ -1,5 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { githubRequest } from './github-transport.js';
+import { GitHubApiError } from './github-error.js';
+export { GitHubApiError } from './github-error.js';
 import { CliError } from './errors.js';
 import type { ProjectConfig } from './config.js';
 import type { Ticket, TicketReader } from './tracker.js';
@@ -20,9 +21,6 @@ export interface GitHubApi {
   getBlockers(number: number): Promise<GitHubIssue[]>;
   listByLabel?(label: string): Promise<GitHubIssue[]>;
   listChildren?(number: number): Promise<GitHubIssue[]>;
-}
-export class GitHubApiError extends Error {
-  constructor(message: string, readonly status: number | undefined) { super(message); }
 }
 
 export class GitHubDraftReader implements TicketReader {
@@ -71,23 +69,11 @@ export class GitHubDraftReader implements TicketReader {
   }
 }
 
-const execute = promisify(execFile);
 
 export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd()): GitHubApi {
   const prefix = `repos/${config.repo}/issues`;
   async function request(path: string, paginated = false): Promise<unknown> {
-    const args = ['api', path, '-H', 'Accept: application/vnd.github+json'];
-    if (config.host) args.push('--hostname', config.host);
-    if (paginated) args.push('--paginate', '--slurp');
-    let stdout: string;
-    try { ({ stdout } = await execute('gh', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })); }
-    catch (error) {
-      const failure = error as Error & { stderr?: string };
-      const message = failure.stderr?.trim() || failure.message;
-      const status = message.match(/HTTP (\d{3})/i)?.[1];
-      throw new GitHubApiError(message, status ? Number(status) : undefined);
-    }
-    const value: unknown = JSON.parse(stdout);
+    const value = await githubRequest(config, cwd, 'GET', path, undefined, { paginated });
     if (paginated) {
       if (!Array.isArray(value) || value.some(page => !Array.isArray(page))) throw new Error(`Invalid GitHub paginated response for ${path}`);
       return value.flat();

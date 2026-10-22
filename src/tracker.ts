@@ -50,7 +50,7 @@ export class MergeRefusedError extends Error {}
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
 export interface IntegrationTracker extends TicketWriter {
   /** Required for ci:wait; ci:none adapters need not provide CI reads. */
-  getPipeline?(commit: string): Promise<Pipeline>;
+  getPipeline?(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline>;
   /** One final PR/MR read before merging; never an issue read or a polling loop. */
   getChangeRequest?(id: number | string): Promise<ChangeRequest>;
   findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
@@ -61,6 +61,6 @@ export interface IntegrationTracker extends TicketWriter {
 export interface Tracker extends TicketReader, IntegrationTracker {
   listByLabel(label: string): Promise<Ticket[]>;
   listChildren(number: number): Promise<Ticket[]>;
-  getPipeline(commit: string): Promise<Pipeline>;
+  getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline>;
   getChangeRequest(id: number | string): Promise<ChangeRequest>;
 }

@@ -28,6 +28,7 @@ async function hasBranch(cwd: string, branch: string) {
 
 export interface WorktreeOptions extends MirrorOptions {
   home?: string;
+  mergedHead?: string;
   writer?: () => TicketWriter;
 }
 
@@ -88,9 +89,19 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   const existing = (await worktrees(cwd)).find(tree => tree.branch === `refs/heads/${branch}`);
   if (existing && await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
   if (existing) {
+    if (ticket && !ticket.provisioned && ticket.state !== 'logjam') {
+      try { await hook(cwd, project, number, existing.path, 'setup', options); }
+      catch (error) {
+        await transition(cwd, project, tracker!, number, {
+          state: 'logjam', reason: 'environment', worktree: existing.path, branch, provisioned: false,
+          report: { stage: 'infrastructure', details: failure(error), reachedStage: 'worktree-create' },
+        }, [], options);
+        throw error;
+      }
+    }
     let ok = ticket?.state !== 'logjam';
     if (tracker && ok) ok = await transition(cwd, project, tracker, number, {
-      worktree: existing.path, branch,
+      worktree: existing.path, branch, provisioned: true,
       state: ticket?.state === 'queued' || ticket?.state === 'blocked' ? 'working' : undefined,
       ...(ticket?.stage ? {} : { stage: 'worktree-created', report: { stage: 'worktree-created' as const, details: `Reused worktree: ${existing.path}\nBranch: ${branch}` } }),
     }, [], options);
@@ -101,6 +112,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
     else await git(cwd, 'worktree', 'add', '-b', branch, path, `refs/heads/${project.integration}`);
     created = true;
+    if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
     await hook(cwd, project, number, path, 'setup', options);
   } catch (error) {
     let message = failure(error);
@@ -120,7 +132,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   }
   const ok = !tracker || await transition(cwd, project, tracker, number, {
     state: ticket?.state === 'queued' || ticket?.state === 'blocked' ? 'working' : undefined,
-    worktree: path, branch, stage: 'worktree-created',
+    worktree: path, branch, provisioned: true, stage: 'worktree-created',
     report: { stage: 'worktree-created', details: `Worktree: ${path}\nBranch: ${branch}` },
   }, [], options);
   return { status: ok && ticket?.state !== 'logjam' ? 'ok' as const : 'logjam' as const, ticket: number, path, branch, reused: false };
@@ -132,16 +144,24 @@ export async function removeWorktree(cwd: string, project: ProjectConfig, number
   const tracker = ticket ? writer(options) : undefined;
   const branch = `mill/${number}`;
   if (branch === project.integration) throw new CliError('The integration branch cannot also be the ticket branch.', 2);
-  const existing = (await worktrees(cwd)).find(tree => tree.branch === `refs/heads/${branch}`);
+  const trees = await worktrees(cwd);
+  const existing = trees.find(tree => tree.branch === `refs/heads/${branch}`);
+  if (options.mergedHead && ticket?.worktree && trees.some(tree => tree.path === ticket.worktree && tree.branch !== `refs/heads/${branch}`)) {
+    throw new CliError('Ticket sandbox is on another branch; retained for recovery.');
+  }
   if (existing && await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
+  if (options.mergedHead && await hasBranch(cwd, branch) && await git(cwd, 'rev-parse', `refs/heads/${branch}`) !== options.mergedHead) {
+    throw new CliError('Local ticket branch contains newer unmerged work; retained for recovery.');
+  }
   if (existing) {
     if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before removal.`);
     if (await git(existing.path, 'status', '--porcelain', '--untracked-files=all')) throw new CliError(`Worktree ${existing.path} is dirty; preserve or commit its work before removal.`);
     await hook(cwd, project, number, existing.path, 'teardown', options);
+    if (options.mergedHead && (await git(existing.path, 'rev-parse', 'HEAD') !== options.mergedHead || await git(existing.path, 'symbolic-ref', '--short', 'HEAD') !== branch)) throw new CliError('Local ticket branch contains newer unmerged work; retained for recovery.');
     await git(cwd, 'worktree', 'remove', existing.path);
   }
   const branchDeleted = await deleteMergedBranch(cwd, project, branch, ticket);
-  const ok = !tracker || await transition(cwd, project, tracker, number, { worktree: null, branch: branchDeleted ? null : ticket!.branch }, [], options);
+  const ok = !tracker || await transition(cwd, project, tracker, number, { worktree: null, provisioned: false, branch: branchDeleted ? null : ticket!.branch }, [], options);
   return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing?.path ?? null, branch, removed: Boolean(existing), branchDeleted };
 }
 

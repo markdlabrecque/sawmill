@@ -118,7 +118,7 @@ test('WIP push rejection retains a recoverable stopped checkpoint and blocks rol
   y.script(y.normal);
   const recovered = await y.cli('team', 'run', '19', '--json');
   assert.equal(recovered.code, 0, recovered.stdout);
-  assert.equal(y.git('show', 'mill/19:unfinished.txt'), 'Keep despite rejection');
+  assert.equal(y.git('show', `${(await y.status()).tickets[0]!.integration.mergedHead}:unfinished.txt`), 'Keep despite rejection');
 });
 
 test('stop still publishes WIP when the active session and stopped report mirrors fail', async t => {
@@ -550,7 +550,8 @@ process.exit(result.status ?? 1);
     assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
     assert.equal(JSON.parse(await readFile(marker, 'utf8')).status, 'stop-requested');
     assert.equal(y.merges(), 1);
-    assert.ok(y.git('ls-remote', 'origin', 'refs/heads/mill/19'));
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/19'), '');
+    assert.equal((await y.status()).tickets[0]!.integration.localRemoved, true);
     await y.cli('run', 'answer', '19');
     const resumed = await y.cli('team', 'run', '19', '--json');
     assert.equal(resumed.code, 0, resumed.stdout);
@@ -559,20 +560,31 @@ process.exit(result.status ?? 1);
   } finally { process.env.PATH = oldPath; }
 });
 
-test('answer requeues accepted-merge cleanup through the real dispatcher without another role or merge', async t => {
+for (const interruption of ['stop', 'remote-delete', 'fast-forward', 'teardown']) {
+ test(`answer requeues accepted-merge ${interruption} cleanup through the real dispatcher without another role or merge`, async t => {
   let cleanup!: () => Promise<void>;
   const y = await fixture({ after(fn: () => Promise<void>) { cleanup = fn; } } as TestContext);
   const merge = y.tracker.mergeChangeRequest;
-  y.tracker.mergeChangeRequest = async () => {
+  const remove = y.tracker.deleteRemoteBranch;
+  if (interruption === 'stop') y.tracker.mergeChangeRequest = async () => {
     const result = await merge();
     await y.cli('run', 'stop', '19');
     return result;
   };
+  if (interruption === 'remote-delete') y.tracker.deleteRemoteBranch = async () => { throw new Error('Deletion unavailable'); };
+  if (interruption === 'fast-forward') y.tracker.deleteRemoteBranch = async branch => {
+    await remove(branch); y.git('remote', 'set-url', 'origin', join(y.root, 'missing.git'));
+  };
+  if (interruption === 'teardown') await writeFile(join(y.cwd, '.mill/teardown.sh'), 'exit 1\n');
   const first = await y.cli('team', 'run', '19', '--json');
-  assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
+  assert.equal(first.code, 1, first.stdout);
+  const merged = (await y.status()).tickets[0]!;
+  assert.equal(merged.completion, 'merged'); assert.ok(merged.mergeCommit);
+  y.git('remote', 'set-url', 'origin', y.remote);
+  await writeFile(join(y.cwd, '.mill/teardown.sh'), 'touch "$MILL_MILLYARD/.mill/teardown-ran"\n');
   await y.cli('run', 'answer', '19', 'Finish the accepted merge.');
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
-    .replace('runtime: claude-code', 'runtime: codex').replaceAll('claude-opus-5-5', 'gpt-6.1-sol').replaceAll('claude-sonnet-5-5', 'gpt-6.1-sol'));
+    .replace('command: node answer.test.cjs', 'command: exit 71').replace('runtime: claude-code', 'runtime: codex').replaceAll('claude-opus-5-5', 'gpt-6.1-sol').replaceAll('claude-sonnet-5-5', 'gpt-6.1-sol'));
   await writeFile(join(y.root, 'codex'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(y.root, 'unexpected-role'))}, 'called'); process.exit(71);\n`);
   await writeFile(join(y.root, 'gh'), `#!${process.execPath}
 const cp = require('node:child_process'), fs = require('node:fs');
@@ -603,10 +615,16 @@ process.stdin.on('data', x => body += x); process.stdin.on('end', () => {
   assert.equal(JSON.parse(dispatched.stdout).started.length, 1);
   const row = await settle();
   assert.equal(row.state, 'done'); assert.equal(row.worker?.result?.outcome, 'passed');
+  assert.equal(row.mergeCommit, merged.mergeCommit);
+  assert.equal(row.worktree, null); assert.equal(row.integration.localRemoved, true);
+  const writes = (await readFile(join(y.root, 'cleanup-tracker.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(writes.some(write => write.body.includes('[sawmill:merged]')));
+  assert.ok(writes.some(write => JSON.parse(write.body || '{}').state === 'closed'));
   assert.equal(y.merges(), 1); assert.equal(y.roles.length, 3);
   assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/19'), '');
   await assert.rejects(readFile(join(y.root, 'unexpected-role')), { code: 'ENOENT' });
 });
+}
 
 test('a persisted stop on already reviewed work resumes integration without dispatching roles', async t => {
   const y = await fixture(t);

@@ -113,3 +113,19 @@ Live startup, provider/model availability and live resume have not been tested.
 - [JSON print-mode exit behavior](https://github.com/earendil-works/pi/blob/58c0b02ce552adab76014e7ed712ab7981359aa8/packages/coding-agent/src/modes/print-mode.ts)
 - [Assistant stop reasons and effort metadata](https://github.com/earendil-works/pi/blob/58c0b02ce552adab76014e7ed712ab7981359aa8/packages/ai/src/types.ts)
 - [Pi security model](https://github.com/earendil-works/pi/blob/58c0b02ce552adab76014e7ed712ab7981359aa8/packages/coding-agent/docs/security.md)
+
+## Conflict repair
+
+Only an implementer repairing a CLI-detected rebase conflict receives the exact
+saved integration SHA. Its native policy permits `git rebase <that-sha>`,
+`git -c core.editor=true rebase --continue`, and `git rebase --abort` for that
+invocation. Other targets, merge, skip, reset and push remain denied. The CLI
+still requires integration ancestry, unchanged writer patches, one final fix
+commit, a fresh review and full local tests. Claude's native allowlist receives
+the same three scoped commands; ordinary role invocations receive none of them.
+
+The exact-command mapping follows the
+[Claude permission-rule contract](https://code.claude.com/docs/en/permissions),
+checked October 22, 2026. Scripted vendor tests exercise those emitted rules and
+the shipped Pi policy during a real local conflict; they do not certify live
+vendor enforcement.

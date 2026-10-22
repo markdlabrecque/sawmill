@@ -28,6 +28,19 @@ Exit codes are `0` for success, `1` for overwrite refusal or an operation failur
 
 GitLab projects use the same draft, mirror/recovery, and integration commands. See [GitLab setup and spec membership](docs/gitlab.md) for `glab` configuration, CI behavior, and the pending live smoke check.
 
+Team recovery saves the next role separately from launch and reporting stages.
+`mill run answer` retries held tracker writes and resumes that boundary with the
+original writer tests protected. Setup must have succeeded before any role runs;
+a retained failed setup retries without deleting its saved work.
+
+After an accepted merge, Sawmill deletes the remote ticket branch, fast-forwards
+the millyard, runs teardown and removes the local sandbox before the final report
+and ticket close. Failed cleanup can be answered and dispatched again without
+repeating roles, tests, CI or merge. Dirty sandboxes and newer local or remote WIP
+are retained. Manual close remains terminal even if a late merge response arrives.
+GitHub CLI requests have a 60-second process deadline, including draft and mirror
+writes; pending mirror payloads remain available for answer recovery.
+
 Development checks:
 
 ```sh

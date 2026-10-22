@@ -48,6 +48,11 @@ let input = '';
 process.stdin.on('data', x => input += x);
 process.stdin.on('end', async () => {
   const body = input ? JSON.parse(input) : {};
+  if (body.body?.includes('[sawmill:review-pass]')) {
+    while (fs.existsSync(process.env.FIXTURE_DIR + '/hold-review-mirror')) await new Promise(r => setTimeout(r, 30));
+  }
+  const failStage = process.env.FIXTURE_DIR + '/fail-mirror-stage';
+  if (fs.existsSync(failStage) && body.body?.includes('[sawmill:' + fs.readFileSync(failStage, 'utf8') + ']')) { console.error('Fixture mirror outage'); process.exit(73); }
   const git = (...args) => cp.execFileSync('git', args, {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim();
   let result = {};
   if (url.includes('/pulls?')) result = [];
