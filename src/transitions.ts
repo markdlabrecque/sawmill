@@ -2,12 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, type MirrorWrite, type RunTicket } from './run-store.js';
+import { readRun, runPath, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
-export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team'>> & { report?: StageReport };
+export type Transition = Partial<Pick<RunTicket, 'state' | 'reason' | 'stage' | 'bounces' | 'sessionIds' | 'worktree' | 'branch' | 'mergeCommit' | 'completion' | 'integration' | 'team' | 'worker'>> & { report?: StageReport };
 
 function checkTracker(cwd: string, project: ProjectConfig): void {
   const drafted = readRun(cwd).run.tracker;
@@ -25,6 +25,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'completion')) db.exec('ALTER TABLE tickets ADD COLUMN completion TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'integration')) db.exec('ALTER TABLE tickets ADD COLUMN integration TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'team')) db.exec('ALTER TABLE tickets ADD COLUMN team TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'worker')) db.exec('ALTER TABLE tickets ADD COLUMN worker TEXT');
     const value = work(db);
     db.exec('COMMIT');
     return value;
@@ -52,15 +53,54 @@ function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
 
 function update(db: DatabaseSync, number: number, change: Transition, writes: MirrorWrite[] = []) {
   requireTicket(db, number);
-  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team' } as const;
+  const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team', worker: 'worker' } as const;
   for (const key of Object.keys(columns) as (keyof typeof columns)[]) {
-    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' ? JSON.stringify(change[key]) : change[key] as string | number | null, number);
+    if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' || key === 'worker' ? JSON.stringify(change[key]) : change[key] as string | number | null, number);
   }
   const now = new Date().toISOString();
   db.prepare('UPDATE tickets SET updated = ? WHERE number = ?').run(now, number);
   if (change.stage !== undefined) db.prepare('UPDATE tickets SET stage_started = ? WHERE number = ?').run(now, number);
   for (const write of writes) enqueue(db, number, write);
   db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, now, JSON.stringify({ change, writes }));
+}
+
+/** Compare-and-claim under SQLite's write lock. Tracker I/O is never part of dispatch. */
+export function claimWorker(cwd: string, number: number, worker: WorkerOwnership): boolean {
+  return transaction(cwd, db => {
+    if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
+    const row = requireTicket(db, number);
+    const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
+    if (!['queued', 'blocked'].includes(String(row.state)) || row.completion || (owner && owner.status !== 'finished')) return false;
+    if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
+    if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
+      WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
+    update(db, number, { state: 'working', reason: null, stage: 'team-launch', worker });
+    return true;
+  });
+}
+
+/** Fenced metadata updates also append durable events for the future loop/recovery reader. */
+export function recordWorker(cwd: string, number: number, worker: WorkerOwnership, change: Transition = {}, writes: MirrorWrite[] = []): boolean {
+  return transaction(cwd, db => {
+    if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
+    const row = requireTicket(db, number);
+    const current = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
+    if (current?.token !== worker.token || current.status === 'finished') return false;
+    update(db, number, { ...change, worker }, writes);
+    return true;
+  });
+}
+
+/** A failed launch has no team to report it. Persist its logjam before mirroring. */
+export async function failWorkerLaunch(cwd: string, project: ProjectConfig, number: number, worker: WorkerOwnership, error: string): Promise<boolean> {
+  const row = readRun(cwd).tickets.find(row => row.number === number);
+  if (!row) return false;
+  const report = { stage: 'infrastructure' as const, details: error, reachedStage: 'team-launch' };
+  return recordWorker(cwd, number, { ...worker, status: 'finished', finished: new Date().toISOString(), result: { outcome: 'infrastructure', ticket: number, stage: 'team-launch', error } },
+    { state: 'logjam', reason: 'environment', stage: 'team-launch' }, [
+      { kind: 'comment', payload: { body: await reportComment(cwd, report, row) } },
+      { kind: 'add-label', payload: { label: project.labels.logjam } },
+    ]);
 }
 
 /** Commit the local transition and all mirror payloads atomically before external I/O. */
