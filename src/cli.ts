@@ -1,6 +1,7 @@
 import { runTeam } from './team-runner.js';
 import { dispatchOnce } from './dispatch.js';
 import { runLoop } from './run-loop.js';
+import { startBackgroundRun } from './run-background.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
@@ -30,6 +31,8 @@ export interface CliOptions {
   stdout?: (text: string) => void;
   tracker?: TicketReader & Partial<IntegrationTracker>;
   sleep?: (milliseconds: number) => Promise<void>;
+  /** Called once a foreground `mill run` holds the loop lock. */
+  onRunLocked?: () => void;
 }
 
 export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: string): TicketWriter {
@@ -141,9 +144,16 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return 0;
       }
       if (positional[0] === 'run' && positional.length === 1) {
-        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
+        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd), options.onRunLocked);
         emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'run' && positional[1] === '--background') {
+        if (positional.length !== 2) throw new CliError(usage('run'), 2);
+        const started = await startBackgroundRun(cwd, home);
+        emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
+          "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));
+        return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'stop') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run stop'), 2);
