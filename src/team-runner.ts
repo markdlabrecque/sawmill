@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { ClaudeCodeRuntime } from './claude-runtime.js';
-import type { MachineConfig, ProjectConfig } from './config.js';
+import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
 import { checkMillyard } from './millyard.js';
@@ -15,7 +15,7 @@ import type { IntegrationTracker } from './tracker.js';
 import { createWorktree } from './worktrees.js';
 
 const execute = promisify(execFile);
-const tampered: Outcome = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
+const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
 export interface TeamResult {
@@ -30,7 +30,7 @@ export interface TeamResult {
   changeRequestUrl?: string;
 }
 
-/** One first-pass team. Owns the ticket lock; runRole must not acquire it again. */
+/** One bounded ticket team. Owns the lock; runRole must not acquire it again. */
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
   return withRoleLock(cwd, number, async () => {
@@ -74,19 +74,45 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     };
     try {
       guard();
+      if (ticket.bounces >= 3) {
+        stage = ticket.stage ?? 'repair';
+        const feedback = progress.repair?.feedback ?? 'Repair cap exhausted.';
+        if (!await transition(cwd, project, tracker, number, {
+          state: 'logjam', reason: 'retry-cap', stage, team: progress,
+          report: { stage: 'retry-cap', details: feedback, reachedStage: stage, round: ticket.bounces },
+        }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
+        return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: feedback };
+      }
       const tree = await createWorktree(cwd, project, machine, number, { ...options, writer: () => tracker });
       guard();
       const path = tree.path;
       if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Ticket worktree is on the wrong branch.');
       if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
-      progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
-      for (const role of ['test-writers', 'implementer', 'reviewer'] as const) {
+      const repairing = Boolean(progress.repair && progress.testCommit);
+      if (!repairing) progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source']): Promise<TeamResult | undefined> => {
+        progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
+        const bounces = current().bounces + 1;
+        const exhausted = bounces >= 3;
+        const mirrored = await transition(cwd, project, tracker, number, {
+          state: exhausted ? 'logjam' : 'working', reason: exhausted ? 'retry-cap' : null,
+          stage, bounces, team: progress,
+          report: { stage: exhausted ? 'retry-cap' : 'review-bounce', details: outcome.feedback, reachedStage: stage, round: bounces },
+        }, [], options);
+        if (!mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        if (exhausted) return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: outcome.feedback, roleOutcome: outcome };
+        guard();
+      };
+      let role: Role = repairing ? 'implementer' : 'test-writers';
+      for (;;) {
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
         if (role === 'reviewer' && /^ {0,3}##\s+User test cases\s*#*\s*$/im.test(ticket.body)) throw new Error('User test cases require browser case handling, which is not implemented yet.');
-        const diff = role === 'reviewer' ? `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}` : '';
+        const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
+          ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
+          : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         const duration = project.role_timeout;
         const beforeRole = await git(path, 'rev-parse', 'HEAD');
         const result = await runRole(cwd, project, tracker, number, runtime, {
@@ -97,7 +123,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         progress.outputs![role] = result;
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
-        if (result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) return await stop(result.outcome);
+        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) return await stop(result.outcome);
+        if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
         if (role === 'test-writers') {
           await git(path, 'merge-base', '--is-ancestor', progress.testBase!, 'HEAD');
           progress.testCommit = await git(path, 'rev-parse', 'HEAD');
@@ -109,35 +136,81 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           }
           progress.testFiles = [...files];
         }
-        if (role !== 'test-writers' && await changedTests(path, progress)) return await stop(tampered);
-        if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
+        if (role !== 'test-writers' && await changedTests(path, progress)) {
+          const stopped = await bounce(tampered, 'protected-tests');
+          if (stopped) return stopped;
+          role = 'implementer'; continue;
+        }
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Role left uncommitted files; work retained for recovery.');
         if (role === 'test-writers' && (!progress.testCommits?.length || !progress.testFiles?.length)) throw new Error('Test writers must commit their test files before implementation.');
-        if (role !== 'test-writers') {
-          try { await git(path, 'merge-base', '--is-ancestor', progress.testCommit!, 'HEAD'); }
+        const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
+        if (conflictRepair) {
+          // Rebase rewrites SHAs. Require each writer patch, in order, before
+          // the separate fix commit; never replace the original baselines.
+          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
+          await checkRebasedWriters(path, progress);
+          progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
+        } else if (role !== 'test-writers') {
+          try { await git(path, 'merge-base', '--is-ancestor', progress.checkpointHead ?? progress.testCommit!, 'HEAD'); }
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
+        if (role === 'implementer' && progress.repair && !conflictRepair &&
+            (await git(path, 'rev-parse', 'HEAD^') !== beforeRole || await git(path, 'rev-parse', 'HEAD') === beforeRole)) {
+          throw new Error('Each repair must append one separate fix commit; prior work retained.');
+        }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
+        if (role === 'reviewer') progress.reviewedHead = beforeRole;
+        if (result.outcome.outcome === 'bounce') {
+          const stopped = await bounce(result.outcome, 'reviewer');
+          if (stopped) return stopped;
+          role = 'implementer'; continue;
+        }
         const completed = role === 'test-writers' ? 'tests-written' : role === 'implementer' ? 'implemented' : 'review-pass';
         await save({ stage: completed, report: { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
         // Mirroring yields to external I/O. Recheck evidence before dispatching again.
-        if (await changedTests(path, progress)) return await stop(tampered);
+        if (await changedTests(path, progress)) {
+          const stopped = await bounce(tampered, 'protected-tests');
+          if (stopped) return stopped;
+          role = 'implementer'; continue;
+        }
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Worktree changed during reporting; uncommitted files retained.');
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
+        if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
+        stage = 'integrate';
+        guard();
+        const integrationResult = await integrate(cwd, project, number, tracker, integrationOptions);
+        if (integrationResult.outcome === 'merged' || current().completion === 'merged') return integrated(integrationResult);
+        if (integrationResult.outcome === 'infrastructure') {
+          return { ...await stop(infrastructure(integrationResult.message ?? 'Integration failed.')), integration: integrationResult };
+        }
+        if (integrationResult.outcome !== 'rebase-conflict') progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+        const stopped = await bounce({ outcome: 'bounce', feedback: `${integrationResult.outcome}: ${integrationResult.message ?? ''}` }, integrationResult.outcome);
+        if (stopped) return { ...stopped, integration: integrationResult };
+        role = 'implementer';
       }
-      stage = 'integrate';
-      guard();
-      const result = await integrate(cwd, project, number, tracker, integrationOptions);
-      if (result.outcome !== 'merged') {
-        if (current().completion === 'merged') return integrated(result);
-        const stopped = await stop(result.outcome === 'infrastructure' ? infrastructure(result.message ?? 'Integration failed.') : { outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` });
-        return { ...stopped, integration: result };
-      }
-      return integrated(result);
     } catch (error) {
       return stop(infrastructure(error instanceof Error ? error.message : String(error)));
     }
   });
+}
+
+async function checkRebasedWriters(path: string, progress: TeamProgress): Promise<void> {
+  const patchId = async (commit: string) => {
+    const patch = (await execute('git', ['show', '--format=', '--binary', commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 })).stdout;
+    return new Promise<string>((resolve, reject) => {
+      const child = execFile('git', ['patch-id', '--stable'], { cwd: path }, (error, stdout) => error ? reject(error) : resolve(stdout.split(/\s/)[0]!));
+      child.stdin!.on('error', reject);
+      child.stdin!.end(patch);
+    });
+  };
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', `${progress.testBase}..HEAD^`)).split('\n').filter(Boolean);
+  const expected = await Promise.all((progress.testCommits ?? []).map(patchId));
+  let next = 0;
+  for (const commit of commits) {
+    if (next < expected.length && await patchId(commit) === expected[next]) next++;
+  }
+  if (!expected.length || next !== expected.length) throw new Error('Role rewrote the test-writer checkpoint history; work retained.');
 }
 function integrated(result: IntegrationResult): TeamResult {
   return { outcome: result.outcome === 'merged' ? 'passed' : 'infrastructure', ticket: result.ticket, stage: 'integrate',

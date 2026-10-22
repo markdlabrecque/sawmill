@@ -25,6 +25,17 @@ export interface TeamProgress {
   testCommits?: string[];
   testFiles?: string[];
   outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
+  reviewedHead?: string;
+  /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
+  checkpointHead?: string;
+  repair?: RepairContext;
+}
+/** Last repair request, retained after success for reporting and later case re-runs. */
+export interface RepairContext {
+  source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'ci-failed';
+  feedback: string;
+  baseCommit: string;
+  failedCases?: import('./runtime.js').UserCase[];
 }
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
