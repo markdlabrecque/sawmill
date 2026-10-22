@@ -241,9 +241,14 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (capped) return { ...capped, integration: result };
       };
       if (resuming === 'integrate') {
-        await save({ state: 'working', stage: 'review-pass' });
-        const result = await runIntegration();
-        if (result) return result;
+        if (await changedTests(path, progress)) {
+          const capped = await bounce(tampered, 'protected-tests');
+          if (capped) return capped;
+        } else {
+          await save({ state: 'working', stage: 'review-pass' });
+          const result = await runIntegration();
+          if (result) return result;
+        }
       }
       let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : 'test-writers');
       if (resuming === 'integrate') role = 'implementer';

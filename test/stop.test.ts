@@ -493,3 +493,30 @@ test('stop CLI rejects invalid or nonworking tickets and is offline and idempote
   assert.equal(JSON.parse(result.stdout).outcome, 'stopped', result.stdout);
   assert.equal(y.roles.length, 1, 'Stop also prevents infrastructure retries');
 });
+
+test('integration-only resume still protects the original writer tests', async t => {
+  const y = await fixture(t);
+  y.script(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'reviewer') await y.cli('run', 'stop', '19');
+    return result;
+  });
+  const stopped = await y.cli('team', 'run', '19', '--json');
+  assert.equal(JSON.parse(stopped.stdout).outcome, 'stopped', stopped.stdout);
+  const baseline = (await y.status()).tickets[0]!.team.testCommit!;
+  await writeFile(join(y.path, 'answer.test.cjs'), '// assertions removed\n');
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Alter retained tests');
+  y.script(async request => {
+    if (request.role === 'implementer') {
+      assert.match(request.handoff, /Test-writer files changed/);
+      await writeFile(join(request.cwd, 'answer.test.cjs'), y.git('show', `${baseline}:answer.test.cjs`) + '\n');
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Restore original tests');
+    }
+    return { outcome: { outcome: request.role === 'reviewer' ? 'pass' : 'done', summary: 'Original tests retained.' } };
+  });
+  await y.cli('run', 'answer', '19');
+  const resumed = await y.cli('team', 'run', '19', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.deepEqual(y.roles.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+  assert.equal((await y.status()).tickets[0]!.team.testCommit, baseline);
+});
