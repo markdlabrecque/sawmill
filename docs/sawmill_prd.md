@@ -73,16 +73,17 @@ Worktree creation is a pluggable provider with a tiny contract, so Herdr, T3 Cod
 - Input: ticket ID and base branch (integration).
 - Create: must create the worktree and print its path on stdout; non-zero exit fails the ticket dispatch.
 - Remove: given the path, tears it down.
-- Default provider: plain `git worktree add` on a branch named after the ticket, in a predictable directory.
+- Default provider: plain `git worktree add`. The worktree is named by the bare ticket number: ticket 155 lives at `<project>.worktrees/155` beside the millyard, on branch `mill/155`, and its DDEV project is `155-<project>`.
 - Override: project config points at a script or command; the script shells out to the external tool and echoes the path.
 
 **Lifecycle hooks**
 
 - Per-project bash scripts in a hooks directory in the repo: `post-worktree-create`, `pre-worktree-remove`.
-- Receive worktree path and ticket ID as arguments and environment variables.
+- Receive worktree path and ticket number as arguments and as `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`.
 - Run around whichever provider is active.
 - Non-zero exit from post-create fails the creation so no half-built sandbox is handed to a team.
 - Typical use: start DDEV, install dependencies, seed a database, tear down containers.
+- Default DDEV hook: `~/.config/sawmill/ddev.prehook.sh`, seeded by `mill build` and installed as `post-worktree-create` when DDEV is detected. It names the DDEV project `<ticket>-<project>`, starts it, runs `ddev composer install` if there is a `composer.json`, and imports a database from a `DB_PATH` constant at the top of the script that the human user fills in.
 
 ## Review, bounce, rebase and merge rules
 
@@ -149,7 +150,7 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Bounce | A reviewer sending a change back to the implementer with feedback; each bounce costs one retry |
 | Agent runtime | The pluggable command that runs one role as a process inside the worktree; Claude Code, Pi, or Codex, with a model and effort configured per role |
 | CI gate | When enabled for a project, `mill integrate` waits for the backend pipeline on the exact rebased commit; red is one more implementer round and merge never happens on an unpassed commit |
-| Hook | A per-project bash script run around worktree creation or removal (`post-worktree-create`, `pre-worktree-remove`) |
+| Hook | A per-project bash script run around worktree creation or removal (`post-worktree-create`, `pre-worktree-remove`); gets the worktree path and ticket number as arguments and `MILL_*` variables |
 | Implementer | Team role that writes code until the tests pass |
 | Infrastructure outcome | A role result meaning the agent could not do its work for environment reasons (runtime failed to start, provider down, tool loop, test timeout); retried without spending a bounce, never a reviewer finding |
 | Integration branch | The branch approved features auto-merge into; sits in front of main |
@@ -187,4 +188,4 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Test timeout | Per-project bound on the test command (default 30 minutes); hitting it is an infrastructure outcome, not a failed test |
 | Ticket | A feature-sized unit of work in GitHub or GitLab issues; the source of truth for work state |
 | User test cases | A "User test cases" section in a ticket body, one case per item; the reviewer performs each as the user in a browser, bounces on a case that cannot be completed, and passes with recommendations otherwise |
-| Worktree | A git worktree cut from integration for one ticket; the team's isolated sandbox |
+| Worktree | A git worktree cut from integration for one ticket, named by the bare ticket number at `<project>.worktrees/<ticket>` on branch `mill/<ticket>`; the team's isolated sandbox |
