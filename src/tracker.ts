@@ -17,6 +17,10 @@ export interface Ticket {
 
 export interface TicketReader {
   getTicket(number: number): Promise<Ticket>;
+  /** Return all matching tickets, including closed tickets, with complete threads. */
+  listByLabel?(label: string): Promise<Ticket[]>;
+  /** Return all direct children, with complete threads; do not include the parent. */
+  listChildren?(number: number): Promise<Ticket[]>;
 }
 
 export interface ChangeRequest {
@@ -28,6 +32,7 @@ export interface ChangeRequest {
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
 export interface Tracker extends TicketReader {
   listByLabel(label: string): Promise<Ticket[]>;
+  listChildren(number: number): Promise<Ticket[]>;
   addLabel(number: number, label: string): Promise<void>;
   removeLabel(number: number, label: string): Promise<void>;
   addComment(number: number, body: string): Promise<void>;
