@@ -1,4 +1,6 @@
 import { createRuntime } from './runtime-factory.js';
+import { stopAtBoundary } from './cooperative-stop.js';
+import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -20,13 +22,30 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const ticket = readRun(cwd).tickets.find(row => row.number === number);
   if (!ticket?.worktree) throw new CliError(`Ticket #${number} needs an existing drafted worktree.`);
   if (ticket.state === 'logjam' || ticket.state === 'done') throw new CliError(`Ticket #${number} is ${ticket.state}.`);
+  const progress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
+  const stopped = async () => {
+    const result = await stopAtBoundary(cwd, project, writer, number, 'reviewer', 'reviewer', progress, options);
+    return { status: 'logjam', ticket: number, outcome: result.outcome === 'stopped' ? { outcome: 'stopped' as const } : infrastructure(result.error ?? 'Stop preservation failed.') };
+  };
+  if (ticket.stopRequested) return stopped();
+  if (progress.stop && !progress.stop.preserved) {
+    try {
+      progress.stop.wipHead = await preserveWip(ticket.worktree, number);
+      progress.stop.preserved = true;
+      delete progress.stop.error;
+    } catch (error) {
+      progress.stop.error = `WIP preservation failed: ${String(error)}`;
+      await transition(cwd, project, writer, number, { state: 'logjam', reason: 'environment', team: progress,
+        report: { stage: 'stopped', details: progress.stop.error, reachedStage: 'reviewer' } }, [], options);
+      return { status: 'logjam', ticket: number, outcome: infrastructure(progress.stop.error) };
+    }
+  }
   if (!await transition(cwd, project, writer, number, { state: 'working', stage: 'reviewer' }, [], options)) {
     return { status: 'logjam', outcome: infrastructure('Tracker writes failed before review.') };
   }
   let prompt = '';
   let diff = '';
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
-  const progress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
   let head = '';
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
@@ -48,6 +67,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   }, options);
   const outcome = result.outcome;
   progress.outputs.reviewer = result;
+  if (readRun(cwd).tickets.find(row => row.number === number)!.stopRequested) return stopped();
   const testing = userTestingResult(browser, outcome, progress.userTesting);
   if (testing) progress.userTesting = testing;
   if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') progress.reviewedHead = head;

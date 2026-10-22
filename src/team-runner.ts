@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createRuntime } from './runtime-factory.js';
+import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
@@ -49,7 +50,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await checkMillyard(cwd, project.integration);
-    let stage = 'worktree-create';
+    let stage = ticket.stage ?? 'worktree-create';
+    const integrationStage = ['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'ci-failed', 'merge', 'merge-accepted', 'remote-delete', 'fast-forward', 'merged'].includes(stage);
+    let resume: Role | 'integrate' = ticket.team.stop?.resume ?? ticket.team.question?.role ??
+      (ticket.completion === 'merged' || integrationStage ? 'integrate' :
+        stage === 'implemented' ? 'reviewer' : stage === 'tests-written' ? 'implementer' :
+          stage === 'reviewer' || stage === 'implementer' ? stage : 'test-writers');
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
       const state = readRun(cwd), row = state.tickets.find(r => r.number === number);
@@ -65,10 +71,14 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       evidence: (result: T) => Partial<InfrastructureAttempt>, terminal?: (result: T) => boolean): Promise<T> => {
       let active: InfrastructureAttempt | undefined;
       for (let retries = 0; ; retries++) {
+        checkStop(cwd, number);
         guard();
         let result: T | undefined, error: string | undefined;
         try { result = await work(); error = failure(result); }
-        catch (caught) { error = (caught instanceof Error ? caught.message : String(caught)) || 'Infrastructure invocation failed.'; }
+        catch (caught) {
+          if (caught instanceof StopRequested) throw caught;
+          error = (caught instanceof Error ? caught.message : String(caught)) || 'Infrastructure invocation failed.';
+        }
         // Questions own their preservation/report boundary. A recovery mirror
         // must not prevent saving WIP or the question before that boundary.
         if (result !== undefined && terminal?.(result)) {
@@ -78,6 +88,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         // Session/report mirrors can fail inside the operation. Never dispatch
         // another attempt while their durable payloads are pending.
         guard();
+        if (error) checkStop(cwd, number);
         if (!error && !active) return result!;
         if (!active) {
           active = { stage, attempt: retries + 1, bounces: current().bounces, status: 'failed' };
@@ -91,6 +102,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (result !== undefined) return result;
           throw new Error(error);
         }
+        checkStop(cwd, number);
         await (options.sleep ?? sleep)(100 * 2 ** Math.min(retries, 4));
         guard();
         active = { stage, attempt: retries + 2, bounces: current().bounces, status: 'running' };
@@ -134,11 +146,20 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     };
     const integrateWithRetries = () => retryInfrastructure(() => integrate(cwd, project, number, tracker, integrationOptions),
       result => result.outcome === 'infrastructure' ? result.message ?? 'Integration failed.' : undefined,
-      result => ({ integration: result }));
+      result => ({ integration: result }), result => result.outcome === 'stopped' || Boolean(current().team.stop && current().state === 'logjam'));
+    const integrationStop = (result: IntegrationResult): TeamResult | undefined => {
+      const row = current();
+      if (result.outcome !== 'stopped' && !(row.team.stop && row.state === 'logjam')) return;
+      return { outcome: result.outcome === 'stopped' ? 'stopped' : 'infrastructure', ticket: number, stage: row.stage ?? 'integrate', reason: row.reason ?? undefined,
+        integration: result, ...(result.message ? { error: result.message } : {}) };
+    };
     try {
+      checkStop(cwd, number);
       if (ticket.completion === 'merged') {
         stage = 'integrate';
+        resume = 'integrate';
         const result = await integrateWithRetries();
+        const stopped = integrationStop(result); if (stopped) return stopped;
         return result.outcome === 'merged' ? integrated(result) : { ...await stop(infrastructure(result.message ?? 'Integration failed.')), integration: result };
       }
       guard();
@@ -151,17 +172,19 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
         return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: feedback };
       }
-      if (progress.question) {
-        stage = progress.question.role;
+      if (progress.question || progress.stop) {
+        stage = progress.question?.role ?? progress.stop!.stage;
         // A switched/detached retained sandbox must not be treated as a missing
         // worktree: creation failure would overwrite its recovery path.
         if (ticket.worktree && await git(ticket.worktree, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) {
           throw new Error('Ticket worktree is on the wrong branch; retained for recovery.');
         }
       }
+      checkStop(cwd, number);
       const tree = await createWorktree(cwd, project, machine, number, { ...options, writer: () => tracker });
       guard();
       const path = tree.path;
+      checkStop(cwd, number);
       if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Ticket worktree is on the wrong branch.');
       if (progress.question && !progress.question.preserved) {
         stage = progress.question.role;
@@ -175,11 +198,21 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         await save({ stage });
       }
+      if (progress.stop && !progress.stop.preserved) {
+        try {
+          progress.stop.wipHead = await preserveWip(path, number);
+          progress.stop.preserved = true;
+          delete progress.stop.error;
+          await save({});
+        } catch (error) { return await stop(infrastructure(`WIP preservation failed: ${error instanceof Error ? error.message : String(error)}`)); }
+      }
       if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? createRuntime(project.runtime);
       const repairing = Boolean(progress.repair && progress.testCommit);
-      const resuming = progress.question?.role;
+      const resuming = progress.question?.role ?? progress.stop?.resume;
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      // A stop can precede the very first role, including during setup.
+      if (resuming === 'test-writers' && !progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number): Promise<TeamResult | undefined> => {
         delete progress.question;
         progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
@@ -188,17 +221,44 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const testing = source === 'reviewer' && progress.userTesting ? [{ kind: 'comment' as const, payload: { body: await reportComment(cwd, {
           stage: 'user-testing', details: userTestingComment(progress.userTesting), reachedStage: 'reviewer', round: reviewRound,
         }, { ...current(), team: progress }) } }] : [];
+        resume = 'implementer';
         const mirrored = await transition(cwd, project, tracker, number, {
           state: exhausted ? 'logjam' : 'working', reason: exhausted ? 'retry-cap' : null,
           stage, bounces, team: progress,
           report: { stage: exhausted ? 'retry-cap' : 'review-bounce', details: outcome.feedback, reachedStage: stage, round: bounces },
         }, testing, options);
         if (!mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        checkStop(cwd, number);
         if (exhausted) return { outcome: 'retry-cap', ticket: number, stage, reason: 'retry-cap', error: outcome.feedback, roleOutcome: outcome };
         guard();
       };
-      let role: Role = resuming ?? (repairing ? 'implementer' : 'test-writers');
+      const runIntegration = async (): Promise<TeamResult | undefined> => {
+        stage = 'integrate'; resume = 'integrate';
+        guard(); checkStop(cwd, number);
+        const result = await integrateWithRetries();
+        const stopped = integrationStop(result); if (stopped) return stopped;
+        if (result.outcome === 'merged') return integrated(result);
+        if (result.outcome === 'infrastructure') return { ...await stop(infrastructure(result.message ?? 'Integration failed.')), integration: result };
+        if (result.outcome === 'stopped') throw new Error('Stopped integration has no saved checkpoint.');
+        if (result.outcome !== 'rebase-conflict') progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+        const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome);
+        if (capped) return { ...capped, integration: result };
+      };
+      if (resuming === 'integrate') {
+        if (await changedTests(path, progress)) {
+          const capped = await bounce(tampered, 'protected-tests');
+          if (capped) return capped;
+        } else {
+          await save({ state: 'working', stage: 'review-pass' });
+          const result = await runIntegration();
+          if (result) return result;
+        }
+      }
+      let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : 'test-writers');
+      if (resuming === 'integrate') role = 'implementer';
       for (;;) {
+        resume = role;
+        checkStop(cwd, number);
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
@@ -209,6 +269,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const beforeRole = await git(path, 'rev-parse', 'HEAD');
         const result = await retryInfrastructure(async () => {
           const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, options.home, options.signal, progress.userTesting) : undefined;
+          checkStop(cwd, number);
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...project.roles[role], prompt,
             handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests.command}${browser?.handoff ?? ''}`,
@@ -220,10 +281,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           return invoked;
         }, result => result.outcome.outcome === 'infrastructure' ? result.outcome.error : undefined,
         result => ({ roleResult: result }), result => result.outcome.outcome === 'question');
-        if (result.outcome.outcome === 'question') return await question(path, role, result.outcome);
+        if (result.outcome.outcome === 'question') {
+          if (current().stopRequested) { progress.question = { role, question: result.outcome.question, preserved: false }; checkStop(cwd, number); }
+          return await question(path, role, result.outcome);
+        }
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
-        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) return await stop(result.outcome);
+        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
         if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
         if (role === 'test-writers') {
           await git(path, 'merge-base', '--is-ancestor', progress.testBase!, 'HEAD');
@@ -262,6 +326,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
         if (role === 'reviewer') progress.reviewedHead = beforeRole;
         delete progress.question;
+        delete progress.stop;
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.userTesting) await save({ report: {
           stage: 'user-testing', details: userTestingComment(progress.userTesting), reachedStage: role, round: result.round,
         } });
@@ -271,7 +336,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           role = 'implementer'; continue;
         }
         const completed = role === 'test-writers' ? 'tests-written' : role === 'implementer' ? 'implemented' : 'review-pass';
+        resume = role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
         await save({ stage: completed, report: { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
+        checkStop(cwd, number);
         // Mirroring yields to external I/O. Recheck evidence before dispatching again.
         if (await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');
@@ -281,19 +348,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Worktree changed during reporting; uncommitted files retained.');
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
         if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
-        stage = 'integrate';
-        guard();
-        const integrationResult = await integrateWithRetries();
-        if (integrationResult.outcome === 'merged') return integrated(integrationResult);
-        if (integrationResult.outcome === 'infrastructure') {
-          return { ...await stop(infrastructure(integrationResult.message ?? 'Integration failed.')), integration: integrationResult };
-        }
-        if (integrationResult.outcome !== 'rebase-conflict') progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-        const stopped = await bounce({ outcome: 'bounce', feedback: `${integrationResult.outcome}: ${integrationResult.message ?? ''}` }, integrationResult.outcome);
-        if (stopped) return { ...stopped, integration: integrationResult };
+        const integratedResult = await runIntegration();
+        if (integratedResult) return integratedResult;
         role = 'implementer';
       }
     } catch (error) {
+      if (error instanceof StopRequested || current()?.stopRequested) return stopAtBoundary(cwd, project, tracker, number, stage, resume, progress, options);
       return stop(infrastructure(error instanceof Error ? error.message : String(error)));
     }
   });
