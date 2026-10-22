@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -359,4 +360,43 @@ test('GitLab label selection rejects API operators instead of selecting a differ
     assert.match(result.stdout, /comma|reserved/);
   }
   assert.deepEqual(await y.requests(), []);
+});
+
+test('GitLab native selection also carries the newly integrated team CLI through scripted roles and done', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace(/^ci: .*$/m, 'ci: wait').replace('command: test -f feature.test.ts', 'command: node answer.test.cjs'));
+  await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 0;\n');
+  y.git('add', '.'); y.git('commit', '-m', 'Seed implementation'); y.git('push');
+  await writeFile(join(y.cwd, '.mill/setup.sh'), 'printf "%s" "$MILL_TICKET" > "$MILL_MILLYARD/.mill/hook-ran"\n');
+  assert.equal((await y.cli('run', 'draft', '7')).code, 0);
+  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, pipelines: [pipeline(1, 'success')] });
+  const roles: string[] = []; let red = false, stdout = '';
+  const code = await runCli(['team', 'run', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {}, runtime: {
+    async run(request, sink) {
+      roles.push(request.role); assert.match(request.handoff, /Last page/);
+      sink.session(`${request.role}-gitlab-fixture`); sink.stdout(Buffer.from('{"type":"fixture"}\n'));
+      const tests = () => execFileSync(process.execPath, ['answer.test.cjs'], { cwd: request.cwd, env: y.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      if (request.role === 'test-writers') {
+        await writeFile(join(request.cwd, 'answer.test.cjs'), "require('node:assert/strict').equal(require('./answer.cjs')(), 42);\n");
+        assert.throws(tests); red = true;
+        y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', 'Specify answer');
+        return { outcome: { outcome: 'done', summary: 'Assertion fails: expected 42, got 0.' } };
+      }
+      if (request.role === 'implementer') {
+        await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+        tests(); y.git('-C', request.cwd, 'add', 'answer.cjs'); y.git('-C', request.cwd, 'commit', '-m', 'Return answer');
+        return { outcome: { outcome: 'done', summary: 'Answer test passes.' } };
+      }
+      tests(); return { outcome: { outcome: 'pass', summary: 'Verified answer through its public API.' } };
+    },
+  } });
+  assert.equal(code, 0, stdout); assert.equal(JSON.parse(stdout).outcome, 'passed');
+  assert.equal(red, true); assert.deepEqual(roles, ['test-writers', 'implementer', 'reviewer']);
+  assert.equal(await readFile(join(y.cwd, '.mill/hook-ran'), 'utf8'), '7');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  const remote = JSON.parse(await readFile(y.statePath, 'utf8'));
+  assert.equal(remote.issues[0].state, 'closed'); assert.equal(remote.mergeCount, 1);
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/7'), '');
+  for (const role of roles) assert.ok(remote.notes[7].at(-1).body.includes(`${role}-gitlab-fixture`));
 });
