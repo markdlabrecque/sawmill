@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { ClaudeCodeRuntime } from './claude-runtime.js';
+import { createRuntime } from './runtime-factory.js';
 import type { MachineConfig, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
@@ -79,7 +79,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const path = tree.path;
       if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Ticket worktree is on the wrong branch.');
       if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
-      const runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
+      const runtime = options.runtime ?? createRuntime(project.runtime);
       progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
       for (const role of ['test-writers', 'implementer', 'reviewer'] as const) {
         stage = role;

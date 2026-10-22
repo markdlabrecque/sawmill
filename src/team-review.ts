@@ -1,4 +1,4 @@
-import { ClaudeCodeRuntime } from './claude-runtime.js';
+import { createRuntime } from './runtime-factory.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -24,7 +24,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   }
   let prompt = '';
   let diff = '';
-  let runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
+  let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     diff = await fullReviewDiff(ticket.worktree!, project.integration);
     prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
