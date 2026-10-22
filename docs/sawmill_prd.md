@@ -55,14 +55,14 @@ Six modules in one Node package, each exposed as CLI subcommands so the orchestr
 
 | Module | Responsibilities | Key CLI commands |
 | --- | --- | --- |
-| Config | Load and validate `saws.yaml` and the machine config; create `saws.yaml` from the user default | `mill build` |
+| Config | Load and validate `.mill/config.yaml` and the machine config; create the `.mill/` folder from the user defaults | `mill build` |
 | Run | Draft a run from the tracker into the run file; own every state change (file first, mirror second); the loop that dispatches ready tickets up to the concurrency limit and pauses when the environment is failing; status, answer, close, stop | `mill run draft`, `mill run`, `mill run once`, `mill run status`, `mill run answer`, `mill run close`, `mill run stop` |
 | Ticket layer | Backend interface (GitHub first, GitLab second); read tickets and blocked-by links at draft time; set labels; post comments; close; read pipeline status for a commit | `mill tickets label`, `mill tickets comment` |
 | Worktree manager | Create/remove worktrees via a provider; run bash hooks; rebase, test, wait for CI, merge into the millyard; garbage-collect worktrees of done tickets | `mill worktree create`, `mill worktree remove`, `mill worktree gc`, `mill integrate` |
 | Team runner | Spawn the three roles on the configured agent runtime inside a worktree; pass thin handoffs; enforce bounce cap; retry infrastructure failures without spending a bounce; honour stop; tee role logs; post reporter comments at each stage | `mill team run`, `mill team review`, `mill team tail` |
 | Reporter | Deterministic stage comments and the final summary, posted through the tracker mirror | called by the run and team modules |
 
-Project-level config is `saws.yaml` at the repo root, committed (ticket backend, integration branch, worktree provider, agent runtime with a model and effort per role, hooks directory, test command and timeout, whether to wait for CI). `mill build` creates it by copying your default from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template the first time, and fills in `test_harness: ddev` or `test_harness: docker` when it finds `.ddev/` or Docker files in the project (DDEV wins if both). The `test_harness` key is required: every `mill` command aborts without it and tells you to write `test_harness: none` if you mean to opt out of user testing. Machine settings (concurrency, retry counts) live in `~/.config/sawmill/config.yaml`.
+Everything Sawmill keeps in a millyard lives in `.mill/` at its root: `config.yaml`, `run.sqlite`, `setup.sh`, `teardown.sh`, an optional `db.sql`, and `logs/`. The whole folder is kept out of git through `.git/info/exclude`, so nothing Sawmill-specific is ever committed to a client repo. `config.yaml` names the ticket backend, integration branch, worktree provider, agent runtime with a model and effort per role, test command and timeout, whether to wait for CI, and the test harness. `mill build` creates the folder, adds the exclude, copies your default from `~/.config/sawmill/default.yaml`, seeding that default from the built-in template the first time, and fills in `test_harness: ddev` or `test_harness: docker` when it finds `.ddev/` or Docker files in the project (DDEV wins if both). The `test_harness` key is required: every `mill` command aborts without it and tells you to write `test_harness: none` if you mean to opt out of user testing. Machine settings (concurrency, retry counts) live in `~/.config/sawmill/config.yaml`.
 
 ## Worktree providers and hooks
 
@@ -78,12 +78,12 @@ Worktree creation is a pluggable provider with a tiny contract, so Herdr, T3 Cod
 
 **Lifecycle hooks**
 
-- Per-project bash scripts in a hooks directory in the repo: `post-worktree-create`, `pre-worktree-remove`.
-- Receive worktree path and ticket number as arguments and as `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`.
+- Per-millyard bash scripts in `.mill/`: `setup.sh` after a worktree is created, `teardown.sh` before one is removed.
+- Receive worktree path and ticket number as arguments and as `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, `MILL_MILLYARD`.
 - Run around whichever provider is active.
 - Non-zero exit from post-create fails the creation so no half-built sandbox is handed to a team.
 - Typical use: start DDEV, install dependencies, seed a database, tear down containers.
-- Default DDEV hook: `~/.config/sawmill/ddev.prehook.sh`, seeded by `mill build` and installed as `post-worktree-create` when DDEV is detected. It names the DDEV project `<ticket>-<project>`, starts it, runs `ddev composer install` if there is a `composer.json`, and imports a database from a `DB_PATH` constant at the top of the script that the human user fills in.
+- Default DDEV hook: `~/.config/sawmill/ddev.setup.sh`, seeded by `mill build` and installed as `.mill/setup.sh` when DDEV is detected. It names the DDEV project `<ticket>-<project>`, starts it, runs `ddev composer install` if there is a `composer.json`, and imports `.mill/db.sql` if present (the path is a `DB_PATH` constant at the top of the script).
 
 ## Review, bounce, rebase and merge rules
 
@@ -110,7 +110,7 @@ Logjam is the one state that means a human must act: an agent question, an exhau
 
 Build bottom-up so each layer is testable by hand before the orchestrator depends on it.
 
-- [ ] `saws.yaml` loading and `mill build`
+- [ ] The `.mill/` folder, config loading and `mill build`
 - [ ] Run file and `mill run draft`, with the ticket layer interface written for both GitHub and GitLab and the GitHub implementation (tickets, native blocked-by links, labels, comments, close, pipeline status)
 - [ ] Worktree manager: default git provider, hooks, `mill worktree gc`, `mill integrate` (rebase, test with timeout, optional CI wait, merge into the millyard)
 - [ ] Team runner: Claude Code adapter first, one role at a time with a model and effort per role, infrastructure retries, role logs and `mill team tail`, then chain all three
@@ -150,13 +150,13 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Bounce | A reviewer sending a change back to the implementer with feedback; each bounce costs one retry |
 | Agent runtime | The pluggable command that runs one role as a process inside the worktree; Claude Code, Pi, or Codex, with a model and effort configured per role |
 | CI gate | When enabled for a project, `mill integrate` waits for the backend pipeline on the exact rebased commit; red is one more implementer round and merge never happens on an unpassed commit |
-| Hook | A per-project bash script run around worktree creation or removal (`post-worktree-create`, `pre-worktree-remove`); gets the worktree path and ticket number as arguments and `MILL_*` variables |
+| Hook | A per-project bash script run around worktree creation or removal (`.mill/setup.sh`, `.mill/teardown.sh`); gets the worktree path and ticket number as arguments and `MILL_*` variables |
 | Implementer | Team role that writes code until the tests pass |
 | Infrastructure outcome | A role result meaning the agent could not do its work for environment reasons (runtime failed to start, provider down, tool loop, test timeout); retried without spending a bounce, never a reviewer finding |
 | Integration branch | The branch approved features auto-merge into; sits in front of main |
 | Main | The release branch; promotion from integration to main is manual and outside the factory |
 | Mill CLI | The `mill` command-line tool holding every deterministic step (tickets, worktrees, tests, rebase, merge, reporter comments); used by the orchestrator and by the human user directly |
-| `mill build` | Create `saws.yaml` in the millyard from `~/.config/sawmill/saws.yaml`, seeding that default from the built-in template if missing; refuses to overwrite without `--force` |
+| `mill build` | Create `.mill/` in the millyard, add it to `.git/info/exclude`, write `config.yaml` from `~/.config/sawmill/default.yaml` (seeding that default from the built-in template if missing), detect the test harness and install the default DDEV hook; refuses to overwrite without `--force` |
 | `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite under the timeout, wait for CI when the project requires it, and merge on green |
 | `mill run` | Start the orchestrator loop on the run file in the current millyard; `mill run once` does a single dispatch pass |
 | `mill run answer` | Post the human user's answer as a ticket comment, flush any held tracker writes, clear logjam and re-queue the ticket |
@@ -180,11 +180,11 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Reporter step | The CLI step that posts progress and the final summary as ticket comments; run by the team runner at each stage change |
 | Retry cap | Maximum review bounces per ticket (three) before it is labelled logjam; infrastructure retries do not count |
 | Reviewer | Team role that checks the diff against the ticket and passes or bounces it |
-| `saws.yaml` | The committed project config at the repo root: tracker, integration branch, provider, runtime, a model and effort per role, hooks, tests, CI, labels |
+| `.mill/config.yaml` | The project config in the millyard, never committed: tracker, integration branch, provider, runtime, a model and effort per role, tests, CI, test harness, labels |
 | Sawmill | This suite: orchestrator, Mill CLI, ticket layer, team runner and the `sawmill` plugin together |
 | Team | The three agents (test writers, implementer, reviewer) spawned for one ticket |
 | Test writers | Team role that turns the ticket into failing tests before any code is written |
-| Test harness | Required `saws.yaml` key (`ddev`, `docker`, or `none`) saying how the reviewer reaches a running site for user test cases; `mill build` detects it, and `none` must be written by hand to opt out |
+| Test harness | Required `.mill/config.yaml` key (`ddev`, `docker`, or `none`) saying how the reviewer reaches a running site for user test cases; `mill build` detects it, and `none` must be written by hand to opt out |
 | Test timeout | Per-project bound on the test command (default 30 minutes); hitting it is an infrastructure outcome, not a failed test |
 | Ticket | A feature-sized unit of work in GitHub or GitLab issues; the source of truth for work state |
 | User test cases | A "User test cases" section in a ticket body, one case per item; the reviewer performs each as the user in a browser, bounces on a case that cannot be completed, and passes with recommendations otherwise |
