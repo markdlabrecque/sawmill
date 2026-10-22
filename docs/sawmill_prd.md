@@ -83,7 +83,7 @@ Worktree creation is a pluggable provider with a tiny contract, so Herdr, T3 Cod
 - Run around whichever provider is active.
 - Non-zero exit from post-create fails the creation so no half-built sandbox is handed to a team.
 - Typical use: start DDEV, install dependencies, seed a database, tear down containers.
-- Default DDEV hook: `~/.config/sawmill/ddev.setup.sh`, seeded by `mill build` and installed as `.mill/setup.sh` when DDEV is detected. It names the DDEV project `<ticket>-<project>`, starts it, runs `ddev composer install` if there is a `composer.json`, and imports `.mill/db.sql` if present (the path is a `DB_PATH` constant at the top of the script).
+- Default DDEV hooks: `~/.config/sawmill/ddev.setup.sh` and `ddev.teardown.sh`, seeded by `mill build` and installed as `.mill/setup.sh` and `.mill/teardown.sh` when DDEV is detected. Setup names the DDEV project `<ticket>-<project>`, starts it, runs `ddev composer install` if there is a `composer.json`, and imports `.mill/db.sql` if present (the path is a `DB_PATH` constant at the top of the script). Teardown runs `ddev delete -yO <ticket>-<project>` if that project exists, so no orphaned DDEV containers survive a reaped worktree.
 
 ## Review, bounce, rebase and merge rules
 
@@ -156,7 +156,7 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Integration branch | The branch approved features auto-merge into; sits in front of main |
 | Main | The release branch; promotion from integration to main is manual and outside the factory |
 | Mill CLI | The `mill` command-line tool holding every deterministic step (tickets, worktrees, tests, rebase, merge, reporter comments); used by the orchestrator and by the human user directly |
-| `mill build` | Create `.mill/` in the millyard, add it to `.git/info/exclude`, write `config.yaml` from `~/.config/sawmill/default.yaml` (seeding that default from the built-in template if missing), detect the test harness and install the default DDEV hook; refuses to overwrite without `--force` |
+| `mill build` | Create `.mill/` in the millyard, add it to `.git/info/exclude`, write `config.yaml` from `~/.config/sawmill/default.yaml` (seeding that default from the built-in template if missing), detect the test harness and install the default DDEV hooks; refuses to overwrite without `--force` |
 | `mill integrate` | Rebase a ticket's worktree onto integration, run the full test suite under the timeout, wait for CI when the project requires it, and merge on green |
 | `mill run` | Start the orchestrator loop on the run file in the current millyard; `mill run once` does a single dispatch pass |
 | `mill run answer` | Post the human user's answer as a ticket comment, flush any held tracker writes, clear logjam and re-queue the ticket |
