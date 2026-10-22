@@ -29,6 +29,17 @@ export interface TeamProgress {
   /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
   checkpointHead?: string;
   repair?: RepairContext;
+  infrastructureAttempts?: InfrastructureAttempt[];
+}
+/** Infrastructure invocation history, independent of the repair bounce budget. */
+export interface InfrastructureAttempt {
+  stage: string;
+  attempt: number;
+  bounces: number;
+  status: 'running' | 'failed' | 'recovered';
+  error?: string;
+  roleResult?: import('./runtime.js').RuntimeResult & { round?: number; log?: string; stderrLog?: string };
+  integration?: import('./integrate.js').IntegrationResult;
 }
 /** Last repair request, retained after success for reporting and later case re-runs. */
 export interface RepairContext {
