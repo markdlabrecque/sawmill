@@ -222,7 +222,7 @@ Sawmill: a run is a batch of tickets, in dependency order, executed from a milly
 - Pausing or resuming a live agent process; a question always ends the team.
 - More than one run per millyard at a time.
 - Product deployment and polish; the pipeline is the same, only the last mile differs.
-- Any UI beyond the CLI, the logs, and the ticket thread.
+- Any UI beyond the CLI, the logs, the ticket thread, and the read-only live view in `docs/specs/live-view.md`.
 - Integration with T3 Code, Orca, or Herdr, whether for worktrees, agent sessions, or control. Those tools exist to put an interactive agent in front of a person. Sawmill's roles are non-interactive: they run headless as child processes, report through logs and the ticket thread, and are reopened with the vendor's resume command. There is nothing for those tools to show or control.
 - A custom runtime command; the three built-in adapters are the runtimes until one is needed.
 - Automatic creation of the integration branch or of tracker labels.
