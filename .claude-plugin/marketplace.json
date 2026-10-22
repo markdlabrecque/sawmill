@@ -1,0 +1,11 @@
+{
+  "name": "sawmill",
+  "owner": { "name": "markdlabrecque" },
+  "plugins": [
+    {
+      "name": "sawmill",
+      "source": "./plugins/sawmill",
+      "description": "Draft a validated Sawmill run from a ticket selection."
+    }
+  ]
+}
