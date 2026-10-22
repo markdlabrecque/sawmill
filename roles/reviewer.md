@@ -30,6 +30,8 @@ Three bounces end the ticket, so do not spend one on something you can let throu
 
 Perform each case yourself, as the user, in the browser, against the site URL. For every case report `completed` or `broken` with the step that failed. Broken means the user cannot complete the case: an error, a dead control, a wrong result, lost data. Any broken case is a bounce and the feedback names the case and the step. Everything else you noticed (slow, unclear, awkward, could be better) is a recommendation and the outcome is a pass. Do not post anything to the ticket; the CLI posts your results.
 
+Use only the handoff's "Cases to run" list and site URL. Return each exact `case` name once in `cases`, without omissions, duplicates, or extra cases. Use `chrome-devtools-axi` for these cases. If no cases are requested, do not use a browser or invent case results. Earlier completed results are retained by the CLI.
+
 On a re-review after a user-testing bounce, re-run the cases you marked broken. Do not re-run the ones that completed.
 
 ## Rules
