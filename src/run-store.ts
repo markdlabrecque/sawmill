@@ -98,6 +98,11 @@ export interface RunSnapshot {
   pendingWrites: PendingWrite[];
 }
 
+/** The merge stays irreversible while an answered stop queues only its remaining cleanup. */
+export function stoppedMergeCleanup(ticket: Pick<RunTicket, 'completion' | 'team' | 'integration'>): boolean {
+  return ticket.completion === 'merged' && ticket.team.stop?.resume === 'integrate' && !ticket.integration.reported;
+}
+
 export type MirrorWrite =
   | { kind: 'comment'; payload: { body: string } }
   | { kind: 'add-label' | 'remove-label'; payload: { label: string } }

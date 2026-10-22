@@ -24,7 +24,7 @@ export async function stopAtBoundary(cwd: string, project: ProjectConfig, writer
   const mirrored = await transition(cwd, project, writer, number, {
     state: 'logjam', reason: error ? 'environment' : 'stopped', stage, team: progress,
     // Preservation can recreate a branch already deleted by merge cleanup.
-    ...(row.completion === 'merged' ? { integration: { ...row.integration, remoteDeleted: false } } : {}),
+    ...(row.completion === 'merged' ? { integration: { ...row.integration, remoteDeleted: false, reported: false } } : {}),
     report: { stage: 'stopped', reason: error ? 'environment' : 'stopped', reachedStage: stage,
       details: error ?? (progress.stop.wipHead ? `WIP pushed: ${progress.stop.wipHead}` : 'Stopped before worktree creation.') },
   }, [], options);

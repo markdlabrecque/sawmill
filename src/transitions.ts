@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
+import { readRun, runPath, stoppedMergeCleanup, type MirrorWrite, type RunTicket, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { TicketWriter } from './tracker.js';
 
@@ -42,6 +42,11 @@ function requireTicket(db: DatabaseSync, number: number) {
   return ticket;
 }
 
+function stoppedCleanup(row: ReturnType<typeof requireTicket>): boolean {
+  return stoppedMergeCleanup({ completion: row.completion as RunTicket['completion'],
+    team: row.team ? JSON.parse(String(row.team)) : {}, integration: row.integration ? JSON.parse(String(row.integration)) : {} });
+}
+
 function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
   db.prepare('INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, ?, ?)').run(number, write.kind, JSON.stringify(write.payload));
   if (write.kind === 'comment') {
@@ -71,7 +76,7 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
     if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
     const row = requireTicket(db, number);
     const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
-    if (!['queued', 'blocked'].includes(String(row.state)) || row.completion || (owner && owner.status !== 'finished')) return false;
+    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !stoppedCleanup(row)) || (owner && owner.status !== 'finished')) return false;
     if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
     if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
       WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
@@ -195,7 +200,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     db.prepare('UPDATE tickets SET stop_requested = 0 WHERE number = ?').run(number);
-    update(db, number, { state: ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
+    update(db, number, { state: stoppedCleanup(ticket) ? 'queued' : ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
   });
   return true;
 }

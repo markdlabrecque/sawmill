@@ -50,8 +50,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await checkMillyard(cwd, project.integration);
-    let stage = 'worktree-create';
-    let resume: Role | 'integrate' = ticket.team.stop?.resume ?? 'test-writers';
+    let stage = ticket.stage ?? 'worktree-create';
+    const integrationStage = ['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'ci-failed', 'merge', 'merge-accepted', 'remote-delete', 'fast-forward', 'merged'].includes(stage);
+    let resume: Role | 'integrate' = ticket.team.stop?.resume ?? ticket.team.question?.role ??
+      (ticket.completion === 'merged' || integrationStage ? 'integrate' :
+        stage === 'implemented' ? 'reviewer' : stage === 'tests-written' ? 'implementer' :
+          stage === 'reviewer' || stage === 'implementer' ? stage : 'test-writers');
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
       const state = readRun(cwd), row = state.tickets.find(r => r.number === number);

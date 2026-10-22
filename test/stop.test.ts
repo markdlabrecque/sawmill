@@ -367,6 +367,7 @@ test('stop after accepted merge retains completion and remote WIP, then only fin
   assert.equal(row.stage, 'merge-accepted');
   assert.ok(y.git('ls-remote', 'origin', 'refs/heads/mill/19'));
   assert.equal((await y.cli('run', 'answer', '19', 'Finish cleanup.')).code, 0);
+  assert.equal((await y.status()).tickets[0]!.state, 'queued', 'An answered stopped merge must requeue its remaining cleanup');
   const resumed = await y.cli('team', 'run', '19', '--json');
   assert.equal(resumed.code, 0, resumed.stdout);
   assert.equal(y.merges(), 1);
@@ -519,4 +520,108 @@ test('integration-only resume still protects the original writer tests', async t
   assert.equal(resumed.code, 0, resumed.stdout);
   assert.deepEqual(y.roles.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer']);
   assert.equal((await y.status()).tickets[0]!.team.testCommit, baseline);
+});
+
+test('a stop racing the final merge report resumes cleanup without repeating merge or leaking WIP', async t => {
+  const y = await fixture(t);
+  const bin = fileURLToPath(new URL('../src/bin.js', import.meta.url));
+  const realGit = y.git('--exec-path').replace(/\/lib\/git-core$/, '/bin/git');
+  // Wrap only the external Git transport, delegating every actual Git operation.
+  // The reporter's log read supplies a deterministic cross-process race window.
+  const wrapper = join(y.root, 'git');
+  const marker = join(y.root, 'reported-stop');
+  await writeFile(wrapper, `#!${process.execPath}
+const cp = require('node:child_process'), fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === 'log' && args[1] === '--format=%h %s' && !fs.existsSync(${JSON.stringify(marker)})) {
+  const stopped = cp.execFileSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(bin)}, 'run', 'stop', '19', '--json'], {
+    cwd:${JSON.stringify(y.cwd)}, encoding:'utf8', env:{...process.env, HOME:${JSON.stringify(y.home)}, XDG_CONFIG_HOME:${JSON.stringify(join(y.home, '.config'))}}
+  });
+  fs.writeFileSync(${JSON.stringify(marker)}, stopped);
+}
+const result = cp.spawnSync(${JSON.stringify(realGit)}, args, {stdio:'inherit'});
+process.exit(result.status ?? 1);
+`);
+  await chmod(wrapper, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${y.root}:${oldPath}`;
+  try {
+    const first = await y.cli('team', 'run', '19', '--json');
+    assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
+    assert.equal(JSON.parse(await readFile(marker, 'utf8')).status, 'stop-requested');
+    assert.equal(y.merges(), 1);
+    assert.ok(y.git('ls-remote', 'origin', 'refs/heads/mill/19'));
+    await y.cli('run', 'answer', '19');
+    const resumed = await y.cli('team', 'run', '19', '--json');
+    assert.equal(resumed.code, 0, resumed.stdout);
+    assert.equal(y.merges(), 1);
+    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/19'), '');
+  } finally { process.env.PATH = oldPath; }
+});
+
+test('answer requeues accepted-merge cleanup through the real dispatcher without another role or merge', async t => {
+  let cleanup!: () => Promise<void>;
+  const y = await fixture({ after(fn: () => Promise<void>) { cleanup = fn; } } as TestContext);
+  const merge = y.tracker.mergeChangeRequest;
+  y.tracker.mergeChangeRequest = async () => {
+    const result = await merge();
+    await y.cli('run', 'stop', '19');
+    return result;
+  };
+  const first = await y.cli('team', 'run', '19', '--json');
+  assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
+  await y.cli('run', 'answer', '19', 'Finish the accepted merge.');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('runtime: claude-code', 'runtime: codex').replaceAll('claude-opus-5-5', 'gpt-6.1-sol').replaceAll('claude-sonnet-5-5', 'gpt-6.1-sol'));
+  await writeFile(join(y.root, 'codex'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(join(y.root, 'unexpected-role'))}, 'called'); process.exit(71);\n`);
+  await writeFile(join(y.root, 'gh'), `#!${process.execPath}
+const cp = require('node:child_process'), fs = require('node:fs');
+const args = process.argv.slice(2); let body = '';
+process.stdin.on('data', x => body += x); process.stdin.on('end', () => {
+  if (!args.includes('--method') || args.includes('GET') || args[1].includes('/pulls')) process.exit(71);
+  if (args[1].includes('/git/refs/heads/')) cp.execFileSync('git', ['push', 'origin', '--delete', 'mill/19'], {stdio:'pipe'});
+  fs.appendFileSync(${JSON.stringify(join(y.root, 'cleanup-tracker.jsonl'))}, JSON.stringify({args, body}) + '\\n');
+  console.log('{}');
+});
+
+`);
+  await chmod(join(y.root, 'codex'), 0o755); await chmod(join(y.root, 'gh'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${y.root}:${oldPath}`;
+  const deadline = Date.now() + 15000;
+  const settle = async () => {
+    for (;;) {
+      const row = (await y.status()).tickets[0]!;
+      if (!row.worker || row.worker.status === 'finished') return row;
+      assert.ok(Date.now() < deadline, JSON.stringify(row));
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  };
+  t.after(async () => { process.env.PATH = oldPath; await settle(); await cleanup(); });
+  const dispatched = await y.cli('run', 'once', '--json');
+  assert.equal(dispatched.code, 0, dispatched.stdout);
+  assert.equal(JSON.parse(dispatched.stdout).started.length, 1);
+  const row = await settle();
+  assert.equal(row.state, 'done'); assert.equal(row.worker?.result?.outcome, 'passed');
+  assert.equal(y.merges(), 1); assert.equal(y.roles.length, 3);
+  assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/19'), '');
+  await assert.rejects(readFile(join(y.root, 'unexpected-role')), { code: 'ENOENT' });
+});
+
+test('a persisted stop on already reviewed work resumes integration without dispatching roles', async t => {
+  const y = await fixture(t);
+  await y.cli('worktree', 'create', '19');
+  await writeFile(join(y.path, 'answer.test.cjs'), "require('node:assert/strict').equal(require('./answer.cjs')(), 42);\n");
+  await writeFile(join(y.path, 'answer.cjs'), 'module.exports = () => 42;\n');
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Hand-written approved work');
+  assert.equal((await y.cli('team', 'review', '19')).code, 0);
+  assert.equal((await y.cli('run', 'stop', '19')).code, 0);
+  const first = await y.cli('team', 'run', '19', '--json');
+  assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
+  const row = (await y.status()).tickets[0]!;
+  assert.equal(row.stage, 'review-pass'); assert.equal(row.team.stop?.resume, 'integrate');
+  await y.cli('run', 'answer', '19');
+  const resumed = await y.cli('team', 'run', '19', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.deepEqual(y.roles.map(r => r.role), ['reviewer']);
 });
