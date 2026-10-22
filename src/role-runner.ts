@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CliError } from './errors.js';
+import { checkStop } from './cooperative-stop.js';
 import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
 import { mkdir, readdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -40,6 +41,7 @@ export async function runRole(cwd: string, project: ProjectConfig, writer: Ticke
   };
   let result: RuntimeResult;
   try {
+    checkStop(cwd, number);
     result = await runtime.run(request, { stdout: chunk => { writeSync(out, chunk); }, stderr: chunk => { writeSync(err, chunk); }, session });
     result.outcome = validateOutcome(result.outcome, request.role);
     if (result.sessionId) session(result.sessionId);

@@ -26,6 +26,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'integration')) db.exec('ALTER TABLE tickets ADD COLUMN integration TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'team')) db.exec('ALTER TABLE tickets ADD COLUMN team TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'worker')) db.exec('ALTER TABLE tickets ADD COLUMN worker TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
     const value = work(db);
     db.exec('COMMIT');
     return value;
@@ -183,6 +184,8 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   checkTracker(cwd, project);
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
+    // An answer must not clear a request while its active role is still saving.
+    if (ticket.stop_requested && ticket.state === 'working') throw new CliError('Wait for the requested stop boundary before answering.');
     if (ticket.state !== 'logjam' && !db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) throw new CliError(`Ticket #${number} is not in logjam and has no pending writes.`);
     const writes: MirrorWrite[] = text === undefined ? [] : [{ kind: 'comment', payload: { body: text } }];
     writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
@@ -191,7 +194,19 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
+    db.prepare('UPDATE tickets SET stop_requested = 0 WHERE number = ?').run(number);
     update(db, number, { state: ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
   });
   return true;
+}
+
+/** Local-only request. Do not contend with the active role lock or touch its process. */
+export function requestStop(cwd: string, project: ProjectConfig, number: number): void {
+  checkTracker(cwd, project);
+  transaction(cwd, db => {
+    const ticket = requireTicket(db, number);
+    if (ticket.state !== 'working') throw new CliError(`Ticket #${number} is not working.`);
+    db.prepare('UPDATE tickets SET stop_requested = 1 WHERE number = ?').run(number);
+    update(db, number, {});
+  });
 }
