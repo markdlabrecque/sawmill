@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { ClaudeCodeRuntime } from './claude-runtime.js';
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError } from './errors.js';
@@ -8,7 +9,7 @@ import { integrate, type IntegrationResult } from './integrate.js';
 import { checkMillyard } from './millyard.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
-import { readRun, type TeamProgress } from './run-store.js';
+import { readRun, type InfrastructureAttempt, type TeamProgress } from './run-store.js';
 import { infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
@@ -45,13 +46,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (ticket.completion === 'manual' || ticket.blockers.length) throw new CliError('Team requires an unfinished, unblocked ticket.');
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
-    if (ticket.completion === 'merged') return integrated(await integrate(cwd, project, number, tracker, integrationOptions));
     await checkMillyard(cwd, project.integration);
     let stage = 'worktree-create';
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
       const state = readRun(cwd), row = state.tickets.find(r => r.number === number);
-      if (state.run.id !== snapshot.run.id || !row || row.state === 'logjam' || row.completion || row.blockers.length || state.pendingWrites.some(w => w.ticket === number)) throw new Error('Local run state no longer permits team work.');
+      if (state.run.id !== snapshot.run.id || !row || row.state === 'logjam' || (row.completion && !(stage === 'integrate' && row.completion === 'merged')) || row.blockers.length || state.pendingWrites.some(w => w.ticket === number)) throw new Error('Local run state no longer permits team work.');
       if (options.signal?.aborted) throw new Error('Team invocation was interrupted.');
     };
     const save = async (change: Transition) => {
@@ -59,12 +59,49 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       if (!await transition(cwd, project, tracker, number, { ...change, team: progress }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
       guard();
     };
+    const retryInfrastructure = async <T>(work: () => Promise<T>, failure: (result: T) => string | undefined,
+      evidence: (result: T) => Partial<InfrastructureAttempt>, terminal?: (result: T) => boolean): Promise<T> => {
+      let active: InfrastructureAttempt | undefined;
+      for (let retries = 0; ; retries++) {
+        guard();
+        let result: T | undefined, error: string | undefined;
+        try { result = await work(); error = failure(result); }
+        catch (caught) { error = (caught instanceof Error ? caught.message : String(caught)) || 'Infrastructure invocation failed.'; }
+        // Questions own their preservation/report boundary. A recovery mirror
+        // must not prevent saving WIP or the question before that boundary.
+        if (result !== undefined && terminal?.(result)) {
+          if (active) Object.assign(active, { status: 'recovered', ...evidence(result) });
+          return result;
+        }
+        // Session/report mirrors can fail inside the operation. Never dispatch
+        // another attempt while their durable payloads are pending.
+        guard();
+        if (!error && !active) return result!;
+        if (!active) {
+          active = { stage, attempt: retries + 1, bounces: current().bounces, status: 'failed' };
+          (progress.infrastructureAttempts ??= []).push(active);
+        }
+        Object.assign(active, { status: error ? 'failed' : 'recovered', ...(error ? { error } : {}), ...(result !== undefined ? evidence(result) : {}) });
+        await save({ report: { stage: 'infrastructure', details: `${stage} attempt ${retries + 1}/${machine.infrastructure_retries + 1} ${error ? 'failed' : 'recovered'}.`,
+          retries, ...(error ? { error } : {}), reachedStage: stage, round: active.roleResult?.round } });
+        if (!error) return result!;
+        if (retries >= machine.infrastructure_retries) {
+          if (result !== undefined) return result;
+          throw new Error(error);
+        }
+        await (options.sleep ?? sleep)(100 * 2 ** Math.min(retries, 4));
+        guard();
+        active = { stage, attempt: retries + 2, bounces: current().bounces, status: 'running' };
+        progress.infrastructureAttempts!.push(active);
+        await save({ report: { stage: 'infrastructure', details: `Retrying ${stage}, attempt ${retries + 2}/${machine.infrastructure_retries + 1}.`, retries: retries + 1, reachedStage: stage } });
+      }
+    };
     const stop = async (outcome: Outcome): Promise<TeamResult> => {
       const kind = outcome.outcome;
       const reason = kind === 'question' ? 'question' : kind === 'bounce' ? 'review-bounce' : 'environment';
       const detail = kind === 'question' ? outcome.question : kind === 'bounce' ? outcome.feedback : kind === 'infrastructure' ? outcome.error : 'Unexpected role outcome.';
       const row = current();
-      if (readRun(cwd).run.id === snapshot.run.id && row && row.state !== 'logjam' && !row.completion) await transition(cwd, project, tracker, number, {
+      if (readRun(cwd).run.id === snapshot.run.id && row && row.state !== 'logjam' && (!row.completion || (kind === 'infrastructure' && row.completion === 'merged'))) await transition(cwd, project, tracker, number, {
         state: 'logjam', reason, stage, team: progress,
         bounces: row.bounces + (kind === 'bounce' ? 1 : 0),
         report: { stage: kind === 'bounce' ? 'review-bounce' : kind === 'question' ? 'aborted' : 'infrastructure', details: detail, reason, reachedStage: stage },
@@ -93,7 +130,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         reason: !mirrored ? 'tracker' : error ? 'environment' : 'question',
         error: !mirrored ? 'Tracker mirror failed; pending writes retained.' : error ?? outcome.question, roleOutcome: outcome };
     };
+    const integrateWithRetries = () => retryInfrastructure(() => integrate(cwd, project, number, tracker, integrationOptions),
+      result => result.outcome === 'infrastructure' ? result.message ?? 'Integration failed.' : undefined,
+      result => ({ integration: result }));
     try {
+      if (ticket.completion === 'merged') {
+        stage = 'integrate';
+        const result = await integrateWithRetries();
+        return result.outcome === 'merged' ? integrated(result) : { ...await stop(infrastructure(result.message ?? 'Integration failed.')), integration: result };
+      }
       guard();
       if (ticket.bounces >= 3) {
         stage = ticket.stage ?? 'repair';
@@ -132,7 +177,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const runtime = options.runtime ?? (project.runtime === 'claude-code' ? new ClaudeCodeRuntime() : { async run() { return { outcome: infrastructure(`Runtime ${project.runtime} is not implemented yet.`) }; } });
       const repairing = Boolean(progress.repair && progress.testCommit);
       const resuming = progress.question?.role;
-      if (!repairing && !resuming) progress = { outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
       const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source']): Promise<TeamResult | undefined> => {
         delete progress.question;
         progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
@@ -158,12 +203,16 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         const duration = project.role_timeout;
         const beforeRole = await git(path, 'rev-parse', 'HEAD');
-        const result = await runRole(cwd, project, tracker, number, runtime, {
-          role, cwd: path, home: options.home, ...project.roles[role], prompt,
-          handoff: `Ticket snapshot:\n${JSON.stringify(current())}\n\nPrior outputs and committed test files:\n${JSON.stringify(progress)}${diff}\n\nTest command:\n${project.tests.command}`,
-          testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: false, signal: options.signal,
-        }, options);
-        progress.outputs![role] = result;
+        const result = await retryInfrastructure(async () => {
+          const invoked = await runRole(cwd, project, tracker, number, runtime, {
+            role, cwd: path, home: options.home, ...project.roles[role], prompt,
+            handoff: `Ticket snapshot:\n${JSON.stringify(current())}\n\nPrior outputs and committed test files:\n${JSON.stringify(progress)}${diff}\n\nTest command:\n${project.tests.command}`,
+            testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: false, signal: options.signal,
+          }, options);
+          progress.outputs![role] = invoked;
+          return invoked;
+        }, result => result.outcome.outcome === 'infrastructure' ? result.outcome.error : undefined,
+        result => ({ roleResult: result }), result => result.outcome.outcome === 'question');
         if (result.outcome.outcome === 'question') return await question(path, role, result.outcome);
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
@@ -224,8 +273,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
         stage = 'integrate';
         guard();
-        const integrationResult = await integrate(cwd, project, number, tracker, integrationOptions);
-        if (integrationResult.outcome === 'merged' || current().completion === 'merged') return integrated(integrationResult);
+        const integrationResult = await integrateWithRetries();
+        if (integrationResult.outcome === 'merged') return integrated(integrationResult);
         if (integrationResult.outcome === 'infrastructure') {
           return { ...await stop(infrastructure(integrationResult.message ?? 'Integration failed.')), integration: integrationResult };
         }

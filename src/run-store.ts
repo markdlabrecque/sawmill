@@ -31,6 +31,17 @@ export interface TeamProgress {
   repair?: RepairContext;
   /** A question ends the invocation; an answer re-enters this role on its saved branch. */
   question?: { role: Role; question: string; wipHead?: string; preserved: boolean; error?: string };
+  infrastructureAttempts?: InfrastructureAttempt[];
+}
+/** Infrastructure invocation history, independent of the repair bounce budget. */
+export interface InfrastructureAttempt {
+  stage: string;
+  attempt: number;
+  bounces: number;
+  status: 'running' | 'failed' | 'recovered';
+  error?: string;
+  roleResult?: import('./runtime.js').RuntimeResult & { round?: number; log?: string; stderrLog?: string };
+  integration?: import('./integrate.js').IntegrationResult;
 }
 /** Last repair request, retained after success for reporting and later case re-runs. */
 export interface RepairContext {
