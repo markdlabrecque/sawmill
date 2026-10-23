@@ -70,6 +70,9 @@ export function testRunProblem(run: TestRun, failures = testFailures(run.output)
   return undefined;
 }
 
+/** The "Test command" a role's handoff shows when the project opted out of tests. */
+export const noTests = 'none. This project opted out of tests (tests: none in .mill/config.yaml). There are no tests to write or run, and Mill runs none: work from the ticket alone.';
+
 /** Save the full output to `.mill/logs/<n>/tests-<round>.txt` and describe the run for the next role. */
 export async function reportTestRun(cwd: string, number: number, command: string, run: TestRun, timeout: string): Promise<TestReport> {
   const directory = join(cwd, '.mill/logs', String(number));

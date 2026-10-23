@@ -10,7 +10,7 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
-import { reportTestRun, testRunProblem } from './test-results.js';
+import { noTests, reportTestRun, testRunProblem } from './test-results.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
 import { checkMillyard } from './millyard.js';
@@ -61,11 +61,14 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = ticket.stage ?? 'worktree-create';
+    // With tests: none there is nothing to write, so the flow starts at the implementer.
+    const testsOff = project.tests === 'none';
+    const firstRole: Role = testsOff ? 'implementer' : 'test-writers';
     const integrationStage = ['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'ci-failed', 'merge', 'merge-accepted', 'remote-delete', 'fast-forward', 'merged'].includes(stage);
     let resume: Role | 'integrate' = ticket.team.stop?.resume ?? ticket.team.question?.role ?? ticket.team.next ?? ticket.team.activeRole?.role ??
       (ticket.completion === 'merged' || integrationStage ? 'integrate' :
         stage === 'implemented' ? 'reviewer' : stage === 'tests-written' ? 'implementer' :
-          stage === 'reviewer' || stage === 'implementer' ? stage : 'test-writers');
+          stage === 'reviewer' || stage === 'implementer' ? stage : firstRole);
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
       const state = readRun(cwd), row = state.tickets.find(r => r.number === number);
@@ -209,8 +212,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const recovery = progress.recovery;
       if (!recovery && await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? createRuntime(project.runtime);
-      const repairing = Boolean(progress.repair && progress.testCommit);
-      const recoveredRole: Role | undefined = recovery ? progress.activeRole?.role ?? (progress.testCommit
+      const pastWriters = testsOff || Boolean(progress.testCommit);
+      const repairing = Boolean(progress.repair && pastWriters);
+      const recoveredRole: Role | undefined = recovery ? progress.activeRole?.role ?? (pastWriters
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
       let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
@@ -253,16 +257,19 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       let latest: { head: string; handoff: string } | undefined;
       /** Tests that already pass guard nothing. True sends the work back to the test-writers. */
       const redCheck = async (): Promise<TeamResult | boolean> => {
+        const config = project.tests;
+        // No tests is a choice, not a mistake: there is no run to read as "not red".
+        if (config === 'none') { delete progress.redPending; return false; }
         stage = 'tests-written';
         const head = await git(path, 'rev-parse', 'HEAD');
         // A timeout or killed run is not green.
         // Nor is a command that could not run: red means named failing tests, or output Mill cannot parse.
-        const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${project.tests.timeout}.\n${run.output}`
+        const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${config.timeout}.\n${run.output}`
           : run.code === null ? `Tests were killed.\n${run.output}` : testRunProblem(run) && `${testRunProblem(run)}\n${run.output}`;
         const tested = await retryInfrastructure(() => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true })),
           unusable, () => ({}));
         checkStop(cwd, number);
-        const report = await reportTestRun(cwd, number, project.tests.command, tested, project.tests.timeout);
+        const report = await reportTestRun(cwd, number, config.command, tested, config.timeout);
         const error = unusable(tested);
         if (error) return await stop(infrastructure(`${error}\nFull output: ${report.file}`));
         if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
@@ -290,11 +297,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const latestRun = async (next: Role): Promise<string> => {
         const head = await git(path, 'rev-parse', 'HEAD'), status = await git(path, 'status', '--porcelain', '--untracked-files=all');
         if (latest?.head === head && !status) return `\n\n${latest.handoff}`;
-        if (next === 'test-writers') return '';
+        const config = project.tests;
+        if (next === 'test-writers' || config === 'none') return '';
         const run = await tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
         checkStop(cwd, number);
         if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all') !== status) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
-        latest = { head, handoff: (await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout)).handoff };
+        latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff };
         return `\n\n${latest.handoff}`;
       };
       if (resuming === 'integrate') {
@@ -311,7 +319,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (result) return result;
         }
       }
-      let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : 'test-writers');
+      let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : firstRole);
       if (resuming === 'integrate') role = 'implementer';
       // A person committed the fix while the ticket was stuck, then answered it: review that
       // fix rather than demand another commit. Interrupted roles and saved WIP resume as before.
@@ -345,9 +353,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...project.roles[role], prompt,
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then git -c core.editor=true rebase --continue. Preserve writer patches, then append a separate fix commit.` : ''}`,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then git -c core.editor=true rebase --continue. Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
-            testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
+            ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
           }, options);
           const testing = browser && userTestingResult(browser, invoked.outcome, progress.userTesting);
           if (testing) progress.userTesting = testing;

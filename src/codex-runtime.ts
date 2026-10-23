@@ -11,7 +11,8 @@ function runtimeFailure(detail: string, fallback: 'startup' | 'provider' | 'proc
   return `Codex ${category} failure: ${detail}`;
 }
 
-function isTestCommand(command: unknown, testCommand: string): boolean {
+function isTestCommand(command: unknown, testCommand: string | undefined): boolean {
+  if (testCommand === undefined) return false;
   if (command === testCommand) return true;
   // Codex 0.163.0 wraps local shell commands in JSONL. Compare a single literal
   // shell argument; never run the string or strip arbitrary shell operators.

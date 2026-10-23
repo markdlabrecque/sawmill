@@ -33,7 +33,9 @@ export interface IntegrationResult {
 
 /** A timeout kills the whole test process group, including shell grandchildren. */
 export async function tests(cwd: string, project: ProjectConfig, home?: string, childStarted?: (pid: number) => void): Promise<{ code: number | null; timedOut: boolean; output: string }> {
-  const duration = project.tests.timeout;
+  const config = project.tests;
+  if (config === 'none') throw new Error('Tests are off (tests: none); there is no test command to run.');
+  const duration = config.timeout;
   const ms = Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
   const env: NodeJS.ProcessEnv = { ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}) };
   // The final run must see what a plain `npm test` sees, as agent sessions do.
@@ -41,7 +43,7 @@ export async function tests(cwd: string, project: ProjectConfig, home?: string, 
   // Set by a parent `node --test`; a nested `node --test` then skips every file and exits 0.
   delete env.NODE_TEST_CONTEXT;
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', ['-c', project.tests.command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+    const child = spawn('bash', ['-c', config.command], { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
     let output = '', timedOut = false;
     const collect = (data: Buffer) => { output = (output + data.toString()).slice(-1024 * 1024); };
     child.stdout.on('data', collect); child.stderr.on('data', collect);
@@ -54,6 +56,11 @@ export async function tests(cwd: string, project: ProjectConfig, home?: string, 
     try { if (child.pid) childStarted?.(child.pid); }
     catch (error) { if (child.pid) process.kill(-child.pid, 'SIGKILL'); reject(error); }
   });
+}
+
+/** The test line for the PR body and merge report. */
+function testSummary(project: ProjectConfig): string {
+  return project.tests === 'none' ? 'Local tests skipped by config (tests: none).' : `Local tests passed: ${project.tests.command}`;
 }
 
 /** Beyond this many reruns at one stage, a ticket's test failures count at once. */
@@ -158,25 +165,28 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.rebasedHead = head;
       team.checkpointHead = head;
       await save({ team });
-      await advance('tests');
-      await requireApproval();
-      boundary();
-      const run = () => tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
-      let tested = await run();
-      boundary();
-      // A failure is rerun once before it counts. A pass on the rerun is logged, not hidden.
-      if (!tested.timedOut && tested.code !== 0 && rerunCount(cwd, number, 'tests') < rerunCap) {
-        const first = tested;
-        tested = await run();
+      // tests: none skips the local run on purpose; the rebased head goes straight on.
+      if (project.tests !== 'none') {
+        await advance('tests');
+        await requireApproval();
         boundary();
-        logRerunRow(cwd, number, 'tests', !tested.timedOut && tested.code === 0, failedTests(first.output), first.code);
+        const run = () => tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+        let tested = await run();
+        boundary();
+        // A failure is rerun once before it counts. A pass on the rerun is logged, not hidden.
+        if (!tested.timedOut && tested.code !== 0 && rerunCount(cwd, number, 'tests') < rerunCap) {
+          const first = tested;
+          tested = await run();
+          boundary();
+          logRerunRow(cwd, number, 'tests', !tested.timedOut && tested.code === 0, failedTests(first.output), first.code);
+        }
+        if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
+        if (tested.code !== 0) {
+          await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
+          return result('tests-failed', tested.output || `Tests exited ${tested.code}.`);
+        }
+        if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
       }
-      if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
-      if (tested.code !== 0) {
-        await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
-        return result('tests-failed', tested.output || `Tests exited ${tested.code}.`);
-      }
-      if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
       progress.testedHead = head;
       await advance('push');
       const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
@@ -186,7 +196,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.pushedHead = head;
       await advance('pr-opened');
       const issueUrl = ticketUrl(project.tracker, number);
-      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\nLocal tests passed: ${project.tests.command}\nHead: ${head}` });
+      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
       const readPipeline = async () => {
@@ -269,7 +279,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.localRemoved = true;
       await save();
     }
-    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `Local tests passed: ${project.tests.command}\nTested head: ${progress.testedHead}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
+    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}\nTested head: ${progress.testedHead}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
     return result('merged');
   } catch (error) {
     if (error instanceof StopRequested) {
