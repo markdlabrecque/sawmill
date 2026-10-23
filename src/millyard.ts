@@ -1,22 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { CliError } from './errors.js';
 
 // A ticket worktree is a linked worktree of the millyard; resolve it back to the
-// main checkout, but only when that checkout is a built millyard.
+// worktree that holds the built millyard. That worktree may itself be a linked
+// one, so ask git for the repository's worktrees rather than assuming the main checkout.
 export function resolveMillyard(cwd: string): string {
   if (existsSync(join(cwd, '.mill/config.yaml'))) return cwd;
-  let gitDir: string, commonDir: string;
   try {
-    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-    gitDir = resolve(cwd, git('rev-parse', '--git-dir'));
-    commonDir = resolve(cwd, git('rev-parse', '--git-common-dir'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (resolve(cwd, git('rev-parse', '--git-dir').trim()) === resolve(cwd, git('rev-parse', '--git-common-dir').trim())) return cwd;
+    const paths = git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
+    return paths.find(path => existsSync(join(path, '.mill/config.yaml'))) ?? cwd;
   } catch { return cwd; }
-  if (gitDir === commonDir || basename(commonDir) !== '.git') return cwd;
-  const root = dirname(commonDir);
-  return existsSync(join(root, '.mill/config.yaml')) ? root : cwd;
 }
 
 export async function checkMillyard(cwd: string, integration: string): Promise<void> {

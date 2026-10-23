@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
@@ -40,6 +40,18 @@ test('mill run status from a ticket worktree shows the millyard run state', asyn
   const status = await inWorktree('run', 'status', '--json');
   assert.equal(status.code, 0, status.stdout);
   assert.deepEqual(JSON.parse(status.stdout), JSON.parse(drafted.stdout));
+});
+
+test('a ticket worktree finds a millyard that lives in another linked worktree', async (t) => {
+  const { yard, worktree, inWorktree } = await fixture(t);
+  const drafted = await yard.cli('run', 'draft', '5', '--json');
+  const moved = join(yard.root, 'moved-yard');
+  yard.git('worktree', 'add', '--detach', moved);
+  await rename(join(yard.cwd, '.mill'), join(moved, '.mill'));
+  const status = await inWorktree('run', 'status', '--json');
+  assert.equal(status.code, 0, status.stdout);
+  assert.deepEqual(JSON.parse(status.stdout), JSON.parse(drafted.stdout));
+  assert.ok(worktree);
 });
 
 test('mill run draft from a worktree drafts in the millyard and leaves the worktree clean', async (t) => {
