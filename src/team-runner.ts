@@ -327,9 +327,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         checkStop(cwd, number);
         guard();
       };
-      /** Each attempt starts from the protected tests: a rejected attempt is reverted in a new commit, never rewritten. */
+      /** Each attempt starts from the protected tests: every rejected change, in any protected file, is reverted in a new commit, never rewritten. */
       const startCorrection = async (correction: TestCorrection) => {
-        const rejected = await changedFiles(path, progress.testCommit!, 'HEAD', ...correction.files);
+        const rejected = await changedFiles(path, progress.testCommit!, 'HEAD', ...progress.testFiles!);
         if (rejected.length) {
           await git(path, '--literal-pathspecs', 'restore', `--source=${progress.testCommit}`, '--staged', '--worktree', '--', ...rejected);
           await git(path, 'commit', '-m', `#${number}: Revert rejected test correction`);
@@ -362,13 +362,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role !== 'reviewer' || !correction.head) return '';
         return `\n\nTest correction to verify (${correction.attempts}/${correctionCap}): check that it fixes only the requested mistake, keeps every requirement covered, and that the implementation still meets the ticket. ` +
           `A green run alone does not make weaker tests acceptable. Pass accepts it as the new protected baseline.\n${request}\n\n${correction.tests ?? ''}\n\n` +
-          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...correction.files)}`;
+          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}`;
       };
       if (resuming === 'integrate') {
         if (await changedTests(path, progress)) {
           const capped = await bounce(tampered, 'protected-tests');
           if (capped) return capped;
-        } else if (progress.correction || !reviewApprovesHead(progress, current().integration, await git(path, 'rev-parse', 'HEAD'))) {
+        } else if (!reviewApprovesHead(progress, current().integration, await git(path, 'rev-parse', 'HEAD'))) {
           invalidateReview(progress);
           resume = progress.next = resuming = 'reviewer';
           await save({});
@@ -385,6 +385,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       if (role === 'implementer' && repairing && !recovery && !progress.question && !progress.stop &&
           progress.repair!.source !== 'rebase-conflict' && await fixedSinceBounce(path, progress.repair!.baseCommit)) role = 'reviewer';
       for (;;) {
+        // A review cannot accept a correction that has no committed attempt yet; the test-writers go first.
+        if (role === 'reviewer' && progress.correction && !progress.correction.head) role = 'test-writers';
         resume = progress.next = role;
         delete progress.approvedHead;
         checkStop(cwd, number);

@@ -99,6 +99,13 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
     const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', outcome, progress, options);
     return { status: 'logjam', ticket: number, ...result, preservation: saved };
   }
+  if (outcome.outcome === 'test-correction') {
+    // A standalone review cannot route a correction; a person decides, with the request in hand.
+    const question = `The standalone reviewer asked for a test correction, which only a team run can send to the test-writers. Answer with \`mill run answer ${number}\` to review again in the team run, or correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`.\n\n` +
+      `Files: ${outcome.files.join(', ')}\nMistake: ${outcome.mistake}\nPreserves: ${outcome.preserves}`;
+    const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', { outcome: 'question', question }, progress, options);
+    return { status: 'logjam', ticket: number, ...result, preservation: saved };
+  }
   if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') {
     progress.reviewedHead = head;
     if (outcome.outcome === 'pass' && committed) progress.approvedHead = head;
