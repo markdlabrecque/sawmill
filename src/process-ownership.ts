@@ -11,7 +11,7 @@ function info(pid: number) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return { pid, active: !['Z', 'X'].includes(fields[0]!), group: Number(fields[2]), session: Number(fields[3]), start: processStart(pid) };
+    return { pid, active: !['Z', 'X'].includes(fields[0]!), parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), start: processStart(pid) };
   } catch (error) { if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return null; throw error; }
 }
 
@@ -35,13 +35,43 @@ export function recordChild(cwd: string, ticket: number, child: OwnedProcess): v
   if (!recordWorker(cwd, ticket, { ...worker, processes: [...worker.processes ?? [], child] })) throw new Error('Lost worker process ownership.');
 }
 
+export type SkippedProcess = { pid: number; command?: string };
+export interface OwnershipOptions {
+  readEnviron?: (pid: number) => Buffer;
+  onSkipped?: (skipped: SkippedProcess[]) => void;
+}
+
+function command(pid: number) {
+  try { return readFileSync(`/proc/${pid}/cmdline`).toString().split('\0').filter(Boolean).join(' ') || undefined; }
+  catch { return undefined; }
+}
+
+function ancestors() {
+  const found = new Set<number>();
+  for (let pid = info(process.pid)?.parent ?? 0; pid > 0 && !found.has(pid); pid = info(pid)?.parent ?? 0) found.add(pid);
+  return found;
+}
+
+function report(skipped: SkippedProcess[]) {
+  if (!skipped.length) return;
+  const short = (text: string) => text.length > 80 ? `${text.slice(0, 77)}...` : text;
+  const named = skipped.slice(0, 5).map(row => row.command ? `${row.pid} (${short(row.command)})` : String(row.pid)).join(', ');
+  console.warn(`Skipped ${skipped.length} unreadable process${skipped.length === 1 ? '' : 'es'} that cannot belong to this worker: ${named}${skipped.length > 5 ? ', ...' : ''}`);
+}
+
 /** Linux process groups cover children which scrub their environment. The token
  * also finds descendants which create a new session, and pre-record spawns.
- * An old group ID cannot be recycled while it still has members. */
-function owned(token: string, groups: OwnedProcess[]) {
+ * An old group ID cannot be recycled while it still has members.
+ *
+ * Non-dumpable same-user processes hide their environ. Such a process is skipped
+ * when it is an ancestor of this process, started before the owner, or sits
+ * outside the owner's recorded groups and sessions; inside them, recovery is
+ * refused. Known limit: a descendant which scrubs its environment, leaves the
+ * recorded groups, and is non-dumpable would be missed. Mill's agents do not. */
+function owned(token: string, groups: OwnedProcess[], readEnviron: (pid: number) => Buffer = pid => readFileSync(`/proc/${pid}/environ`)) {
   const boot = processStart(process.pid)?.split(':')[0];
   const currentBoot = groups.filter(group => group.processStart?.split(':')[0] === boot);
-  if (groups.length && !currentBoot.length && groups.every(group => group.processStart)) return [];
+  if (groups.length && !currentBoot.length && groups.every(group => group.processStart)) return { found: [], skipped: [] };
   const births = currentBoot.flatMap(group => group.processStart ? [Number(group.processStart.split(':').at(-1))] : []);
   const earliest = births.length ? Math.min(...births) : undefined;
   const eligible = new Set(currentBoot.filter(group => {
@@ -49,35 +79,47 @@ function owned(token: string, groups: OwnedProcess[]) {
     return group.group && group.processStart && (!leader || leader.start === group.processStart);
   }).map(group => group.pid));
   const found: { pid: number; start: string | undefined }[] = [];
+  const skipped: (SkippedProcess & { born: number })[] = [];
+  let lineage: Set<number> | undefined;
   for (const entry of readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry), current = info(pid);
     if (!current?.active || pid === process.pid) continue;
-    if (earliest !== undefined && current.start && Number(current.start.split(':').at(-1)) < earliest) continue;
+    const early = earliest !== undefined && current.start !== undefined && Number(current.start.split(':').at(-1)) < earliest;
     let marked = false;
     try {
       if (statSync(`/proc/${pid}`).uid !== process.getuid!()) continue;
-      const environ = readFileSync(`/proc/${pid}/environ`).toString().split('\0');
+      const environ = readEnviron(pid).toString().split('\0');
+      if (early) continue;
       marked = environ.includes(`MILL_WORKER_TOKEN=${token}`) || environ.includes(`${ownerVariable}=${token}`);
     } catch (error) {
-      if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
-      // A same-user unreadable process could contain our token. Refuse recovery.
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (['ENOENT', 'ESRCH'].includes(code)) continue;
+      lineage ??= ancestors();
+      if (code === 'EACCES' && (lineage.has(pid) || early || !(eligible.has(current.group) || eligible.has(current.session)))) {
+        skipped.push({ pid, command: command(pid), born: Number(current.start?.split(':').at(-1) ?? 0) });
+        continue;
+      }
+      // An unreadable process in the owner's recorded groups may be ours. Refuse recovery.
       throw new ProcessOwnershipUnavailable(`Cannot establish process ownership for PID ${pid}: ${String(error)}`, { cause: error });
     }
     if (marked || eligible.has(current.group)) found.push({ pid, start: current.start });
   }
-  return found;
+  // Newest first: long-lived session processes are rarely the ones worth naming.
+  return { found, skipped: skipped.sort((a, b) => b.born - a.born).map(row => ({ pid: row.pid, command: row.command })) };
 }
 
-export function descendantsGone(token: string, groups: OwnedProcess[] = []): boolean {
+export function descendantsGone(token: string, groups: OwnedProcess[] = [], options: OwnershipOptions = {}): boolean {
   if (process.platform !== 'linux') return false;
-  return owned(token, groups).length === 0;
+  const { found, skipped } = owned(token, groups, options.readEnviron);
+  (options.onSkipped ?? report)(skipped);
+  return found.length === 0;
 }
 
 /** Freeze all identified descendants before killing so they cannot continue
  * forking during recovery. Signal individual birth identities, never a reused
  * PID or an unverified process group. Zombies do not hold executable capacity. */
-export async function stopDescendants(token: string, groups: OwnedProcess[] = []): Promise<void> {
+export async function stopDescendants(token: string, groups: OwnedProcess[] = [], options: OwnershipOptions = {}): Promise<void> {
   if (process.platform !== 'linux') throw new Error('Automatic descendant recovery requires Linux /proc ownership evidence.');
   const signal = (child: { pid: number; start?: string }, value: NodeJS.Signals) => {
     if (!child.start || info(child.pid)?.start !== child.start) return;
@@ -85,12 +127,14 @@ export async function stopDescendants(token: string, groups: OwnedProcess[] = []
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
   };
   const deadline = Date.now() + 5000;
+  let reported = false;
   for (;;) {
     try {
-      const children = owned(token, groups);
+      const { found: children, skipped } = owned(token, groups, options.readEnviron);
+      if (!reported) { reported = true; (options.onSkipped ?? report)(skipped); }
       if (!children.length) return;
       for (const child of children) signal(child, 'SIGSTOP');
-      const frozen = owned(token, groups);
+      const { found: frozen } = owned(token, groups, options.readEnviron);
       for (const child of frozen) signal(child, 'SIGKILL');
     } catch (error) {
       if (!(error instanceof ProcessOwnershipUnavailable)) throw error;

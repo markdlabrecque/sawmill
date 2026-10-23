@@ -87,7 +87,13 @@ process.stdin.on('end', async () => {
   const row = status.tickets.find(x => x.number === number);
   fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
   const root = process.env.FIXTURE_DIR;
-  const repair = row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
+  if (fs.existsSync(root + '/peer.py') && !fs.existsSync(root + '/peer-pid')) {
+    const log = fs.openSync(root + '/peer-output', 'a');
+    const peer = cp.spawn('python3', ['-u', root + '/peer.py', root + '/readable-peer', root + '/exit-peer'], {env:{PATH:process.env.PATH}, stdio:['ignore', log, log]});
+    fs.writeFileSync(root + '/peer-pid', String(peer.pid));
+    peer.unref();
+  }
+  const repair =row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
   if (repair && !fs.existsSync('repair.txt')) {
     fs.writeFileSync('repair.txt', 'Committed repair before crash\\n');
     cp.execFileSync('git', ['add', 'repair.txt']);
