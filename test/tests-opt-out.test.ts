@@ -10,7 +10,7 @@ import { millyard } from './helpers.js';
 const testsBlock = /tests:\n  command: .*\n  timeout: 30m\n/;
 
 test('the default config explains how to opt out of tests with the exact line to use', async () => {
-  const template = await readFile(join(import.meta.dirname, '../templates/default.yaml'), 'utf8');
+  const template = await readFile(join(import.meta.dirname, '../../templates/default.yaml'), 'utf8');
   const above = template.slice(0, template.indexOf('\ntests:\n'));
   assert.match(above, /tests: none/);
   assert.match(above, /red check/i);
