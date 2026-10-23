@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
+import { ticketRef } from './links.js';
 import type { Ticket, TicketComment, Pipeline } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
@@ -207,16 +208,26 @@ export function readRun(cwd: string): RunSnapshot {
   } finally { db.close(); }
 }
 
-export function formatRun(snapshot: RunSnapshot): string {
+export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectConfig['tracker']; links?: boolean } = {}): string {
+  const ref = (number: number) => ticketRef(options.tracker ?? snapshot.run.tracker, number, options.links ?? false);
+  // Linked cells replace their plain text only after cleaning and padding, so widths stay visible-width.
+  const linked: (string | undefined)[][] = [[]];
   const rows = snapshot.tickets.map(ticket => {
     let detail = '';
+    let linkedDetail: string | undefined;
     if (ticket.state === 'done') detail = ticket.mergeCommit ?? '';
-    if (ticket.state === 'blocked') detail = ticket.blockers.map(number => `#${number}`).join(', ');
+    if (ticket.state === 'blocked') { detail = ticket.blockers.map(number => `#${number}`).join(', '); linkedDetail = ticket.blockers.map(ref).join(', '); }
     if (ticket.state === 'logjam') detail = ticket.reason ?? '';
     if (ticket.state === 'working') detail = `${ticket.stage ?? 'unknown'}; round ${ticket.bounces + 1}; bounces ${ticket.bounces}; ${ticket.timeInStageSeconds ?? 0}s in stage${ticket.stopRequested ? '; stop requested' : ''}`;
+    linked.push([ref(ticket.number), undefined, undefined, linkedDetail]);
     return [`#${ticket.number}`, ticket.title, ticket.state, detail];
   });
   const table = [['Ticket', 'Title', 'State', 'Detail'], ...rows].map(row => row.map(cell => cell.replace(/[\r\n\t\x1b]/g, ' ')));
   const widths = [0, 1, 2].map(index => Math.max(...table.map(row => row[index]!.length)));
-  return [snapshot.run.loop?.pausedReason, table.map(row => row.map((cell, index) => index < 3 ? cell.padEnd(widths[index]!) : cell).join('  ').trimEnd()).join('\n')].filter(Boolean).join('\n');
+  const render = (cell: string, row: number, index: number) => {
+    const padded = index < 3 ? cell.padEnd(widths[index]!) : cell;
+    const link = linked[row]![index];
+    return link === undefined ? padded : link + padded.slice(cell.length);
+  };
+  return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n')].filter(Boolean).join('\n');
 }
