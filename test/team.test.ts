@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
@@ -2221,4 +2221,78 @@ test('new work after a CLI rebase requires full review and retains the rebased w
   assert.equal(after.team.testCommit, before.team.testCommit);
   assert.equal(after.bounces, 0);
   assert.equal(await readFile(join(y.cwd, 'unreviewed.txt'), 'utf8'), 'Added after rebase.\n');
+});
+
+/** A node:test suite with one named failing test, optionally preceded by a lot of noise. */
+function namedFailureWriter(y: Awaited<ReturnType<typeof fixture>>, noiseLines = 0) {
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), [
+        "const test = require('node:test');", "const assert = require('node:assert/strict');",
+        "test('returns the answer 42', () => {",
+        `  for (let i = 0; i < ${noiseLines}; i++) console.log('noise-' + i + ' ' + 'x'.repeat(70));`,
+        "  assert.equal(require('./answer.cjs')(), 42, 'answer was not 42');", '});', '',
+      ].join('\n'));
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', '#12: Specify answer');
+      return { outcome: { outcome: 'done', summary: 'Wrote one test.' } };
+    }
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+      y.git('-C', request.cwd, 'add', 'answer.cjs'); y.git('-C', request.cwd, 'commit', '-m', '#12: Return answer');
+      return { outcome: { outcome: 'done', summary: 'Done.' } };
+    }
+    return { outcome: { outcome: 'pass', summary: 'Fine.' } };
+  });
+}
+
+function logPath(y: Awaited<ReturnType<typeof fixture>>, handoff: string) {
+  const file = handoff.match(/[^\s"']*tests-\d+\.txt/)?.[0];
+  assert.ok(file, `The handoff names the full test log:\n${handoff}`);
+  return isAbsolute(file) ? file : join(y.cwd, file);
+}
+
+test('the next role starts with Mill\'s own test result: failing test names and messages, and a path to the full output', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: node --test answer.test.cjs'));
+  namedFailureWriter(y);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  const implementer = y.inputs[1]!.handoff;
+  assert.match(implementer, /Latest test run/);
+  assert.match(implementer, /fail/i);
+  assert.match(implementer, /returns the answer 42/);
+  assert.match(implementer, /answer was not 42/);
+  const log = await readFile(logPath(y, implementer), 'utf8');
+  assert.match(log, /returns the answer 42/);
+  const reviewer = y.inputs[2]!.handoff;
+  assert.match(reviewer, /Latest test run/);
+  assert.match(reviewer, /pass/i);
+});
+
+test('a long test run does not change what Mill hands over: the failures stay in the handoff and the full output is in the file', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: node --test answer.test.cjs'));
+  namedFailureWriter(y, 3000);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const implementer = y.inputs[1]!.handoff;
+  assert.match(implementer, /returns the answer 42/);
+  assert.match(implementer, /answer was not 42/);
+  assert.doesNotMatch(implementer, /noise-1500 /, 'The handoff lists failures, not the whole output');
+  const log = await readFile(logPath(y, implementer), 'utf8');
+  assert.match(log, /noise-2999 /);
+  assert.match(log, /returns the answer 42/);
+});
+
+test('a test command that is not found (exit 127) is an environment problem, not a valid red', async t => {
+  const y = await fixture(t);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 0\n');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: mill-no-such-test-runner'));
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.notEqual(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'environment');
+  assert.match(JSON.stringify(row), /not found|127/);
 });
