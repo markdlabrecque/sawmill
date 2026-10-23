@@ -225,7 +225,7 @@ mill run answer 12
 
 If a repair was stuck because the implementer had nothing new to commit, commit the fix yourself in the ticket worktree and answer: the committed fix goes to review.
 
-Agents may not change the test-writers' committed tests. When a protected test was wrong, correct and commit it in the ticket worktree, then approve it and answer:
+Agents may not change the test-writers' committed tests on their own. When the reviewer finds a protected test is wrong, it sends a scoped correction to the test writers and reviews the result again. A passing review makes the correction the new baseline. After two failed attempts, the ticket stops with a question. To correct a protected test yourself, commit the fix in the ticket worktree, then approve it and answer:
 
 ```sh
 mill run approve-tests 12

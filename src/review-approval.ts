@@ -2,7 +2,8 @@ import type { IntegrationProgress, TeamProgress } from './run-store.js';
 
 /** Only an exact reviewed head, or its CLI-owned clean rebase, is approved. */
 export function reviewApprovesHead(team: TeamProgress, integration: IntegrationProgress, head: string): boolean {
-  return Boolean(team.approvedHead && (team.approvedHead === head ||
+  // A pending test correction needs its own fresh review; no earlier approval covers it.
+  return Boolean(!team.correction && team.approvedHead && (team.approvedHead === head ||
     (integration.reviewedHead === team.approvedHead && integration.rebasedHead === head)));
 }
 

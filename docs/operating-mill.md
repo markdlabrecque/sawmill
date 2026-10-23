@@ -31,7 +31,7 @@ To work on a ticket by hand, stop it first with `mill run stop <n>`, then wait f
 
 These stops need a person to decide:
 
-- A test-writers' test is wrong.
+- A test-writers' test is still wrong after two reviewer-requested corrections, or the correction depends on what the ticket means. The reviewer sends a scoped `test-correction` to the test writers on its own. You only see the ticket when that has not worked.
 - Two tickets contradict each other.
 - The work has already shipped.
 - A scope decision: the change needs something the ticket didn't ask for.
@@ -49,7 +49,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 
 | Hand fix | Use instead |
 | --- | --- |
-| Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). |
+| Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). Automatic reviewer-requested corrections (#97) need neither. |
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |

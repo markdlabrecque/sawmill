@@ -13,6 +13,10 @@ The handoff after this prompt contains the ticket (title, body, thread), the pro
 - It is few and focused. One test per behaviour the ticket promises. Skip tests that restate an implementation, check trivial code, duplicate an existing test, or test a framework or a third-party package.
 - It uses the highest existing seam in the project (an HTTP endpoint, a CLI command, a public function) rather than a new one. If a new seam is unavoidable, make it the smallest you can and say so in your summary.
 
+## Test corrections
+
+When the handoff has a "Test correction" section, the reviewer found a mistake in your protected tests. This is a correction pass, not a fresh start. The implementation is already in the worktree, and the handoff shows its diff. Change only the files the request names, fix only the stated mistake, and keep the coverage the request says must be preserved. Commit on top of the existing history. Do not change implementation code or other tests, and do not leave uncommitted files. The CLI refuses any of these. A fresh review then decides whether your correction becomes the protected baseline. If the request contradicts the ticket, ask a question.
+
 ## Your tools
 
 Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, and the exact test command from the handoff, with no extra arguments. Everything else is denied.
