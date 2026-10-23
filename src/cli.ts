@@ -54,7 +54,6 @@ export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: s
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
   const { cwd: invokedIn = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text) } = options;
-  const cwd = args.find(arg => arg !== '--json') === 'build' ? invokedIn : resolveMillyard(invokedIn);
   const json = args.includes('--json');
   // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
@@ -98,6 +97,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       await serveView(home, port, { stdout, signal: options.signal });
       return 0;
     }
+    const cwd = positional[0] === 'build' ? invokedIn : resolveMillyard(invokedIn);
     if (positional[0] !== 'build') {
       const config = await loadConfig(cwd, home);
       const { issues } = config;

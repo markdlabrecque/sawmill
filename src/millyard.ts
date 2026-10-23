@@ -1,20 +1,23 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { CliError } from './errors.js';
 
-// A ticket worktree is a linked worktree of the millyard; resolve it back to the
-// worktree that holds the built millyard. That worktree may itself be a linked
-// one, so ask git for the repository's worktrees rather than assuming the main checkout.
+// The project is the repository and all of its linked worktrees; the millyard is the
+// one worktree that holds .mill/. Find it from any worktree, or any folder inside one.
 export function resolveMillyard(cwd: string): string {
-  if (existsSync(join(cwd, '.mill/config.yaml'))) return cwd;
+  let paths: string[];
   try {
-    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (resolve(cwd, git('rev-parse', '--git-dir').trim()) === resolve(cwd, git('rev-parse', '--git-common-dir').trim())) return cwd;
-    const paths = git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
-    return paths.find(path => existsSync(join(path, '.mill/config.yaml'))) ?? cwd;
+    const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    paths = list.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
   } catch { return cwd; }
+  const yards = paths.filter(path => existsSync(join(path, '.mill/config.yaml')));
+  if (yards.length === 1) return yards[0]!;
+  // With a single worktree, the missing-config report already names the one place checked.
+  if (!yards.length && paths.length === 1) return paths[0]!;
+  if (!yards.length) throw new CliError(`No worktree of this project holds .mill/config.yaml; run mill build first in the worktree that should be the millyard. Checked:\n${paths.map(path => `  ${path}`).join('\n')}`, 2);
+  throw new CliError(`More than one worktree of this project holds .mill/config.yaml, so mill cannot tell which is the millyard:\n${yards.map(path => `  ${path}`).join('\n')}\nKeep .mill/ in the one that should be the millyard and remove it from the others.`, 2);
 }
 
 export async function checkMillyard(cwd: string, integration: string): Promise<void> {
