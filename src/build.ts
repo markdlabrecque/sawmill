@@ -4,6 +4,7 @@ import { appendFile, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile
 import { dirname, join, resolve } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
 import { CliError } from './errors.js';
+import { registerMillyard } from './registry.js';
 
 export const templates = new URL('../../templates/', import.meta.url);
 
@@ -47,6 +48,7 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
     if (!doc.errors.length && isMap(doc.contents)) { doc.set('test_harness', harness); text = doc.toString(); }
   }
   await writeFile(join(cwd, '.mill/config.yaml'), text);
+  await registerMillyard(home, cwd);
   const notes: string[] = [];
   const config = parseDocument(text);
   const ddev = !config.errors.length && isMap(config.contents) && config.get('test_harness') === 'ddev';

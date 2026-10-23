@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { GitHubDraftReader, type GitHubApi, type GitHubIssue, GitHubApiError } from '../src/github.js';
@@ -56,6 +56,19 @@ test('explicit drafting persists membership and ticket context for offline statu
   assert.equal(text.code, 0);
   assert.match(text.stdout, /Ticket\s+Title\s+State\s+Detail/);
   assert.match(text.stdout, /#3\s+Ticket 3\s+queued/);
+});
+
+test('draft registers the project, and listMillyards skips it once its run file is gone', async (t) => {
+  const yard = await configured(t, new FakeTracker([ticket(1)]));
+  assert.equal((await yard.cli('run', 'draft', '1')).code, 0);
+  const entry = join(yard.home, '.local/state/sawmill/millyards', createHash('sha1').update(yard.cwd).digest('hex'));
+  assert.equal((await readFile(entry, 'utf8')).trim(), yard.cwd);
+  // Variable specifier: the module does not exist until the feature is built, and tsc must still compile.
+  const registry = '../src/registry.js';
+  const { listMillyards } = await import(registry) as { listMillyards(home: string): Promise<string[]> };
+  assert.deepEqual(await listMillyards(yard.home), [yard.cwd]);
+  await rm(join(yard.cwd, '.mill/run.sqlite'));
+  assert.deepEqual(await listMillyards(yard.home), []);
 });
 
 test('draft uses native dependencies and orders each ready ticket by number', async (t) => {
