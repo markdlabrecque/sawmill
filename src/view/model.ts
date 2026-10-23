@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parse } from 'yaml';
-import { registeredMillyards } from '../registry.js';
+import { listMillyards } from '../registry.js';
 import { readRun, runPath, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
 
@@ -40,8 +40,8 @@ export function laneOf(ticket: Pick<ViewTicket, 'state' | 'stage' | 'role'>): La
 }
 
 /** The registry covers idle and logjammed runs; slot leases add any running work it misses. */
-export function discoverMillyards(home: string): string[] {
-  const found = new Set(registeredMillyards(home));
+export async function discoverMillyards(home: string): Promise<string[]> {
+  const found = new Set(await listMillyards(home));
   for (const slot of listSlots(home)) if (slot.owner?.millyard) found.add(slot.owner.millyard);
   return [...found].filter(path => existsSync(runPath(path))).sort();
 }
@@ -53,8 +53,8 @@ function projectName(millyard: string): string {
   } catch { return basename(millyard); }
 }
 
-export function readView(home: string): ViewSnapshot {
-  const projects = discoverMillyards(home).map((millyard): ViewProject => {
+export async function readView(home: string): Promise<ViewSnapshot> {
+  const projects = (await discoverMillyards(home)).map((millyard): ViewProject => {
     const name = projectName(millyard);
     try {
       const run = readRun(millyard);

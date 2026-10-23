@@ -89,7 +89,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return 2;
       }
       if (json) {
-        stdout(JSON.stringify(readView(home)) + '\n');
+        stdout(JSON.stringify(await readView(home)) + '\n');
         return 0;
       }
       await serveView(home, port, { stdout, signal: options.signal });

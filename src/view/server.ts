@@ -8,7 +8,7 @@ const fingerprint = (snapshot: ViewSnapshot) => JSON.stringify(snapshot.projects
 
 /** Serves until the signal aborts. Every route is a GET over the latest snapshot; nothing here can change a run. */
 export async function serveView(home: string, port: number, options: { stdout: (text: string) => void; signal?: AbortSignal }): Promise<void> {
-  let snapshot = readView(home);
+  let snapshot = await readView(home);
   let last = fingerprint(snapshot);
   const clients = new Set<ServerResponse>();
   const server = createServer((request, response) => {
@@ -30,9 +30,13 @@ export async function serveView(home: string, port: number, options: { stdout: (
     server.listen(port, '127.0.0.1', () => { server.off('error', reject); resolve(); });
   });
   options.stdout(`Serving the live view at http://127.0.0.1:${(server.address() as AddressInfo).port} (read-only). Press Ctrl-C to stop.\n`);
-  const poll = setInterval(() => {
-    try { snapshot = readView(home); }
+  let polling = false;
+  const poll = setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try { snapshot = await readView(home); }
     catch { return; /* Keep the last snapshot; the next poll tries again. */ }
+    finally { polling = false; }
     const next = fingerprint(snapshot);
     if (next === last) return;
     last = next;
