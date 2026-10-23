@@ -306,6 +306,28 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
   return true;
 }
 
+/** A person moves the protected-tests baseline to a commit they checked. The ticket stays in
+ * logjam; answering it resumes at review. The log keeps who approved which commit, and when. */
+export function approveTestsRow(cwd: string, project: ProjectConfig, number: number, commit: string, by: string) {
+  checkTracker(cwd, project);
+  return transaction(cwd, db => {
+    const ticket = requireTicket(db, number);
+    if (ticket.state !== 'logjam') throw new CliError(`Ticket #${number} is not in logjam; only a stuck ticket's tests can be approved.`);
+    const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
+    const previous = team.testCommit;
+    delete team.repair;
+    delete team.question;
+    delete team.activeRole;
+    team.testCommit = commit;
+    team.next = 'reviewer';
+    // The bounces were spent on the tests the person has now approved.
+    update(db, number, { team, bounces: 0 });
+    const time = new Date().toISOString();
+    db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, time, JSON.stringify({ testsApproved: { by, commit, previous } }));
+    return { commit, previous, by, time };
+  });
+}
+
 /** Every reporter comment starts with this first line; a person's comments never should. */
 export const agentComment = (body: string) => body.startsWith('[sawmill:');
 

@@ -297,6 +297,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       }
       let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : 'test-writers');
       if (resuming === 'integrate') role = 'implementer';
+      // A person committed the fix while the ticket was stuck, then answered it: review that
+      // fix rather than demand another commit. Interrupted roles and saved WIP resume as before.
+      if (role === 'implementer' && repairing && !recovery && !progress.question && !progress.stop &&
+          progress.repair!.source !== 'rebase-conflict' && await fixedSinceBounce(path, progress.repair!.baseCommit)) role = 'reviewer';
       for (;;) {
         resume = progress.next = role;
         delete progress.approvedHead;
@@ -380,9 +384,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           try { await git(path, 'merge-base', '--is-ancestor', progress.checkpointHead ?? progress.testCommit!, 'HEAD'); }
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
-        if (role === 'implementer' && progress.repair && !conflictRepair &&
-            (await git(path, 'rev-parse', 'HEAD^') !== beforeRole || await git(path, 'rev-parse', 'HEAD') === beforeRole)) {
-          throw new Error('Each repair must append one separate fix commit; prior work retained.');
+        if (role === 'implementer' && progress.repair && !conflictRepair) {
+          const head = await git(path, 'rev-parse', 'HEAD');
+          // A fix already committed since the bounce counts; only a repair with nothing new is stuck.
+          const appended = head !== beforeRole && await git(path, 'rev-parse', 'HEAD^') === beforeRole;
+          if (!appended && !(head === beforeRole && await fixedSinceBounce(path, progress.repair.baseCommit))) {
+            throw new Error('Each repair must append one separate fix commit; prior work retained.');
+          }
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
         if (role === 'reviewer') {
@@ -452,6 +460,12 @@ async function checkRebasedWriters(path: string, progress: TeamProgress): Promis
 function integrated(result: IntegrationResult): TeamResult {
   return { outcome: result.outcome === 'merged' ? 'passed' : 'infrastructure', ticket: result.ticket, stage: 'integrate',
     integration: result, mergeCommit: result.mergeCommit, changeRequestUrl: result.changeRequestUrl, ...(result.message ? { error: result.message } : {}) };
+}
+
+/** True when HEAD builds on the repair's bounce point with at least one commit since. */
+async function fixedSinceBounce(path: string, base: string): Promise<boolean> {
+  try { await git(path, 'merge-base', '--is-ancestor', base, 'HEAD'); } catch { return false; }
+  return Number(await git(path, 'rev-list', '--count', `${base}..HEAD`)) > 0;
 }
 
 /** Compare the writer baseline with HEAD, the index, and the working tree. */
