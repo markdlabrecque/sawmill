@@ -402,11 +402,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
         if (role === 'implementer' && progress.repair && !conflictRepair) {
+          // A repair is the commit range since the bounce: any number of appended commits, or a fix
+          // already committed since the bounce. Only rewritten history or a repair with nothing new is stuck.
           const head = await git(path, 'rev-parse', 'HEAD');
-          // A fix already committed since the bounce counts; only a repair with nothing new is stuck.
-          const appended = head !== beforeRole && await git(path, 'rev-parse', 'HEAD^') === beforeRole;
-          if (!appended && !(head === beforeRole && await fixedSinceBounce(path, progress.repair.baseCommit))) {
-            throw new Error('Each repair must append one separate fix commit; prior work retained.');
+          const ancestor = async (commit: string) => git(path, 'merge-base', '--is-ancestor', commit, 'HEAD').then(() => true, () => false);
+          if (!await ancestor(beforeRole) || !await ancestor(progress.repair.baseCommit)) {
+            throw new Error('Repair rewrote prior history: the pre-repair HEAD and the review bounce point must remain ancestors of HEAD; prior work retained.');
+          }
+          if (head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
+            throw new Error('Repair added no new commits since the review bounce; prior work retained.');
           }
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
