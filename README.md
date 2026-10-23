@@ -102,20 +102,21 @@ Drafting also assigns every ticket in the run to you, the user `gh` or `glab` is
 
 `mill run` starts ready tickets, waits for teams, and starts dependents as their blockers finish. It creates and merges PRs or MRs into the configured integration branch when review, local tests, and configured CI pass. Release promotion is a separate step.
 
-In another terminal, from the same millyard:
+`mill run` goes to the background: it returns once the run has started and prints the pid and a log file under `.mill/logs/`; the final result or a crash shows up there. From the same millyard, watch progress and stop a ticket with:
 
 ```sh
 mill run status
 mill team tail 12
+mill run stop 12
 ```
 
-To keep the terminal free, start the run in the background instead:
+To keep the terminal until the run ends, as before, run it in the foreground instead:
 
 ```sh
-mill run --background
+mill run --foreground
 ```
 
-It returns once the run has started and prints the pid and a log file under `.mill/logs/`; the final result or a crash shows up there. Use `mill run status` to watch progress and `mill run stop 12` to stop a ticket. Only one run per millyard can be going, in the foreground or the background.
+Only one run per millyard can be going, in the foreground or the background. `mill run --background` still works and does the same as `mill run`.
 
 ## How it works
 
@@ -154,8 +155,8 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill run draft --label ready-for-agent` | Select issues with one label. |
 | `mill run draft --spec 40` | Select direct children of a spec issue. |
 | `mill run status` | Show queued, blocked, working, done, and logjam tickets. |
-| `mill run` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
-| `mill run --background` | Start `mill run` detached, print its log path, and return. |
+| `mill run` | Start the run detached, print its log path, and return. |
+| `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
 | `mill team review 12` | Review an existing ticket worktree, including handwritten work. |
