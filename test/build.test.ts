@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { parse } from 'yaml';
@@ -25,6 +26,13 @@ test('build bootstraps house defaults and reports settings that need filling in'
   assert.equal(yard.git('check-ignore', '.mill/config.yaml'), '.mill/config.yaml');
 });
 
+
+test('build registers the project in the machine-wide millyard list', async (t) => {
+  const yard = await millyard(t);
+  await yard.cli('build');
+  const entry = join(yard.home, '.local/state/sawmill/millyards', createHash('sha1').update(yard.cwd).digest('hex'));
+  assert.equal((await readFile(entry, 'utf8')).trim(), yard.cwd);
+});
 
 test('build preserves tuned defaults and project config unless force is given', async (t) => {
   const yard = await millyard(t);

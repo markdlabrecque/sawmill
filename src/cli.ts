@@ -221,7 +221,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        await draft(cwd, config.project, parsed.selection, tracker, parsed.replace, Boolean(writer));
+        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer));
         if (writer) await flushAssignments(cwd, config.project, writer, options);
         const snapshot = readRun(cwd);
         emit(snapshot, table(snapshot));
