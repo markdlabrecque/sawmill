@@ -63,6 +63,7 @@ async function fixture(t: TestContext) {
   const normal: Runtime['run'] = async request => {
     if (request.role === 'test-writers') {
       await writeFile(join(request.cwd, 'edge.test.cjs'), EDGE);
+      y.git('-C', request.cwd, 'add', 'edge.test.cjs');
       await commit(request, 'answer.test.cjs', ANSWER, '#12: Specify answer');
       return { outcome: { outcome: 'done', summary: 'answer.test.cjs fails: expected 42, received 0.' } };
     }
