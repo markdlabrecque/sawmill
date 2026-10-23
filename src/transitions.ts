@@ -1,8 +1,8 @@
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
+import { openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, TicketWriter } from './tracker.js';
 
@@ -75,7 +75,7 @@ function checkTracker(cwd: string, project: ProjectConfig): void {
 
 function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
   readRun(cwd); // Refuse absent runs without creating a database.
-  const db = new DatabaseSync(runPath(cwd));
+  const db = openRun(cwd);
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'completion')) db.exec('ALTER TABLE tickets ADD COLUMN completion TEXT');

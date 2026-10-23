@@ -24,10 +24,10 @@ function changes(cwd: string, home: string) {
 
 /** `mill run --foreground`: activates the run and coordinates it in this terminal. It holds
  * the run's loop lock, so the shared scheduler leaves the run to it until it returns. */
-export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, onLocked?: () => void) {
+export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {
   readRun(cwd);
   await recoverWorkers(cwd, home);
-  return withRunLock(cwd, 'loop', () => { onLocked?.(); return runLocked(cwd, project, machine, home, writer); }, true);
+  return withRunLock(cwd, 'loop', () => runLocked(cwd, project, machine, home, writer), true);
 }
 
 /** An answer only makes the ticket eligible. An active run with no foreground coordinator

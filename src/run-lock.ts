@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CliError } from './errors.js';
-import { readRun, runPath } from './run-store.js';
+import { openRun, readRun } from './run-store.js';
 import { processStart } from './slots.js';
 import { processAlive, stopDescendants } from './process-ownership.js';
 
 /** True while a live process holds the named lock. */
 export function lockHeld(cwd: string, name: string): boolean {
   readRun(cwd);
-  const db = new DatabaseSync(runPath(cwd));
+  const db = openRun(cwd);
   try {
     db.exec('PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS resource_locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, owner TEXT NOT NULL)');
     const row = db.prepare('SELECT owner FROM resource_locks WHERE name = ?').get(name);
@@ -23,7 +22,7 @@ export function lockHeld(cwd: string, name: string): boolean {
 export async function withRunLock<T>(cwd: string, name: string, work: () => Promise<T>, wait = false): Promise<T> {
   const token = randomUUID();
   readRun(cwd);
-  const db = new DatabaseSync(runPath(cwd));
+  const db = openRun(cwd);
   db.exec('PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS resource_locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, owner TEXT NOT NULL)');
   const owner = JSON.stringify({ pid: process.pid, processStart: processStart(process.pid), processToken: process.env.MILL_WORKER_TOKEN });
   try {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
@@ -222,14 +223,31 @@ export function readRun(cwd: string): RunSnapshot {
   return readRunFile(runPath(cwd));
 }
 
+const noRunMessage = 'No drafted run; use mill run draft <numbers...>.';
+
+/** Opens the run for writing without ever creating it. SQLite's `mode=rw` refuses a missing
+ * file, so a run deleted after it was read, such as a millyard removed under the scheduler,
+ * is reported instead of recreated empty. Only drafting creates a run. */
+export function openRun(cwd: string): DatabaseSync {
+  const url = pathToFileURL(runPath(cwd));
+  url.searchParams.set('mode', 'rw');
+  try { return new DatabaseSync(url); }
+  catch (error) {
+    // Node before 22.15 takes only string paths; it keeps the earlier check-then-open.
+    if ((error as NodeJS.ErrnoException).code === 'ERR_INVALID_ARG_TYPE') return new DatabaseSync(runPath(cwd));
+    if (!existsSync(runPath(cwd))) throw new CliError(noRunMessage);
+    throw error;
+  }
+}
+
 /** Reads any run file, current or archived, without writing it. */
 export function readRunFile(file: string): RunSnapshot {
-  if (!existsSync(file)) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+  if (!existsSync(file)) throw new CliError(noRunMessage);
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN');
     const run = db.prepare('SELECT * FROM run').get();
-    if (!run) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+    if (!run) throw new CliError(noRunMessage);
     const edges: RunEdge[] = db.prepare('SELECT * FROM edges ORDER BY blocked, blocker').all().map(row => ({ blocked: Number(row.blocked), blocker: Number(row.blocker), outsideClosed: Boolean(row.outside_closed) }));
     const tickets: RunTicket[] = db.prepare('SELECT * FROM tickets ORDER BY position').all().map(row => ({
       number: Number(row.number), title: String(row.title), body: String(row.body), labels: JSON.parse(String(row.labels)) as string[],

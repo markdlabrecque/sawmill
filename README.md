@@ -137,8 +137,6 @@ Compatibility with the older modes:
 
 Before you work around a live run by hand, read [Operating Mill](docs/operating-mill.md). It lists what is safe to do, what to avoid, and which command replaces each hand fix.
 
-Before you work around a live run by hand, read [Operating Mill](docs/operating-mill.md). It lists what is safe to do, what to avoid, and which command replaces each hand fix.
-
 ## How it works
 
 ```text

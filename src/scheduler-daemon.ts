@@ -21,6 +21,8 @@ if (!home) throw new Error('The scheduler requires a home directory.');
 const fallback = 2000;
 /** A project that failed inspection or preflight is retried after this, not on every wake. */
 const backoff = 10000;
+/** Off for filesystems without change events: the fallback scan alone finds every change. */
+const watchFiles = process.env.MILL_SCHEDULER_WATCH !== 'off';
 const say = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
 const token = process.env.MILL_WORKER_TOKEN ?? randomUUID();
 const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString() });
@@ -57,6 +59,7 @@ function changes() {
   const waiting = new Promise<void>(resolve => { wake = resolve; });
   const watchers: FSWatcher[] = [];
   const add = (path: string) => {
+    if (!watchFiles) return;
     try { watchers.push(watch(path, () => wake()).on('error', () => wake())); }
     catch { /* A missing directory is covered by the fallback scan. */ }
   };

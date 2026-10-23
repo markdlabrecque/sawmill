@@ -39,8 +39,6 @@ export interface CliOptions {
   stdout?: (text: string) => void;
   tracker?: TicketReader & Partial<IntegrationTracker>;
   sleep?: (milliseconds: number) => Promise<void>;
-  /** Called once a foreground `mill run` holds the loop lock. */
-  onRunLocked?: () => void;
 }
 
 export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: string): TicketWriter {
@@ -201,7 +199,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
         if (positional.length !== 2) throw new CliError(usage('run'), 2);
-        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd), options.onRunLocked);
+        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, 'reason' in result ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
       }
