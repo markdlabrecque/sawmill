@@ -9,7 +9,7 @@ import { GitHubIntegration } from './github-integration.js';
 import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
-import { build } from './build.js';
+import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import type { TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
@@ -249,10 +249,20 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
-    if (positional.slice(1).some(arg => arg !== '--force')) {
+    const flags = positional.slice(1);
+    if (flags.some(arg => arg !== '--force' && arg !== '--move') || (flags.includes('--force') && flags.includes('--move'))) {
       const message = usage('build');
       emit({ status: 'usage-error', message }, message);
       return 2;
+    }
+    if (flags.includes('--move')) {
+      const moved = await moveMillyard(cwd, home);
+      if (moved.status === 'refused') {
+        emit(moved, moved.message);
+        return 1;
+      }
+      emit(moved, [`Moved the millyard from ${moved.from} to ${moved.to}.`, ...moved.notes].join('\n'));
+      return 0;
     }
     const built = await build(cwd, home, args.includes('--force'));
     if (!built.written) {

@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { constants } from 'node:fs';
-import { appendFile, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { constants, existsSync } from 'node:fs';
+import { appendFile, chmod, copyFile, mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
+import { loadConfig } from './config.js';
 import { CliError } from './errors.js';
 import { registerMillyard } from './registry.js';
+import { readRun, runPath } from './run-store.js';
+import { listSlots } from './slots.js';
 
 export const templates = new URL('../../templates/', import.meta.url);
 
@@ -60,6 +63,53 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
   if (created.length) notes.push(`${created.join(', ')}: created; edit to prepare and clean up each ticket worktree.`);
   if (ddev && !await exists(join(cwd, '.mill/db.sql'))) notes.push('.mill/db.sql: optional database dump; add it to import a database with the default DDEV setup hook.');
   return { written: true, notes };
+}
+
+export type MoveResult =
+  | { status: 'moved'; from: string; to: string; notes: string[] }
+  | { status: 'refused'; message: string };
+
+/** Relocate the project's millyard from another worktree into `cwd`. Every check runs before anything moves. */
+export async function moveMillyard(cwd: string, home: string): Promise<MoveResult> {
+  cwd = resolve(cwd);
+  const refuse = (message: string): MoveResult => ({ status: 'refused', message });
+  if (await exists(join(cwd, '.mill/config.yaml'))) return refuse(`${cwd} is already the millyard; run mill build --move in the worktree you want to move it to.`);
+  if (await exists(join(cwd, '.mill'))) return refuse(`${join(cwd, '.mill')} already exists without a config.yaml; remove it before moving the millyard here.`);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  let root: string;
+  try { root = git('rev-parse', '--show-toplevel').trim(); }
+  catch { throw new CliError('Run mill build --move at the git checkout root of a worktree of the project.', 2); }
+  const here = await realpath(cwd);
+  if (here !== await realpath(root)) throw new CliError('Run mill build --move at the git checkout root of a worktree of the project.', 2);
+  const paths = git('worktree', 'list', '--porcelain').split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
+  let from: string | undefined;
+  for (const path of paths) {
+    if (await exists(join(path, '.mill/config.yaml')) && await realpath(path) !== here) { from = path; break; }
+  }
+  if (!from) return refuse('No millyard found in any worktree of this project; use mill build to create one here.');
+  if (existsSync(runPath(from))) {
+    const unfinished = readRun(from).tickets.filter(ticket => ticket.state !== 'done');
+    if (unfinished.length) return refuse(`A run is in progress in ${from}; finish or close these tickets first: ${unfinished.map(ticket => `#${ticket.number} ${ticket.state}`).join(', ')}.`);
+  }
+  const owner = await realpath(from);
+  const held: number[] = [];
+  for (const { owner: lease } of listSlots(home)) {
+    if (lease?.millyard && await realpath(lease.millyard).catch(() => lease.millyard) === owner) held.push(lease.ticket);
+  }
+  if (held.length) return refuse(`A run is in progress in ${from}; workers still hold machine slots for ${held.map(number => `#${number}`).join(', ')}.`);
+  if ((await stat(join(from, '.mill'))).dev !== (await stat(cwd)).dev) return refuse(`${from} and ${cwd} are on different filesystems; move the millyard by hand.`);
+  await rename(join(from, '.mill'), join(cwd, '.mill'));
+  try { await registerMillyard(home, cwd); }
+  catch (error) { throw new CliError(`Moved the millyard to ${cwd}, but could not list it for the live view: ${(error as Error).message}`); }
+  const config = await loadConfig(cwd, home);
+  const valid = config.valid ? config : undefined;
+  const worktrees = valid?.machine.worktrees;
+  const notes = [`New ticket worktrees will go in ${worktrees ? resolve(cwd, worktrees, valid!.project.name, '<n>') : resolve(dirname(cwd), '<n>')}.`];
+  if (worktrees && !isAbsolute(worktrees)) notes.push(`worktrees: ${worktrees} is a relative path, so it now resolves from ${cwd}.`);
+  if (valid) notes.push(`Check out ${valid.project.integration} here with a clean tree before running mill; git allows a branch in one worktree only, so ${from} must leave it first.`);
+  notes.push(`Log paths already posted to the tracker still point to ${join(from, '.mill/logs')}.`);
+  notes.push('Hooks and files in .mill/ were moved as is; edited ones may still mention the old path.');
+  return { status: 'moved', from, to: cwd, notes };
 }
 
 async function isMarker(cwd: string, marker: string, directory: boolean): Promise<boolean> {
