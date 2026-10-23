@@ -75,7 +75,7 @@ The tracker must let Sawmill push branches, open and merge PRs or MRs, comment o
 
 ### 3. Prepare new worktrees
 
-Worktrees contain tracked project files, so install their dependencies in a setup hook. For this Node example, create `.mill/setup.sh`:
+Worktrees contain tracked project files, so install their dependencies in a setup hook. `mill build` creates `.mill/setup.sh` doing nothing yet; for this Node example, edit it to:
 
 ```sh
 #!/usr/bin/env bash
@@ -211,9 +211,27 @@ mill run close 12
 
 Machine defaults are two concurrent tickets across all millyards, three infrastructure retries, a pause threshold of three consecutive infrastructure results, and a 30-second CI polling interval. A success from a live team clears a pause. If no team remains, the loop exits visibly; a fresh `mill run` retries queued work.
 
-Hooks run from the millyard's `.mill/` directory. They receive the worktree path and ticket number as `$1` and `$2`, plus `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, and `MILL_MILLYARD`. A missing hook is a no-op. Failed setup prevents role execution; failed teardown retains the worktree for recovery.
-
 `mill build` preserves existing house settings and hooks. `mill build --force` regenerates project config from house defaults, replacing local config edits. See the annotated [project defaults](templates/default.yaml) and [machine settings](templates/config.yaml) for every supported key.
+
+### Hooks
+
+Every `mill build` creates two scripts in the millyard, unless they already exist. Edited scripts are never overwritten, even with `--force`.
+
+- `.mill/setup.sh` runs after a ticket's worktree is created, before any role starts. Install dependencies or start services here.
+- `.mill/teardown.sh` runs before a worktree is removed. Stop whatever setup started.
+
+DDEV projects get working DDEV scripts. Every other project gets scripts that do nothing yet and explain themselves in comments. They are copied from `~/.config/sawmill/setup.sh` and `teardown.sh` (or `ddev.setup.sh` and `ddev.teardown.sh`), so edit those to change the default for every new millyard.
+
+Hooks run with Bash from the millyard's `.mill/` directory. They receive the worktree path and ticket number as `$1` and `$2`, plus `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, and `MILL_MILLYARD`. A missing hook is a no-op. A failed setup removes the worktree and puts the ticket in `logjam` with reason `environment`, so no role runs; a failed teardown keeps the worktree for recovery.
+
+For a Node project, `.mill/setup.sh` might be:
+
+```sh
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$MILL_WORKTREE"
+npm ci
+```
 
 ### Browser testing and runtimes
 
