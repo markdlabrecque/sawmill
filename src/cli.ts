@@ -24,6 +24,8 @@ import { formatRun, readRun, type MirrorWrite, type RunSnapshot } from './run-st
 import { ticketRef } from './links.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 import { resolveMillyard } from './millyard.js';
+import { readView } from './view/model.js';
+import { serveView } from './view/server.js';
 
 export interface CliOptions {
   runtime?: Runtime;
@@ -76,6 +78,22 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       const message = positional.length ? unknownCommand(positional) : shortHelp();
       emit({ status: 'usage-error', message }, message);
       return 2;
+    }
+    if (positional[0] === 'view') {
+      // Not tied to a millyard: it reads every registered run and needs no config.
+      const flags = positional.slice(1);
+      const port = !flags.length ? 4444 : flags.length === 2 && flags[0] === '--port' && /^\d{1,5}$/.test(flags[1]!) && Number(flags[1]) <= 65535 ? Number(flags[1]) : undefined;
+      if (port === undefined) {
+        const message = usage('view');
+        emit({ status: 'usage-error', message }, message);
+        return 2;
+      }
+      if (json) {
+        stdout(JSON.stringify(await readView(home)) + '\n');
+        return 0;
+      }
+      await serveView(home, port, { stdout, signal: options.signal });
+      return 0;
     }
     if (positional[0] !== 'build') {
       const config = await loadConfig(cwd, home);
