@@ -583,15 +583,25 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   if (progress.testCommit) progress.testCommit = copies.get(progress.testCommit)!;
 }
 
-/** True when every protected line in `copy` comes from `original` or from the base it was replayed
- * onto, and every line `original` added is still there. */
+/** True when, counting each occurrence, every protected file in `copy` keeps the lines of the base
+ * it was replayed onto (less those `original` removed) plus the lines `original` added, and holds
+ * nothing beyond those. A resolution that drops a base or pre-existing line is not explained. */
 async function baseExplains(path: string, original: string, copy: string, files: string[]): Promise<boolean> {
-  const lines = async (commit: string, file: string) => new Set((await execute('git', ['cat-file', 'blob', `${commit}:${file}`], { cwd: path, maxBuffer: 64 * 1024 * 1024 })
-    .then(result => result.stdout, () => '')).split('\n'));
+  const lines = async (commit: string, file: string) => {
+    const counts = new Map<string, number>();
+    for (const line of (await execute('git', ['cat-file', 'blob', `${commit}:${file}`], { cwd: path, maxBuffer: 64 * 1024 * 1024 })
+      .then(result => result.stdout, () => '')).split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+    return counts;
+  };
   for (const file of files) {
     const [before, after, base, merged] = await Promise.all([lines(`${original}^`, file), lines(original, file), lines(`${copy}^`, file), lines(copy, file)]);
-    for (const line of merged) if (!after.has(line) && !base.has(line)) return false;
-    for (const line of after) if (!before.has(line) && !merged.has(line)) return false;
+    const count = (counts: Map<string, number>, line: string) => counts.get(line) ?? 0;
+    for (const line of new Set([...before.keys(), ...after.keys(), ...base.keys(), ...merged.keys()])) {
+      const added = Math.max(0, count(after, line) - count(before, line));
+      const removed = Math.max(0, count(before, line) - count(after, line));
+      const kept = Math.max(0, count(base, line) - removed) + added;
+      if (count(merged, line) < kept || count(merged, line) > count(base, line) + added) return false;
+    }
   }
   return true;
 }
