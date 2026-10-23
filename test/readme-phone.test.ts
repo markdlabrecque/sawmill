@@ -27,8 +27,9 @@ test('README phone section says what the page exposes and that it is tailnet-onl
   assert.match(section, /tokens?/i);
 });
 
-test('README phone section explains keeping mill view running with systemd-run', async () => {
+test('README phone section explains keeping mill board running with systemd-run', async () => {
   const section = await phoneSection();
-  assert.match(section, /systemd-run --user[^\n]*mill view/);
+  assert.match(section, /systemd-run --user[^\n]*mill board/);
+  assert.doesNotMatch(section, /mill[ -]view/);
   assert.match(section, /persist/i);
 });

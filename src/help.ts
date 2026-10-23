@@ -7,8 +7,8 @@ export interface Command {
 }
 
 export const commands: Command[] = [
-  { name: 'build', usage: 'mill build [--force] [--json]', summary: 'Create or refresh .mill/config.yaml from house defaults; --force overwrites it.' },
-  { name: 'run', usage: 'mill run [--background] [--json]', summary: 'Dispatch the drafted run and wait until it finishes, has no runnable work, or pauses; --background detaches it and returns.' },
+  { name: 'build', usage: 'mill build [--force | --move] [--json]', summary: 'Create or refresh .mill/config.yaml from house defaults; --force overwrites it; --move moves the millyard here from another worktree of the project.' },
+  { name: 'run', usage: 'mill run [--foreground] [--json]', summary: 'Dispatch the drafted run in the background and return; --foreground waits until it finishes, has no runnable work, or pauses.' },
   { name: 'run draft', usage: 'mill run draft (<numbers...> | --label <label> | --spec <number>) [--replace] [--json]', summary: 'Select tickets for the run; --replace discards the saved run.' },
   { name: 'run status', usage: 'mill run status [--json]', summary: 'Show queued, blocked, working, done, and logjam tickets.' },
   { name: 'run once', usage: 'mill run once [--json]', summary: 'Dispatch one pass and return; detached workers continue.' },
@@ -24,7 +24,7 @@ export const commands: Command[] = [
   { name: 'worktree gc', usage: 'mill worktree gc [--json]', summary: 'Clean up worktrees for locally done tickets.' },
   { name: 'tickets comment', usage: 'mill tickets comment <n> <text> [--stage <stage>] [--json]', summary: 'Comment on a ticket in the run; --stage records a stage report.' },
   { name: 'tickets label', usage: 'mill tickets label <n> <label> [--remove] [--json]', summary: 'Add or, with --remove, remove a label on a ticket in the run.' },
-  { name: 'view', usage: 'mill view [--port <n>] [--json]', summary: 'Serve a live, read-only page of every run on this machine; --json prints one snapshot.' },
+  { name: 'board', usage: 'mill board [--port <n>] [--json]', summary: 'Serve a live, read-only page of every run on this machine; --json prints one snapshot.' },
 ];
 
 const options = [

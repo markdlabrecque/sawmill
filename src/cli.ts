@@ -9,7 +9,7 @@ import { GitHubIntegration } from './github-integration.js';
 import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
-import { build } from './build.js';
+import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import type { TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
@@ -79,12 +79,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
-    if (positional[0] === 'view') {
+    if (positional[0] === 'board') {
       // Not tied to a millyard: it reads every registered run and needs no config.
       const flags = positional.slice(1);
       const port = !flags.length ? 4444 : flags.length === 2 && flags[0] === '--port' && /^\d{1,5}$/.test(flags[1]!) && Number(flags[1]) <= 65535 ? Number(flags[1]) : undefined;
       if (port === undefined) {
-        const message = usage('view');
+        const message = usage('board');
         emit({ status: 'usage-error', message }, message);
         return 2;
       }
@@ -168,13 +168,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit(snapshot, table(snapshot));
         return 0;
       }
-      if (positional[0] === 'run' && positional.length === 1) {
+      if (positional[0] === 'run' && positional[1] === '--foreground') {
+        if (positional.length !== 2) throw new CliError(usage('run'), 2);
         const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd), options.onRunLocked);
         emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
       }
-      if (positional[0] === 'run' && positional[1] === '--background') {
-        if (positional.length !== 2) throw new CliError(usage('run'), 2);
+      // --background is kept as an alias for the default so #43 scripts keep working.
+      if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
+        if (positional.length > 2) throw new CliError(usage('run'), 2);
         const started = await startBackgroundRun(cwd, home);
         emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
           "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));
@@ -249,10 +251,20 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
-    if (positional.slice(1).some(arg => arg !== '--force')) {
+    const flags = positional.slice(1);
+    if (flags.some(arg => arg !== '--force' && arg !== '--move') || (flags.includes('--force') && flags.includes('--move'))) {
       const message = usage('build');
       emit({ status: 'usage-error', message }, message);
       return 2;
+    }
+    if (flags.includes('--move')) {
+      const moved = await moveMillyard(cwd, home);
+      if (moved.status === 'refused') {
+        emit(moved, moved.message);
+        return 1;
+      }
+      emit(moved, [`Moved the millyard from ${moved.from} to ${moved.to}.`, ...moved.notes].join('\n'));
+      return 0;
     }
     const built = await build(cwd, home, args.includes('--force'));
     if (!built.written) {

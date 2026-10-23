@@ -8,7 +8,7 @@ import { runCli } from '../src/cli.js';
 const commands = [
   'build', 'run', 'run draft', 'run status', 'run once', 'run stop', 'run close', 'run answer',
   'team tail', 'team review', 'team run', 'integrate', 'worktree create', 'worktree gc',
-  'tickets comment', 'tickets label',
+  'tickets comment', 'tickets label', 'board',
 ];
 
 async function folder(config?: string) {
@@ -49,6 +49,11 @@ test('each command answers --help with its own usage, without running it', async
   const built = await mill(['build', '--help'], where);
   assert.match(built.out, /--force/);
   await assert.rejects(access(join(where.root, '.mill', 'config.yaml')));
+});
+
+test('mill --help no longer lists view', async () => {
+  const result = await mill(['--help'], await folder());
+  assert.doesNotMatch(result.out, /mill view/);
 });
 
 test('a bare mill and an unknown command point to mill --help and exit 2', async () => {

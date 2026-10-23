@@ -5,7 +5,7 @@ import { runCli } from './cli.js';
 const args = process.argv.slice(2);
 const controller = new AbortController();
 const interrupt = () => controller.abort();
-const roleCommand = (args[0] === 'team' && ['review', 'tail'].includes(args[1] ?? '')) || args[0] === 'view';
+const roleCommand = (args[0] === 'team' && ['review', 'tail'].includes(args[1] ?? '')) || args[0] === 'board';
 if (roleCommand) {
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);

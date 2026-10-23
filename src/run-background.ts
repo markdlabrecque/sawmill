@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CliError } from './errors.js';
 
-/** Starts `mill run` detached with output in a log, returning once the child holds the loop lock. */
+/** Starts `mill run --foreground` detached with output in a log, returning once the child holds the loop lock. */
 export function startBackgroundRun(cwd: string, home: string): Promise<{ pid: number; log: string }> {
   const directory = join(cwd, '.mill/logs');
   mkdirSync(directory, { recursive: true });
@@ -13,7 +13,7 @@ export function startBackgroundRun(cwd: string, home: string): Promise<{ pid: nu
   const fd = openSync(log, 'ax');
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(process.execPath, [fileURLToPath(new URL('./bin.js', import.meta.url)), 'run'], {
+    child = spawn(process.execPath, [fileURLToPath(new URL('./bin.js', import.meta.url)), 'run', '--foreground'], {
       cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }

@@ -39,7 +39,7 @@ const entryName = (path: string) => createHash('sha1').update(path).digest('hex'
 
 async function view(home: string, cwd: string, ...args: string[]) {
   let stdout = '';
-  const code = await runCli(['view', ...args], { tracker, cwd, home, stdout: (text) => { stdout += text; } });
+  const code = await runCli(['board', ...args], { tracker, cwd, home, stdout: (text) => { stdout += text; } });
   return { code, stdout };
 }
 
@@ -53,7 +53,7 @@ test('mill build and mill run draft record the millyard path in the machine-wide
   assert.deepEqual(await readdir(registryDir(yard.home)), [entryName(yard.cwd)]);
 });
 
-test('mill view --json lists every registered project with its tickets and lanes, and skips one with no run file', async (t) => {
+test('mill board --json lists every registered project with its tickets and lanes, and skips one with no run file', async (t) => {
   const a = await built(t, 'alpha');
   const b = await built(t, 'beta');
   assert.equal((await a.cli('run', 'draft', '1', '2', '--json')).code, 0);
@@ -80,7 +80,15 @@ test('mill view --json lists every registered project with its tickets and lanes
   assert.deepEqual(after.projects.map((project: { name: string }) => project.name), ['alpha']);
 });
 
-test('mill view --json never changes a run file, and a bad flag exits 2', async (t) => {
+test('mill view is gone: it is an unknown command with no alias', async (t) => {
+  const yard = await built(t, 'alpha');
+  let stdout = '';
+  const code = await runCli(['view', '--json'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; } });
+  assert.equal(code, 2);
+  assert.match(stdout, /Unknown command 'view'/);
+});
+
+test('mill board --json never changes a run file, and a bad flag exits 2', async (t) => {
   const yard = await built(t, 'alpha');
   assert.equal((await yard.cli('run', 'draft', '1', '--json')).code, 0);
   const file = join(yard.cwd, '.mill/run.sqlite');

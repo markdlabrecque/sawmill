@@ -102,20 +102,21 @@ Drafting also assigns every ticket in the run to you, the user `gh` or `glab` is
 
 `mill run` starts ready tickets, waits for teams, and starts dependents as their blockers finish. It creates and merges PRs or MRs into the configured integration branch when review, local tests, and configured CI pass. Release promotion is a separate step.
 
-In another terminal, from the same millyard:
+`mill run` goes to the background: it returns once the run has started and prints the pid and a log file under `.mill/logs/`; the final result or a crash shows up there. From the same millyard, watch progress and stop a ticket with:
 
 ```sh
 mill run status
 mill team tail 12
+mill run stop 12
 ```
 
-To keep the terminal free, start the run in the background instead:
+To keep the terminal until the run ends, as before, run it in the foreground instead:
 
 ```sh
-mill run --background
+mill run --foreground
 ```
 
-It returns once the run has started and prints the pid and a log file under `.mill/logs/`; the final result or a crash shows up there. Use `mill run status` to watch progress and `mill run stop 12` to stop a ticket. Only one run per millyard can be going, in the foreground or the background.
+Only one run per millyard can be going, in the foreground or the background. `mill run --background` still works and does the same as `mill run`.
 
 ## How it works
 
@@ -154,8 +155,8 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill run draft --label ready-for-agent` | Select issues with one label. |
 | `mill run draft --spec 40` | Select direct children of a spec issue. |
 | `mill run status` | Show queued, blocked, working, done, and logjam tickets. |
-| `mill run` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
-| `mill run --background` | Start `mill run` detached, print its log path, and return. |
+| `mill run` | Start the run detached, print its log path, and return. |
+| `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
 | `mill team review 12` | Review an existing ticket worktree, including handwritten work. |
@@ -165,17 +166,19 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill worktree create 12` | Create or reuse a ticket worktree and run setup when needed. |
 | `mill worktree remove 12` | Run teardown and remove a clean worktree, retaining unmerged branches. |
 | `mill worktree gc` | Clean up worktrees for locally done tickets. |
-| `mill view` | Serve a live, read-only page of every run on this machine. |
+| `mill board` | Serve a live, read-only page of every run on this machine. |
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
 Commands other than `mill build` also work from inside a ticket worktree: they find the millyard and use its settings and run state. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
-One millyard holds one run. `--replace` on `run draft` discards the saved run, including pending tracker writes. Finish or stop its active teams before replacing it.
+One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite`, where the board's Archive Section finds it. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
 
 ### Watching every run
 
-`mill view` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+
+The Active Section at the top shows each project's current, unfinished run. When every ticket in a run is done, the run moves to the Archive Section at the bottom, which is collapsed until you open it. It groups every finished or replaced run by project, newest first. The search box at its top narrows projects by name, and missing letters still match. The magnifying glass on each archived project opens a box that narrows its tickets by number (`12` or `#12`) or by part of a title.
 
 #### Watch every run from your phone
 
@@ -193,13 +196,13 @@ tailscale serve --https=4444 off
 
 The page is tailnet-only and read-only. It exposes ticket numbers, titles, states, stages, roles, counts, and millyard paths. It does not expose tracker config, tokens, ticket bodies, comments, or logs.
 
-Serve configuration persists across reboots; `mill view` does not, and it never runs `tailscale serve` itself. To keep `mill view` running after you close the terminal, start it as a user service:
+Serve configuration persists across reboots; `mill board` does not, and it never runs `tailscale serve` itself. To keep `mill board` running after you close the terminal, start it as a user service:
 
 ```sh
-systemd-run --user --unit=mill-view mill view
+systemd-run --user --unit=mill-board mill board
 ```
 
-`systemctl --user stop mill-view` stops it.
+`systemctl --user stop mill-board` stops it.
 
 ### Questions, outages, and stopping
 
