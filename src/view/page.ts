@@ -33,6 +33,8 @@ h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var
 .run{padding:8px 0 6px;border-top:1px solid var(--line)}.run .rh{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
 .ar{display:flex;gap:8px;align-items:baseline;font-size:14px;padding:3px 0;min-width:0}.ar .n{color:var(--dim);font-variant-numeric:tabular-nums}.ar .ti{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.ar .st{font-size:12px;color:var(--dim);white-space:nowrap}
 .none{color:var(--dim);font-size:13px;padding:4px 0 10px}
+a.tl{display:flex;gap:8px;align-items:baseline;min-width:0;color:inherit;text-decoration:none;border-radius:4px}.ar a.tl{flex:1}a.tl[href]{cursor:pointer}a.tl[href] .ti{text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}a.tl[href]:hover .ti{text-decoration-color:currentColor}
+a.tl:focus-visible{outline:2px solid var(--work);outline-offset:2px}
 </style></head><body>
 <h1><span class="live" id="live"></span><span id="sum">connecting</span><span class="at" id="at"></span></h1>
 <section aria-labelledby="act"><h2 class="sec" id="act">Active Section</h2>
@@ -57,9 +59,9 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
     card.querySelector('.path').textContent=p.millyard;card.querySelector('.err').textContent=p.error||'';
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
-      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><span class="n"></span><span class="ti"></span><span class="bb"></span></div><div class="d"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>';ts.appendChild(row);rows.set(key,row)}
+      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>';ts.appendChild(row);rows.set(key,row)}
       seen.add(key);const index=LANES.indexOf(t.lane);
-      row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;
+      row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
       row.querySelector('.bb').innerHTML=(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
       row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';
       if(prevBounces.has(key)&&prevBounces.get(key)<t.bounces){row.classList.add('bounce');setTimeout(()=>row.classList.remove('bounce'),600)}prevBounces.set(key,t.bounces)}}
@@ -70,6 +72,11 @@ const arc=document.getElementById('arc'),aq=document.getElementById('aq'),alist=
 const acards=new Map(),glass=new Map();
 const fold=s=>String(s).toLocaleLowerCase();
 function el(tag,cls,text){const e=document.createElement(tag);e.className=cls;if(text!=null)e.textContent=text;return e}
+/** Only an absolute http(s) URL becomes an href; anything else leaves a plain, unfocusable anchor. */
+function safeUrl(u){if(typeof u!=='string')return null;try{const url=new URL(u);return url.protocol==='https:'||url.protocol==='http:'?url.href:null}catch{return null}}
+function link(a,t){const url=safeUrl(t.url);
+  if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.setAttribute('aria-label','#'+t.number+' '+t.title+' (opens tracker issue in a new tab)')}
+  else{a.removeAttribute('href');a.removeAttribute('target');a.removeAttribute('rel');a.removeAttribute('aria-label')}}
 /** Loose project match: the query's letters appear in order in the name, so missing letters still match. */
 function loose(q,name){const want=[...fold(q).trim()];let i=0;for(const ch of fold(name))if(i<want.length&&want[i]===ch)i++;return i===want.length}
 function ticketMatch(q,t){q=fold(q).trim();if(!q)return true;return String(t.number)===(q.charAt(0)==='#'?q.slice(1):q)||fold(t.title).includes(q)}
@@ -86,7 +93,7 @@ function renderArchive(){const seen=new Set(),archive=view.archive||[];
     card.querySelector('.runs').replaceChildren(...a.runs.map(r=>{const run=el('div','run');
       run.append(el('div','rh',(r.created?new Date(r.created).toLocaleString():'run '+r.runId)+' · '+r.tickets.length+' ticket'+(r.tickets.length===1?'':'s')));
       if(r.error)run.append(el('div','err',r.error));
-      for(const t of r.tickets){const row=el('div','ar'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;row.append(el('span','n','#'+t.number),ti,el('span','st',t.state));run.append(row)}
+      for(const t of r.tickets){const row=el('div','ar'),a=el('a','tl'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;a.append(el('span','n','#'+t.number),ti);link(a,t);row.append(a,el('span','st',t.state));run.append(row)}
       return run}));
     filterTickets(card,key)});
   for(const [key,card] of acards)if(!seen.has(key)){card.remove();acards.delete(key);glass.delete(key)}

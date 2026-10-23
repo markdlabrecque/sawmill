@@ -2,6 +2,8 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parse } from 'yaml';
+import { validTracker, type ProjectConfig } from '../config.js';
+import { ticketUrl } from '../links.js';
 import { listMillyards } from '../registry.js';
 import { historyPath, readRun, readRunFile, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
@@ -12,6 +14,8 @@ export type Lane = typeof lanes[number];
 export interface ViewTicket {
   number: number;
   title: string;
+  /** The ticket's tracker issue page; null when the project's tracker settings are missing or invalid. */
+  url: string | null;
   state: RunTicket['state'];
   stage: string | null;
   role: string | null;
@@ -50,17 +54,28 @@ export async function discoverMillyards(home: string): Promise<string[]> {
   return [...found].filter(path => existsSync(runPath(path))).sort();
 }
 
-function projectName(millyard: string): string {
+/** The project name and its tracker settings; the tracker stays server-side and only derived issue URLs reach the page. */
+function projectSettings(millyard: string): { name: string; tracker: ProjectConfig['tracker'] | null } {
   try {
-    const name = (parse(readFileSync(join(millyard, '.mill/config.yaml'), 'utf8')) as { name?: unknown } | null)?.name;
-    return typeof name === 'string' && name ? name : basename(millyard);
-  } catch { return basename(millyard); }
+    const config = parse(readFileSync(join(millyard, '.mill/config.yaml'), 'utf8')) as { name?: unknown; tracker?: unknown } | null;
+    const name = config?.name;
+    return { name: typeof name === 'string' && name ? name : basename(millyard), tracker: validTracker(config?.tracker) };
+  } catch { return { name: basename(millyard), tracker: null }; }
 }
 
-function viewTickets(run: RunSnapshot): ViewTicket[] {
+/** The issue's web page, or null when the tracker settings cannot produce an http(s) URL. */
+function issueUrl(tracker: ProjectConfig['tracker'] | null, number: number): string | null {
+  if (!tracker) return null;
+  try {
+    const url = new URL(ticketUrl(tracker, number));
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch { return null; }
+}
+
+function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null): ViewTicket[] {
   return run.tickets.map((ticket): ViewTicket => {
     const row = {
-      number: ticket.number, title: ticket.title, state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
+      number: ticket.number, title: ticket.title, url: issueUrl(tracker, ticket.number), state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
     };
     return { ...row, lane: laneOf(row) };
@@ -73,13 +88,13 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 const complete = (tickets: ViewTicket[]) => tickets.length > 0 && tickets.every(ticket => ticket.state === 'done');
 
 /** Saved runs from `.mill/history`, read-only; an unreadable file keeps its error rather than vanishing. */
-function historyRuns(millyard: string): ViewRun[] {
+function historyRuns(millyard: string, tracker: ProjectConfig['tracker'] | null): ViewRun[] {
   let files: string[];
   try { files = readdirSync(historyPath(millyard)).filter(file => file.endsWith('.sqlite')); } catch { return []; }
   return files.map((file): ViewRun => {
     try {
       const run = readRunFile(join(historyPath(millyard), file));
-      return { runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run) };
+      return { runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run, tracker) };
     } catch (error) {
       return { runId: file.slice(0, -'.sqlite'.length), created: null, error: message(error), tickets: [] };
     }
@@ -90,18 +105,18 @@ export async function readView(home: string): Promise<ViewSnapshot> {
   const projects: ViewProject[] = [];
   const archive: ViewArchive[] = [];
   for (const millyard of await discoverMillyards(home)) {
-    const name = projectName(millyard);
+    const { name, tracker } = projectSettings(millyard);
     const runs: ViewRun[] = [];
     try {
       const run = readRun(millyard);
-      const tickets = viewTickets(run);
+      const tickets = viewTickets(run, tracker);
       if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets });
       else projects.push({ name, millyard, runId: run.run.id, error: null, tickets });
     } catch (error) {
       projects.push({ name, millyard, runId: null, error: message(error), tickets: [] });
     }
     // A run seen as both the current file and a saved copy appears once.
-    for (const run of historyRuns(millyard)) if (!runs.some(seen => seen.runId === run.runId)) runs.push(run);
+    for (const run of historyRuns(millyard, tracker)) if (!runs.some(seen => seen.runId === run.runId)) runs.push(run);
     runs.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
     if (runs.length) archive.push({ name, millyard, runs });
   }
