@@ -79,7 +79,7 @@ function owned(token: string, groups: OwnedProcess[], readEnviron: (pid: number)
     return group.group && group.processStart && (!leader || leader.start === group.processStart);
   }).map(group => group.pid));
   const found: { pid: number; start: string | undefined }[] = [];
-  const skipped: SkippedProcess[] = [];
+  const skipped: (SkippedProcess & { born: number })[] = [];
   let lineage: Set<number> | undefined;
   for (const entry of readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
@@ -97,7 +97,7 @@ function owned(token: string, groups: OwnedProcess[], readEnviron: (pid: number)
       if (['ENOENT', 'ESRCH'].includes(code)) continue;
       lineage ??= ancestors();
       if (code === 'EACCES' && (lineage.has(pid) || early || !(eligible.has(current.group) || eligible.has(current.session)))) {
-        skipped.push({ pid, command: command(pid) });
+        skipped.push({ pid, command: command(pid), born: Number(current.start?.split(':').at(-1) ?? 0) });
         continue;
       }
       // An unreadable process in the owner's recorded groups may be ours. Refuse recovery.
@@ -105,7 +105,8 @@ function owned(token: string, groups: OwnedProcess[], readEnviron: (pid: number)
     }
     if (marked || eligible.has(current.group)) found.push({ pid, start: current.start });
   }
-  return { found, skipped };
+  // Newest first: long-lived session processes are rarely the ones worth naming.
+  return { found, skipped: skipped.sort((a, b) => b.born - a.born).map(row => ({ pid: row.pid, command: row.command })) };
 }
 
 export function descendantsGone(token: string, groups: OwnedProcess[] = [], options: OwnershipOptions = {}): boolean {
