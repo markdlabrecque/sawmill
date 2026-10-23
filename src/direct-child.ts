@@ -14,12 +14,21 @@ interface ChildOptions {
   stderrLine?(line: string, stop: Stop): void;
 }
 
+/** Agents' own test runs must see what a plain `npm test` sees. With the worker token,
+ * nested `mill` processes in tests adopt it (bin.ts `??=`), and recovering their
+ * stale locks then kills every token-marked process, including sibling tests.
+ * The recorded process group still owns the child. Hook variables describe the
+ * coordinator's ticket; tests that build their own millyards must not see them. */
+export const workerVariables = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+
 /** Spawn the vendor itself. Settle only after its pipes and process group close. */
 export function directChild(request: RuntimeRequest, sink: RuntimeSink, options: ChildOptions): Promise<{
   code: number | null; signal: NodeJS.Signals | null; stderr: string; failure?: string;
 }> {
+  const env = { ...options.env };
+  for (const name of workerVariables) delete env[name];
   return new Promise(resolve => {
-    const child = spawn(options.executable, options.args, { cwd: request.cwd, env: options.env,
+    const child = spawn(options.executable, options.args, { cwd: request.cwd, env,
       detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let failure: string | undefined, cleanup: Promise<void> | undefined, stderr = '';
     const terminate = () => {

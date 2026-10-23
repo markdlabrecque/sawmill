@@ -1,4 +1,5 @@
 import { removeWorktree } from './worktrees.js';
+import { workerVariables } from './direct-child.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -30,18 +31,12 @@ export interface IntegrationResult {
   changeRequestUrl?: string;
 }
 
-/** The final run must see what a plain `npm test` sees. With the worker token,
- * nested `mill` processes in tests adopt it (bin.ts `??=`), and recovering their
- * stale locks then kills every token-marked process, including sibling tests.
- * The recorded process group still owns the run. Hook variables describe the
- * coordinator's ticket; tests that build their own millyards must not see them. */
-const workerVariables = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
-
 /** A timeout kills the whole test process group, including shell grandchildren. */
 export async function tests(cwd: string, project: ProjectConfig, home?: string, childStarted?: (pid: number) => void): Promise<{ code: number | null; timedOut: boolean; output: string }> {
   const duration = project.tests.timeout;
   const ms = Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
   const env: NodeJS.ProcessEnv = { ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}) };
+  // The final run must see what a plain `npm test` sees, as agent sessions do.
   for (const name of workerVariables) delete env[name];
   // Set by a parent `node --test`; a nested `node --test` then skips every file and exits 0.
   delete env.NODE_TEST_CONTEXT;
