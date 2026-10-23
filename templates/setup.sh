@@ -12,6 +12,11 @@
 # MILL_WORKTREE, MILL_TICKET, MILL_PROJECT and MILL_MILLYARD. Any failing step
 # fails the hook, which removes the worktree and puts the ticket in logjam
 # (reason: environment).
+#
+# After this hook, Mill's workspace preflight runs `npm ci` once if
+# package.json and package-lock.json exist but node_modules does not, then
+# checks the test command can start (or runs tests.preflight from
+# .mill/config.yaml). A failed check puts the ticket in logjam before any role.
 
 set -euo pipefail
 
