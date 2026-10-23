@@ -6,6 +6,19 @@ import { readRun, runPath } from './run-store.js';
 import { processStart } from './slots.js';
 import { processAlive, stopDescendants } from './process-ownership.js';
 
+/** True while a live process holds the named lock. */
+export function lockHeld(cwd: string, name: string): boolean {
+  readRun(cwd);
+  const db = new DatabaseSync(runPath(cwd));
+  try {
+    db.exec('PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS resource_locks (name TEXT PRIMARY KEY, token TEXT NOT NULL, owner TEXT NOT NULL)');
+    const row = db.prepare('SELECT owner FROM resource_locks WHERE name = ?').get(name);
+    if (!row) return false;
+    const owner = JSON.parse(String(row.owner));
+    return processAlive(owner.pid, owner.processStart);
+  } finally { db.close(); }
+}
+
 /** Resource exclusion lives beside the run, with token-fenced release. */
 export async function withRunLock<T>(cwd: string, name: string, work: () => Promise<T>, wait = false): Promise<T> {
   const token = randomUUID();

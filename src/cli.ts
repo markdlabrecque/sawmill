@@ -1,6 +1,7 @@
 import { runTeam } from './team-runner.js';
 import { dispatchOnce } from './dispatch.js';
-import { runLoop } from './run-loop.js';
+import { resumeRun, runLoop } from './run-loop.js';
+import { lockHeld } from './run-lock.js';
 import { startBackgroundRun } from './run-background.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
@@ -179,6 +180,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
+        // A foreground coordinator waits for the lock, so refuse here rather than leave one waiting.
+        if (lockHeld(cwd, 'loop')) throw new CliError('A mill run coordinator is already running in this millyard.');
         const started = await startBackgroundRun(cwd, home);
         emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
           "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));
@@ -245,8 +248,11 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const ok = positional[1] === 'answer'
           ? await answerTicket(cwd, config.project, writer, Number(words[2]), words[3], { ...options, implementer })
           : await closeTicket(cwd, config.project, writer, Number(words[2]), options);
+        const resumed = ok && positional[1] === 'answer' ? await resumeRun(cwd, home, Number(words[2])) : undefined;
         const snapshot = readRun(cwd);
-        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, table(snapshot));
+        emit({ ...snapshot, status: ok ? 'ok' : 'logjam', ...(resumed ? { resumed } : {}) }, [table(snapshot),
+          ...(!resumed ? [] : 'error' in resumed ? [`The run did not restart: ${resumed.error}\nStart it with mill run.`]
+            : [`Restarted mill run in the background (pid ${resumed.pid}).`, `Log: ${resumed.log}`])].join('\n'));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {

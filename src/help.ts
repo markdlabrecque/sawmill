@@ -8,7 +8,7 @@ export interface Command {
 
 export const commands: Command[] = [
   { name: 'build', usage: 'mill build [--force | --move] [--json]', summary: 'Create or refresh .mill/config.yaml from house defaults; --force overwrites it; --move moves the millyard here from another worktree of the project.' },
-  { name: 'run', usage: 'mill run [--foreground] [--json]', summary: 'Dispatch the drafted run in the background and return; --foreground waits until it finishes, has no runnable work, or pauses.' },
+  { name: 'run', usage: 'mill run [--foreground] [--json]', summary: 'Dispatch the drafted run in the background and return; --foreground waits for any run already going, then until it finishes, has no runnable work, or pauses.' },
   { name: 'run draft', usage: 'mill run draft (<numbers...> | --label <label> | --spec <number>) [--replace] [--json]', summary: 'Select tickets for the run; --replace discards the saved run.' },
   { name: 'run status', usage: 'mill run status [--json]', summary: 'Show queued, blocked, working, done, and logjam tickets.' },
   { name: 'run once', usage: 'mill run once [--json]', summary: 'Dispatch one pass and return; detached workers continue.' },

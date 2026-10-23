@@ -7,7 +7,8 @@ import { readRun } from './run-store.js';
 import { listSlots, slotsPath } from './slots.js';
 import type { TicketWriter } from './tracker.js';
 import { beginLoop, consumeResults } from './transitions.js';
-import { withRunLock } from './run-lock.js';
+import { lockHeld, withRunLock } from './run-lock.js';
+import { startBackgroundRun } from './run-background.js';
 import { recoverWorkers } from './recovery.js';
 
 /** Notifications are hints. SQLite is re-read after every wake, including a bounded
@@ -20,10 +21,20 @@ function changes(cwd: string, home: string) {
   return { waiting, close() { clearTimeout(timer); watchers.forEach(watcher => watcher.close()); } };
 }
 
+/** Waits for a coordinator already running here, such as one an answer restarted, then takes over. */
 export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, onLocked?: () => void) {
   readRun(cwd);
   await recoverWorkers(cwd, home);
-  return withRunLock(cwd, 'loop', () => { onLocked?.(); return runLocked(cwd, project, machine, home, writer); });
+  return withRunLock(cwd, 'loop', () => { onLocked?.(); return runLocked(cwd, project, machine, home, writer); }, true);
+}
+
+/** A coordinator exits once nothing is runnable, so an answered ticket would wait for a
+ * second command. Restart it in the background when the answer requeued the ticket and no
+ * coordinator holds the lock. Runs only ever dispatched by hand (run once, team run) stay manual. */
+export async function resumeRun(cwd: string, home: string, number: number): Promise<{ pid: number; log: string } | { error: string } | undefined> {
+  const snapshot = readRun(cwd);
+  if (!snapshot.run.loop || snapshot.tickets.find(row => row.number === number)?.state !== 'queued' || lockHeld(cwd, 'loop')) return undefined;
+  return startBackgroundRun(cwd, home).catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
 }
 
 async function runLocked(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {

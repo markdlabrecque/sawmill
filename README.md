@@ -156,9 +156,10 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill run draft --spec 40` | Select direct children of a spec issue. |
 | `mill run status` | Show queued, blocked, working, done, and logjam tickets. |
 | `mill run` | Start the run detached, print its log path, and return. |
-| `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
+| `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. If a run is already going, wait for it first. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. |
 | `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
+| `mill run approve-tests 12` | Accept a logjammed ticket's committed tests as its new protected baseline. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
 | `mill team review 12` | Review an existing ticket worktree, including handwritten work. |
 | `mill team tail 12` | Follow the ticket's newest role log. |
@@ -211,15 +212,24 @@ A **logjam** means the ticket needs attention. Status shows the reason and stage
 
 ```sh
 mill run answer 12 "Use the existing schema; no migration is needed."
-mill run
 ```
 
-`answer` posts the supplied text, flushes held tracker writes, removes the logjam label, and requeues unfinished work at its saved boundary. To retry an outage after fixing its cause, omit the text:
+`answer` posts the supplied text, flushes held tracker writes, removes the logjam label, and requeues unfinished work at its saved boundary. If a `mill run` was driving the run and has since ended, `answer` restarts it in the background and prints its log; a running coordinator picks the ticket up by itself. Tickets you dispatch by hand with `mill run once` or `mill team run` stay manual. To retry an outage after fixing its cause, omit the text:
 
 ```sh
 mill run answer 12
-mill run
 ```
+
+If a repair was stuck because the implementer had nothing new to commit, commit the fix yourself in the ticket worktree and answer: the committed fix goes to review.
+
+Agents may not change the test-writers' committed tests. When a protected test was wrong, correct and commit it in the ticket worktree, then approve it and answer:
+
+```sh
+mill run approve-tests 12
+mill run answer 12
+```
+
+`approve-tests` refuses unless the ticket is in logjam and the worktree is clean. It makes the worktree HEAD the new protected baseline, clears the stuck repair and its bounces, and resumes the ticket at review. The run log records who approved which commit, and when.
 
 Request a stop at the next stage boundary:
 
