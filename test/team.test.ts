@@ -125,6 +125,26 @@ test('team run carries real committed red tests through implementation, full rev
   for (const text of [value.mergeCommit, 'answer.test.cjs', 'test-writers-session', 'implementer-session', 'reviewer-session']) assert.ok(summary.includes(text), summary);
 });
 
+test('files changed on integration before the test-writers commit are not protected', async t => {
+  const y = await fixture(t);
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') {
+      await writeFile(join(y.cwd, 'notes.txt'), 'From integration.\n');
+      y.git('add', '.'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+      y.git('-C', request.cwd, 'rebase', 'integration');
+    } else if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'notes.txt'), 'Changed by the implementer.\n');
+      y.git('-C', request.cwd, 'add', 'notes.txt'); y.git('-C', request.cwd, 'commit', '-m', '#12: Touch notes');
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 0);
+  assert.deepEqual(row.team.testFiles, ['answer.test.cjs']);
+});
+
 test('persistent protected-test changes exhaust the cap without review or integration', async t => {
   for (const mode of ['committed', 'staged', 'unstaged', 'deleted', 'renamed', 'hidden-index']) {
     const y = await fixture(t);
@@ -1400,6 +1420,31 @@ test('a timeout in the red check is an infrastructure retry, not a green result'
   assert.match(row.team.infrastructureAttempts[0].error, /timed out/i);
   assert.equal(row.team.infrastructureAttempts.at(-1).status, 'recovered');
   assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
+});
+
+test('a diverged local integration branch stops the ticket on the first attempt with no retries', async t => {
+  const y = await fixture(t);
+  // A person commits to local integration while the remote also moves on.
+  const other = join(y.root, 'other-clone');
+  y.git('clone', '--branch', 'integration', y.remote, other);
+  y.git('-C', other, 'config', 'user.name', 'Other'); y.git('-C', other, 'config', 'user.email', 'other@example.invalid');
+  y.git('-C', other, 'config', 'core.hooksPath', '/dev/null');
+  await writeFile(join(other, 'remote-change'), 'on the remote\n');
+  y.git('-C', other, 'add', '.'); y.git('-C', other, 'commit', '-m', 'Remote change');
+  y.git('-C', other, 'push', 'origin', 'HEAD:refs/heads/integration');
+  await writeFile(join(y.cwd, 'local-change'), 'only local\n');
+  y.git('add', '.'); y.git('commit', '-m', 'Test things.');
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.equal(value.outcome, 'infrastructure'); assert.equal(value.reason, 'environment');
+  assert.match(value.error, /commits that aren't on origin\/integration/);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'environment');
+  assert.equal(y.ticket.comments.filter(c => c.body.includes('Retrying')).length, 0);
+  assert.equal(y.ticket.comments.filter(c => c.body.includes('[sawmill:infrastructure]')).length, 1);
+  assert.deepEqual(y.delays, []);
+  assert.equal(y.requests.length, 0);
 });
 
 test('accepted merge cleanup retries retain completion and exhaustion can recover without another role or merge', async t => {

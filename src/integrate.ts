@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from './config.js';
-import { CliError } from './errors.js';
+import { CliError, FinalError } from './errors.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
 import { ticketUrl } from './links.js';
@@ -59,6 +59,22 @@ export async function tests(cwd: string, project: ProjectConfig, home?: string, 
     try { if (child.pid) childStarted?.(child.pid); }
     catch (error) { if (child.pid) process.kill(-child.pid, 'SIGKILL'); reject(error); }
   });
+}
+
+/** Commits on local integration that are missing from origin can never be
+ * fast-forwarded away, so a diverged branch is final rather than retried. */
+async function fastForward(cwd: string, integration: string, number: number, merged: boolean): Promise<void> {
+  const remote = `refs/remotes/origin/${integration}`;
+  try { await git(cwd, 'merge', '--ff-only', remote); }
+  catch (error) {
+    if (!await git(cwd, 'rev-list', '--max-count=1', `${remote}..refs/heads/${integration}`)) throw error;
+    throw new FinalError([
+      `Local ${integration} has commits that aren't on origin/${integration}, so it cannot fast-forward.`,
+      ...(merged ? [`The pull request for #${number} has already merged; do not merge it again.`] : []),
+      `Put local ${integration} back in line with origin/${integration}, then run \`mill run answer ${number}\` and \`mill integrate ${number}\`.`,
+      message(error),
+    ].join('\n'));
+  }
 }
 
 export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string } = {}): Promise<IntegrationResult> {
@@ -118,7 +134,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await requireApproval();
       await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
       await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
-      await git(cwd, 'merge', '--ff-only', `refs/remotes/origin/${project.integration}`);
+      await fastForward(cwd, project.integration, number, false);
       await requireApproval();
       progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD'), reviewedHead: progress.reviewedHead, rebasedHead: progress.rebasedHead };
       await save();
@@ -231,7 +247,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await checkMillyard(cwd, project.integration);
       await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
       await git(cwd, 'merge-base', '--is-ancestor', mergeCommit, `refs/remotes/origin/${project.integration}`);
-      await git(cwd, 'merge', '--ff-only', `refs/remotes/origin/${project.integration}`);
+      await fastForward(cwd, project.integration, number, true);
       progress.fastForwarded = true; await save();
     }
     if (!progress.localRemoved) {
@@ -248,6 +264,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       const stopped = await stopAtBoundary(cwd, project, tracker, number, stage, 'integrate', readRun(cwd).tickets.find(row => row.number === number)!.team, options);
       return { ...result(stopped.outcome), ...(stopped.error ? { message: stopped.error } : {}) };
     }
+    if (error instanceof FinalError) throw error;
     const current = readRun(cwd).tickets.find(row => row.number === number)!;
     if (current.state !== 'logjam' && current.completion !== 'manual') {
       try { await save({ report: { stage: 'infrastructure', details: 'Integration could not finish.', error: message(error), reachedStage: stage } }); } catch { /* Durable pending writes retain the report. */ }
