@@ -102,6 +102,14 @@ The machine-wide list of millyards that have had a run, used by the board to fin
 The read-only page showing every run on the machine at once, each ticket placed on its lane.
 _Avoid_: Dashboard, Live view, UI
 
+**Active Section**:
+The part of the board showing each project's current, unfinished run.
+_Avoid_: Main board, Live
+
+**Archive Section**:
+The collapsed part at the bottom of the board holding every finished or replaced run, grouped by project and searchable.
+_Avoid_: History, Past runs
+
 **Lane**:
 The board's track of ten stops (queued to merged) along which a ticket's marker moves.
 _Avoid_: Column, swimlane
