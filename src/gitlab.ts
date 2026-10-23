@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { ProjectConfig } from './config.js';
 import { MergeRefusedError } from './tracker.js';
-import type { ChangeRequest, Pipeline, Ticket, Tracker } from './tracker.js';
+import type { AssignResult, ChangeRequest, Pipeline, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
@@ -19,8 +19,9 @@ function sha(value: unknown): value is string { return typeof value === 'string'
 export class GitLabTracker implements Tracker {
   constructor(private readonly config: ProjectConfig['tracker'], private readonly cwd = process.cwd()) {}
 
-  private async request(method: string, suffix: string, body?: object, project = this.config.repo): Promise<{ value: unknown; headers: Map<string, string> }> {
-    const args = ['api', `projects/${encodeURIComponent(project)}${suffix}`, '--method', method,
+  /** A null project addresses a top-level endpoint such as `user`. */
+  private async request(method: string, suffix: string, body?: object, project: string | null = this.config.repo): Promise<{ value: unknown; headers: Map<string, string> }> {
+    const args = ['api', project === null ? suffix : `projects/${encodeURIComponent(project)}${suffix}`, '--method', method,
       '--hostname', this.config.host ?? 'gitlab.com', '--include'];
     if (body) args.push('--input', '-');
     return new Promise((resolve, reject) => {
@@ -144,6 +145,22 @@ export class GitLabTracker implements Tracker {
     if (!label.trim() || label.includes(',')) throw new Error('GitLab label names must be nonblank and cannot contain commas.');
   }
   async closeTicket(number: number): Promise<void> { await this.request('PUT', `/issues/${number}`, { state_event: 'close' }); }
+
+  private userId?: number;
+  async assignSelf(number: number): Promise<AssignResult> {
+    if (!this.userId) {
+      const id = record((await this.request('GET', 'user', undefined, null)).value).id;
+      if (!positive(id)) throw new Error('GitLab did not return the authenticated user.');
+      this.userId = id;
+    }
+    const issue = record((await this.request('GET', `/issues/${number}`)).value);
+    if (!Array.isArray(issue.assignees)) throw new Error(`GitLab returned invalid assignees for #${number}.`);
+    const assignees = issue.assignees.map(record);
+    if (assignees.some(assignee => assignee.id === this.userId)) return { status: 'assigned' };
+    if (assignees.length) return { status: 'held', by: assignees.map(assignee => String(assignee.username)).join(', ') };
+    await this.request('PUT', `/issues/${number}`, { assignee_ids: [this.userId] });
+    return { status: 'assigned' };
+  }
 
   private changeRequest(value: unknown): ChangeRequest {
     const mr = record(value);

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
-import type { Ticket, TicketComment, Pipeline } from './tracker.js';
+import type { AssignResult, Ticket, TicketComment, Pipeline } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
@@ -87,6 +87,8 @@ export interface WorkerOwnership {
   result?: import('./team-runner.js').TeamResult;
 }
 export interface OwnedProcess { pid: number; processStart?: string; group: boolean }
+/** Draft-time tracker assignment; `pending` waits for mill run answer, `refused` was dropped. */
+export type Assignment = AssignResult | { status: 'pending' | 'refused'; error: string };
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
   position: number;
@@ -109,6 +111,8 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   stageStarted: string | null;
   blockers: number[];
   timeInStageSeconds: number | null;
+  /** Absent when the run was drafted without assignment. */
+  assignment?: Assignment;
 }
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
@@ -128,7 +132,7 @@ export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'inte
 export type MirrorWrite =
   | { kind: 'comment'; payload: { body: string } }
   | { kind: 'add-label' | 'remove-label'; payload: { label: string } }
-  | { kind: 'close'; payload: Record<string, never> };
+  | { kind: 'close' | 'assign'; payload: Record<string, never> };
 export type PendingWrite = MirrorWrite & { id: number; ticket: number; attempts: number };
 
 export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');
@@ -143,7 +147,8 @@ export function checkDraftable(cwd: string, replace: boolean): void {
   if (!replace && snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam')) throw new CliError(activeRunMessage);
 }
 
-export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }): void {
+/** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
+export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -170,6 +175,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
     for (const edge of edges) insertEdge.run(edge.blocked, edge.blocker, Number(edge.outsideClosed));
+    const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
+    if (assign) for (const ticket of tickets) insertWrite.run(ticket.number);
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }
@@ -197,6 +204,7 @@ export function readRun(cwd: string): RunSnapshot {
       stopRequested: Boolean(row.stop_requested),
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
+      ...(row.assignment ? { assignment: JSON.parse(String(row.assignment)) as Assignment } : {}),
     }));
     const states = new Map(tickets.map(ticket => [ticket.number, ticket.completion ? 'done' : ticket.state]));
     for (const ticket of tickets) {
@@ -229,5 +237,15 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     const link = linked[row]![index];
     return link === undefined ? padded : link + padded.slice(cell.length);
   };
-  return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n')].filter(Boolean).join('\n');
+  return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
+    ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref))].filter(Boolean).join('\n');
+}
+
+function assignmentNote({ number, assignment }: RunTicket, ref: (number: number) => string): string | undefined {
+  switch (assignment?.status) {
+    case 'held': return `${ref(number)}: already assigned to ${assignment.by}; left with them.`;
+    case 'refused': return `${ref(number)}: the tracker refused the assignment (${assignment.error}); left unassigned.`;
+    case 'pending': return `${ref(number)}: not assigned yet (${assignment.error}); retry with mill run answer ${number}.`;
+    default: return undefined;
+  }
 }

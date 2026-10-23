@@ -77,6 +77,28 @@ test('GitLab draft normalizes full paginated threads and closed outside body blo
   assert.deepEqual((await y.status()).tickets, snapshot.tickets);
 });
 
+test('GitLab draft assigns the glab user, leaves a held ticket with its holder, and never assigns twice', async t => {
+  const y = await fixture(t);
+  y.state.issues.push(issue(11), { ...issue(12), assignees: [{ id: 9, username: 'alice' }] } as ReturnType<typeof issue>);
+  await y.save();
+  const result = await y.cli('run', 'draft', '11', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const snapshot = JSON.parse(result.stdout);
+  assert.deepEqual(snapshot.tickets.map((row: { number: number; assignment: unknown }) => [row.number, row.assignment]),
+    [[11, { status: 'assigned' }], [12, { status: 'held', by: 'alice' }]]);
+  assert.deepEqual(snapshot.pendingWrites, []);
+  assert.deepEqual(await y.status(), snapshot);
+  assert.match((await y.cli('run', 'status')).stdout, /#12: already assigned to alice; left with them\./);
+  const replaced = await y.cli('run', 'draft', '11', '12', '--replace');
+  assert.equal(replaced.code, 0, replaced.stdout);
+  assert.match(replaced.stdout, /#12[^\n]*alice/);
+  assert.deepEqual((await y.requests()).filter(request => request.method === 'PUT'),
+    [{ method: 'PUT', endpoint: 'projects/group%2Fsubgroup%2Ftool/issues/11', body: { assignee_ids: [500] } }]);
+  const remote = JSON.parse(await readFile(y.statePath, 'utf8'));
+  assert.deepEqual(remote.issues.find((row: { iid: number }) => row.iid === 11).assignees, [{ id: 500, username: 'me' }]);
+  assert.deepEqual(remote.issues.find((row: { iid: number }) => row.iid === 12).assignees, [{ id: 9, username: 'alice' }]);
+});
+
 test('GitLab label draft includes all pages and closed tickets with hydrated threads', async t => {
   const y = await fixture(t);
   y.state.issues.push(issue(11));

@@ -6,7 +6,7 @@ import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
-export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false) {
+export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false, assign = false) {
   await checkMillyard(cwd, project.integration);
   checkDraftable(cwd, replace);
   let tickets: Ticket[];
@@ -51,7 +51,7 @@ export async function draft(cwd: string, project: ProjectConfig, selection: RunS
     if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
     ordered.push(...remaining.splice(next, 1));
   }
-  saveDraft(cwd, project, numbers, ordered, edges, replace, selection);
+  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign);
   return readRun(cwd);
 }
 

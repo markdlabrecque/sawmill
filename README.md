@@ -98,6 +98,8 @@ mill run
 
 Drafting snapshots the tickets and their dependencies without starting agents. Open blockers outside the selection and dependency cycles must be resolved before the draft can be saved.
 
+Drafting also assigns every ticket in the run to you, the user `gh` or `glab` is logged in as, so the tracker shows they are taken. A ticket someone else already holds is left with them and named in the output. If the tracker is unreachable, the draft still saves and the assignment stays queued; retry it with `mill run answer <n>`.
+
 `mill run` starts ready tickets, waits for teams, and starts dependents as their blockers finish. It creates and merges PRs or MRs into the configured integration branch when review, local tests, and configured CI pass. Release promotion is a separate step.
 
 In another terminal, from the same millyard:

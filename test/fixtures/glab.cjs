@@ -12,7 +12,8 @@ const url = new URL('https://fixture.invalid/' + endpoint);
 const prefix = url.pathname.startsWith('/projects/71/') ? '/projects/71' : '/projects/group%2Fsubgroup%2Ftool';
 const route = url.pathname.slice(prefix.length);
 const fail = (status, message) => { process.stderr.write(`glab: ${message} (HTTP ${status})\n`); process.exit(1); };
-if (args[0] !== 'api' || !url.pathname.startsWith(prefix) || args[args.indexOf('--hostname') + 1] !== state.host) fail(400, 'Wrong project or hostname');
+const me = { id: 500, username: 'me' };
+if (args[0] !== 'api' || !(url.pathname.startsWith(prefix) || endpoint === 'user') || args[args.indexOf('--hostname') + 1] !== state.host) fail(400, 'Wrong project or hostname');
 fs.appendFileSync(process.env.FAKE_GITLAB_LOG, JSON.stringify({ method, endpoint, body }) + '\n');
 function reply(value, next) {
   let pagination = next === undefined ? '' : `X-Next-Page: ${next}\r\n`;
@@ -44,6 +45,7 @@ function mr() {
   return { iid: 42, project_id: 71, source_project_id: 71, target_project_id: 71, source_branch: 'mill/7', target_branch: 'integration',
     head_pipeline: currentPipeline() ? pip(currentPipeline()) : null, web_url: `https://${state.host}/group/subgroup/tool/-/merge_requests/42`, state: 'opened', sha: head(), ...state.mr, ...state.mrOverride };
 }
+if (endpoint === 'user' && method === 'GET') reply(me);
 if (route === '/merge_requests' && method === 'GET') {
   if (url.searchParams.get('source_branch') !== 'mill/7' || url.searchParams.get('target_branch') !== 'integration' || url.searchParams.get('state') !== 'opened') fail(400, 'Wrong MR filters');
   list([...(state.otherMrs || []), ...(state.mr ? [mr()] : [])]);
@@ -105,6 +107,7 @@ if (issueMatch && method !== 'GET') {
     }
     if (body.remove_labels) issue.labels = issue.labels.filter(label => !body.remove_labels.split(',').includes(label));
     if (body.state_event === 'close') issue.state = 'closed';
+    if (body.assignee_ids) issue.assignees = body.assignee_ids.map(id => id === me.id ? me : { id, username: `user${id}` });
   } else fail(400, 'Wrong issue mutation');
   fs.writeFileSync(statePath, JSON.stringify(state));
   reply(issue);
@@ -122,6 +125,6 @@ if (issueMatch && method === 'GET') {
   const issue = state.issues.find(issue => issue.iid === Number(issueMatch[1]));
   if (!issue) fail(404, 'Issue not found');
   if (issueMatch[2]) list(state.notes[issue.iid] || []);
-  reply(issue);
+  reply({ assignees: [], ...issue });
 }
 fail(500, 'Unscripted request: ' + method + ' ' + route);
