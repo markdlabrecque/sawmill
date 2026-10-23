@@ -159,6 +159,7 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill run status` | Show queued, blocked, working, done, and logjam tickets. |
 | `mill run` | Start the run detached, print its log path, and return. |
 | `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. If a run is already going, wait for it first. |
+| `mill run log 12` | Print every step Mill took on a ticket, oldest first, with each report in full. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. |
 | `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
 | `mill run approve-tests 12` | Accept a logjammed ticket's committed tests as its new protected baseline. |
