@@ -119,7 +119,7 @@ _Avoid_: Sync
 The machine-wide list of millyards that have had a run, used by the board and the scheduler to find them. Being registered does not activate a run.
 
 **Board**:
-The read-only page showing every run on the machine at once, each ticket placed on its lane.
+The page showing every run on the machine at once, each ticket placed on its lane, with controls to stop, answer, reset and close tickets and to start or stop a run.
 _Avoid_: Dashboard, Live view, UI
 
 **Active Section**:

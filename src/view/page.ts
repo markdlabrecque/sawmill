@@ -35,6 +35,15 @@ h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var
 .none{color:var(--dim);font-size:13px;padding:4px 0 10px}
 a.tl{display:flex;gap:8px;align-items:baseline;min-width:0;color:inherit;text-decoration:none;border-radius:4px}.ar a.tl{flex:1}a.tl[href]{cursor:pointer}a.tl[href] .ti{text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}a.tl[href]:hover .ti{text-decoration-color:currentColor}
 a.tl:focus-visible{outline:2px solid var(--work);outline-offset:2px}
+.rb{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 8px}.rs{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--line)}.rs.running{background:#123a26;color:var(--done)}.rs.stopping{background:#3a3020;color:var(--blk)}
+.pr{font-size:12px;color:var(--blk);margin:0 0 8px}.why{font-size:12px;color:var(--blk);margin-top:2px;white-space:pre-wrap;overflow-wrap:anywhere}.logjam .why{color:#ff9a9a}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+button.ac{font:13px/1 system-ui,sans-serif;min-height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}button.ac[aria-disabled=true]{color:var(--dim);border-style:dashed;cursor:help}
+.fb{font-size:12px;margin-top:4px;overflow-wrap:anywhere}.fb:empty{display:none}.fb.pending{color:var(--dim)}.fb.ok{color:var(--done)}.fb.failed{color:var(--jam)}.fb.info{color:var(--blk)}
+dialog{width:min(560px,calc(100vw - 24px));background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:16px}dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h3{font-size:15px;margin:0 0 8px}dialog .dq{font-size:13px;color:var(--blk);white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow:auto;margin:0 0 10px}
+dialog textarea{display:block;width:100%;min-height:140px;font:16px/1.4 system-ui,sans-serif;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);resize:vertical}
+dialog .db{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
 </style></head><body>
 <h1><span class="live" id="live"></span><span id="sum">connecting</span><span class="at" id="at"></span></h1>
 <section aria-labelledby="act"><h2 class="sec" id="act">Active Section</h2>
@@ -42,10 +51,43 @@ a.tl:focus-visible{outline:2px solid var(--work);outline-offset:2px}
 <details class="arc" id="arc"><summary class="sec">Archive Section <span id="acount"></span></summary>
 <input type="search" class="q" id="aq" placeholder="Search projects" aria-label="Search archived projects" autocomplete="off" spellcheck="false">
 <div id="alist"></div><div class="empty" id="aempty">No archived runs yet.</div></details>
+<dialog id="dlg" aria-labelledby="dt"><form id="dform"><h3 id="dt"></h3><div class="dq" id="dq"></div>
+<label for="dm" class="sec">Answer and guidance for the agent</label><textarea id="dm" spellcheck="true"></textarea><div class="fb" id="ds" role="status"></div>
+<div class="db"><button type="button" class="ac" id="dcancel">Cancel</button><button type="submit" class="ac" id="dsend">Answer and resume</button></div></form></dialog>
 <script>
 const LANES=${JSON.stringify(lanes)},SHORT=${JSON.stringify(short)};
 const root=document.getElementById('root'),sum=document.getElementById('sum'),at=document.getElementById('at'),live=document.getElementById('live');
 let view=null,got=0;const rows=new Map(),prevBounces=new Map();
+const ACTIONS=[['stop','Stop'],['answer','Answer and resume'],['reset','Reset'],['close','Close']];
+/** Each project's run and each ticket has one request line: pending, ok or failed. A pending request blocks repeats. */
+const notes=new Map();
+function controls(box,key,rule){const pending=notes.get(key)?.state==='pending';
+  box.querySelectorAll('button').forEach(b=>{const r=rule(b.dataset.a);b.setAttribute('aria-disabled',String(pending||!r.available));b.title=r.available?'':r.reason||''})}
+function feedback(box,key){const n=notes.get(key);box.className='fb'+(n?' '+n.state:'');box.textContent=n?n.message:''}
+function note(key,state,message){clearTimeout(notes.get(key)?.timer);const n={state,message};
+  if(state==='ok'||state==='info')n.timer=setTimeout(()=>{if(notes.get(key)===n){notes.delete(key);render()}},8000);notes.set(key,n);render()}
+const CONFIRM={reset:t=>'Reset #'+t.number+'? This deletes its worktree, branches, logs and agent comments, and queues it to start fresh.',close:t=>'Close #'+t.number+'? This marks it done and closes its tracker issue without merging.'};
+function act(key,p,t,a){if(!p||notes.get(key)?.state==='pending')return;
+  const r=t?t.actions[a]:p.runActions[a==='start-run'?'start':'stop'];
+  if(!r.available){note(key,'info',r.reason);return}
+  if(a==='answer'){openAnswer(key,p,t);return}
+  if(CONFIRM[a]&&!confirm(CONFIRM[a](t)))return;
+  send(key,{action:a,millyard:p.millyard,runId:p.runId,...(t?{ticket:t.number}:{}),...(CONFIRM[a]?{confirmed:true}:{})})}
+/** The request names the project, run and ticket as this page saw them; the server refuses it if they have changed. */
+async function send(key,body){note(key,'pending','Sending…');
+  try{const r=await fetch('/api/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));
+    note(key,r.ok?'ok':'failed',j.message||(r.ok?'Done.':'The request failed ('+r.status+').'));return r.ok}
+  catch(e){note(key,'failed','The board could not be reached: '+e.message);return false}}
+const dlg=document.getElementById('dlg'),dform=document.getElementById('dform'),dm=document.getElementById('dm'),ds=document.getElementById('ds'),dsend=document.getElementById('dsend');let answering=null;
+function openAnswer(key,p,t){answering={key,p,t};document.getElementById('dt').textContent='Answer #'+t.number+' '+t.title;
+  document.getElementById('dq').textContent=t.question?'Question: '+t.question:t.blockage||'Nothing is recorded about what stopped this ticket.';
+  dm.value='';ds.className='fb';ds.textContent='';dsend.disabled=false;dlg.showModal();dm.focus()}
+document.getElementById('dcancel').onclick=()=>dlg.close();
+dform.onsubmit=async e=>{e.preventDefault();if(!answering||dsend.disabled)return;const {key,p,t}=answering;dsend.disabled=true;ds.className='fb pending';ds.textContent='Sending…';
+  const ok=await send(key,{action:'answer',millyard:p.millyard,runId:p.runId,ticket:t.number,message:dm.value});
+  if(ok&&answering?.key===key){dlg.close();dm.value='';answering=null;return}
+  const n=notes.get(key);ds.className='fb failed';ds.textContent=n?n.message:'The request failed.';dsend.disabled=false};
+dlg.onclose=()=>{if(dsend.disabled)return;answering=null};
 function detail(t,secs){
   if(t.state==='working')return (t.stage||'unknown')+(t.role?' ('+t.role+')':'')+'; round '+(t.bounces+1)+'; bounces '+t.bounces+'; '+secs+'s in stage'+(t.stopRequested?'; stop requested':'');
   if(t.state==='blocked')return 'blocked by '+t.blockers.map(n=>'#'+n).join(', ');
@@ -53,14 +95,21 @@ function detail(t,secs){
   return t.state}
 function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
   for(const p of view.projects){let card=rows.get(p.millyard);
-    if(!card){card=document.createElement('div');card.className='p';card.innerHTML='<h2><span class="nm"></span><small></small></h2><div class="path"></div><div class="err"></div><div class="ts"></div>';root.appendChild(card);rows.set(p.millyard,card)}
-    seen.add(p.millyard);const counts={};for(const t of p.tickets)counts[t.state]=(counts[t.state]||0)+1;working+=counts.working||0;jam+=counts.logjam||0;
+    if(!card){card=document.createElement('div');card.className='p';card.innerHTML='<h2><span class="nm"></span><small></small></h2><div class="path"></div><div class="err"></div><div class="rb"><span class="rs" role="status"></span><button type="button" class="ac" data-a="start-run">Start Run</button><button type="button" class="ac" data-a="stop-run">Stop Run</button></div><div class="pr"></div><div class="fb" role="status"></div><div class="ts"></div>';
+      const key=p.millyard;card.querySelectorAll('.rb button').forEach(b=>b.onclick=()=>act(key,card.data,null,b.dataset.a));root.appendChild(card);rows.set(p.millyard,card)}
+    seen.add(p.millyard);card.data=p;const counts={};for(const t of p.tickets)counts[t.state]=(counts[t.state]||0)+1;working+=counts.working||0;jam+=counts.logjam||0;
     card.querySelector('.nm').textContent=p.name;card.querySelector('small').textContent=p.error?'unreadable':Object.entries(counts).map(([k,v])=>v+' '+k).join(' · ');
     card.querySelector('.path').textContent=p.millyard;card.querySelector('.err').textContent=p.error||'';
+    const rs=card.querySelector('.rs');rs.className='rs '+p.runStatus;rs.textContent=p.runStatus+(p.runStatus==='stopping'?' (waiting for stage boundaries)':'');
+    card.querySelector('.pr').textContent=p.pausedReason||'';card.querySelector('.rb').hidden=Boolean(p.error);
+    controls(card.querySelector('.rb'),p.millyard,a=>p.runActions[a==='start-run'?'start':'stop']);feedback(card.querySelector(':scope>.fb'),p.millyard);
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
-      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>';ts.appendChild(row);rows.set(key,row)}
-      seen.add(key);const index=LANES.indexOf(t.lane);
+      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="why"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
+        +'<div class="acts">'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
+        const mill=p.millyard;row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
+      seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
+      controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
       row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
       row.querySelector('.bb').innerHTML=(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
       row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';

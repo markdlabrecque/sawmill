@@ -191,7 +191,7 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill worktree create 12` | Create or reuse a ticket worktree and run setup when needed. |
 | `mill worktree remove 12` | Run teardown and remove a clean worktree, retaining unmerged branches. |
 | `mill worktree gc` | Clean up worktrees for locally done tickets. |
-| `mill board` | Serve a live, read-only page of every run on this machine. |
+| `mill board` | Serve a live page of every run on this machine, with run controls. |
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
@@ -201,7 +201,14 @@ One millyard holds one current run. Drafting a new run first copies the old one,
 
 ### Watching every run
 
-`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. Watching only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+
+The board can also act on a project's current run, through the same operations and rules as the CLI:
+
+- **Start Run** and **Stop Run** sit on each project, next to its status: running, stopping, or stopped. Stop Run stops new tickets from starting at once and asks every working ticket to stop at its next stage boundary, keeping its work; the run shows stopping until they have all stopped. Start Run starts the run as `mill run` does and resumes only the tickets Stop Run stopped. Tickets with their own question, failure, or stop stay as they were.
+- **Stop**, **Answer and resume**, **Reset**, and **Close** sit on each ticket. They match `mill run stop`, `answer`, `reset`, and `close`. Answer opens a dialog with the agent's question or what blocks the ticket, and a field for your answer and any guidance for the agent; it re-queues the ticket and starts the run if it was stopped. Reset and Close ask first.
+
+A blocked or logjammed ticket says what holds it up, and a paused run says why. A button that does not apply to the ticket's state is dimmed; tapping it says why. Each request shows pending, then the result, and a second tap while it is pending does nothing. A request made from a page that is out of date, for a run that has since been replaced, is refused. Archived runs are view-only.
 
 The Active Section at the top shows each project's current, unfinished run. When every ticket in a run is done, the run moves to the Archive Section at the bottom, which is collapsed until you open it. It groups every finished or replaced run by project, newest first. The search box at its top narrows projects by name, and missing letters still match. The magnifying glass on each archived project opens a box that narrows its tickets by number (`12` or `#12`) or by part of a title.
 
@@ -219,7 +226,7 @@ Then open `https://<machine>.<tailnet>.ts.net:<port>` on the phone, for example 
 tailscale serve --https=4444 off
 ```
 
-The page is tailnet-only and read-only. It exposes ticket numbers, titles, states, stages, roles, counts, and millyard paths. It does not expose tracker config, tokens, ticket bodies, comments, or logs.
+The page is tailnet-only. It is not read-only: anyone who can open it can use its run controls, with no sign-in or token, so share the port only on a tailnet you trust. It exposes ticket numbers, titles, states, stages, roles, counts, millyard paths, and, for a stuck ticket, the agent's question or failure message. It does not expose tracker config, tokens, ticket bodies, comments, or logs.
 
 Serve configuration persists across reboots; `mill board` does not, and it never runs `tailscale serve` itself. To keep `mill board` running after you close the terminal, start it as a user service:
 

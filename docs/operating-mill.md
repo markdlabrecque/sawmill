@@ -26,7 +26,7 @@ These rules are for the person working around a live run. Each rule comes from a
 
 The same line says whether the scheduler is running. `mill scheduler status` lists every registered run and the scheduler log, which is at `~/.local/state/sawmill/scheduler/scheduler.log`.
 
-- **Stopping safely.** `mill run stop` stops a whole run from starting new tickets. `mill run stop <n>` stops one working ticket at its next safe boundary. `mill scheduler stop` stops the scheduler for every project. Workers keep running and the next `mill run` starts a scheduler that adopts them.
+- **Stopping safely.** `mill run stop` stops a whole run from starting new tickets. `mill run stop <n>` stops one working ticket at its next safe boundary. The board's Stop Run does both for every working ticket, and its Start Run resumes only those tickets. `mill scheduler stop` stops the scheduler for every project. Workers keep running and the next `mill run` starts a scheduler that adopts them.
 - **Restarting after a crash.** If `mill run status` says the scheduler is not running, run `mill run`. The new scheduler first recovers dead workers, keeps live ones and their slots, and then dispatches. It never claims a ticket twice.
 - **After upgrading Mill.** Runs drafted before activation existed are inactive. Live workers keep going. Start each run you still want with `mill run`. Run `mill scheduler stop` and then `mill run` so the scheduler runs the new build with your current environment, since it keeps the environment of the command that started it.
 - **`mill run --foreground`** coordinates one run in your terminal, as before. It activates the run, and while it is attached the scheduler leaves that run to it.
