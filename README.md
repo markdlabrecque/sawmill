@@ -177,13 +177,29 @@ One millyard holds one run. `--replace` on `run draft` discards the saved run, i
 
 `mill view` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
 
-To open it from a phone, share the port on your tailnet once from the desktop:
+#### Watch every run from your phone
+
+Share the port on your tailnet once from the desktop:
 
 ```sh
 tailscale serve --bg --https=4444 http://127.0.0.1:4444
 ```
 
-Then open `https://<machine>.<tailnet>.ts.net:4444` on the phone. Tailscale terminates HTTPS and keeps the page tailnet-only. `tailscale serve --https=4444 off` removes it. `mill view` never changes this setting itself.
+Then open `https://<machine>.<tailnet>.ts.net:<port>` on the phone, for example `https://desktop.example-tailnet.ts.net:4444`. Tailscale terminates HTTPS. To turn it off:
+
+```sh
+tailscale serve --https=4444 off
+```
+
+The page is tailnet-only and read-only. It exposes ticket numbers, titles, states, stages, roles, counts, and millyard paths. It does not expose tracker config, tokens, ticket bodies, comments, or logs.
+
+Serve configuration persists across reboots; `mill view` does not, and it never runs `tailscale serve` itself. To keep `mill view` running after you close the terminal, start it as a user service:
+
+```sh
+systemd-run --user --unit=mill-view mill view
+```
+
+`systemctl --user stop mill-view` stops it.
 
 ### Questions, outages, and stopping
 
