@@ -8,13 +8,14 @@ export interface Command {
 
 export const commands: Command[] = [
   { name: 'build', usage: 'mill build [--force | --move] [--json]', summary: 'Create or refresh .mill/config.yaml from house defaults; --force overwrites it; --move moves the millyard here from another worktree of the project.' },
-  { name: 'run', usage: 'mill run [--foreground] [--json]', summary: 'Dispatch the drafted run in the background and return; --foreground waits until it finishes, has no runnable work, or pauses.' },
+  { name: 'run', usage: 'mill run [--foreground] [--json]', summary: 'Dispatch the drafted run in the background and return; --foreground waits for any run already going, then until it finishes, has no runnable work, or pauses.' },
   { name: 'run draft', usage: 'mill run draft (<numbers...> | --label <label> | --spec <number>) [--replace] [--json]', summary: 'Select tickets for the run; --replace discards the saved run.' },
   { name: 'run status', usage: 'mill run status [--json]', summary: 'Show queued, blocked, working, done, and logjam tickets.' },
   { name: 'run once', usage: 'mill run once [--json]', summary: 'Dispatch one pass and return; detached workers continue.' },
   { name: 'run stop', usage: 'mill run stop <n> [--json]', summary: 'Ask a working ticket to stop once its active stage finishes safely.' },
   { name: 'run close', usage: 'mill run close <n> [--json]', summary: 'Close a ticket in the run.' },
-  { name: 'run answer', usage: 'mill run answer <n> [text] [--implementer] [--json]', summary: 'Answer a logjammed ticket and requeue it; --implementer retries a not-reproduced repair.' },
+  { name: 'run answer', usage: 'mill run answer <n> [text] [--implementer] [--json]', summary: 'Answer a logjammed ticket and requeue it, restarting the run in the background if it had ended; --implementer retries a not-reproduced repair.' },
+  { name: 'run approve-tests', usage: 'mill run approve-tests <n> [--json]', summary: "Accept a logjammed ticket's committed tests as its new protected baseline; answering it then resumes at review." },
   { name: 'run reset', usage: 'mill run reset <n> [--json]', summary: 'Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it.' },
   { name: 'team tail', usage: 'mill team tail <n> [--no-follow] [--json]', summary: "Follow the ticket's newest role log; --no-follow prints it and returns." },
   { name: 'team review', usage: 'mill team review <n> [--json]', summary: 'Review an existing ticket worktree, including handwritten work.' },

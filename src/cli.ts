@@ -1,6 +1,7 @@
 import { runTeam } from './team-runner.js';
 import { dispatchOnce } from './dispatch.js';
-import { runLoop } from './run-loop.js';
+import { resumeRun, runLoop } from './run-loop.js';
+import { lockHeld } from './run-lock.js';
 import { startBackgroundRun } from './run-background.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
@@ -10,6 +11,7 @@ import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
+import { approveTests } from './approve-tests.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -178,6 +180,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
+        // A foreground coordinator waits for the lock, so refuse here rather than leave one waiting.
+        if (lockHeld(cwd, 'loop')) throw new CliError('A mill run coordinator is already running in this millyard.');
         const started = await startBackgroundRun(cwd, home);
         emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
           "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));
@@ -198,6 +202,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
             `Worktree removed: ${result.worktree ?? '(none)'}`, `Branches deleted: ${result.branches.join(', ') || '(none)'}`].join('\n')
           : `Tracker logjam for ${ref(result.ticket)}; pending writes retained. Run mill run reset ${result.ticket} again to retry.`);
         return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'run' && positional[1] === 'approve-tests') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run approve-tests'), 2);
+        const result = await approveTests(cwd, config.project, Number(positional[2]));
+        emit(result, [`Approved the tests of ${ref(result.ticket)} at ${result.commit} as the protected baseline (by ${result.by}).`,
+          `Resume it at review with mill run answer ${result.ticket}.`].join('\n'));
+        return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError(usage('run once'), 2);
@@ -237,8 +248,11 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const ok = positional[1] === 'answer'
           ? await answerTicket(cwd, config.project, writer, Number(words[2]), words[3], { ...options, implementer })
           : await closeTicket(cwd, config.project, writer, Number(words[2]), options);
+        const resumed = ok && positional[1] === 'answer' ? await resumeRun(cwd, home, Number(words[2])) : undefined;
         const snapshot = readRun(cwd);
-        emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, table(snapshot));
+        emit({ ...snapshot, status: ok ? 'ok' : 'logjam', ...(resumed ? { resumed } : {}) }, [table(snapshot),
+          ...(!resumed ? [] : 'error' in resumed ? [`The run did not restart: ${resumed.error}\nStart it with mill run.`]
+            : [`Restarted mill run in the background (pid ${resumed.pid}).`, `Log: ${resumed.log}`])].join('\n'));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {

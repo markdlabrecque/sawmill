@@ -16,6 +16,16 @@ test('run waits for a live team and automatically dispatches a newly ready depen
   assert.deepEqual((await y.starts()).map(row => row.number), [1, 1, 1, 2, 2, 2]);
 });
 
+test('answering a stuck ticket with no run active starts the run again without a second command', async t => {
+  const y = await fixture(t, [1]);
+  await y.release();
+  await y.command(['run', '--foreground', '--json']).catch((error: any) => error);
+  assert.equal((await y.status()).tickets[0]!.state, 'logjam');
+  assert.equal((await y.starts()).length, 1);
+  await y.command(['run', 'answer', '1', 'Carry on']);
+  await until(y.starts, rows => rows.length === 2);
+});
+
 test('paused dispatch keeps waiting for a live success and resumes queued tickets', async t => {
   const y = await fixture(t, [1, 3, 4], true);
   await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 2\ninfrastructure_retries: 0\npause_threshold: 1\n');
