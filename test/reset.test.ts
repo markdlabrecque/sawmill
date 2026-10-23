@@ -56,7 +56,7 @@ test('reset puts a logjammed ticket back to queued with no worktree, branch or s
     return { outcome: { outcome: 'question', question: 'Which answer?' } };
   });
   const first = await y.cli('team', 'run', '19', '--json');
-  assert.equal(JSON.parse(first.stdout).roleOutcome.outcome, 'question', first.stdout);
+  assert.equal(JSON.parse(first.stdout).outcome, 'question', first.stdout);
   const jammed = (await y.status()).tickets[0]!;
   assert.equal(jammed.state, 'logjam');
   assert.ok(await y.exists(y.path));
