@@ -15,6 +15,8 @@ export interface StageReport {
   reachedStage?: string;
   changeRequestUrl?: string;
   baseCommit?: string;
+  /** A person asked for this report on the tracker; other steps stay in the run log. */
+  post?: boolean;
 }
 const execute = promisify(execFile);
 

@@ -88,7 +88,7 @@ _Avoid_: Callback, lifecycle script
 How the reviewer reaches a running site to perform user test cases: DDEV, Docker, or none.
 
 **Reporter**:
-The deterministic step that posts a comment on the ticket at every stage change and the final summary.
+The deterministic step that records a report in the run log at every stage change, read with `mill run log <n>`, and posts the final summary on the ticket.
 _Avoid_: Notifier, logger
 
 **Tracker mirror**:

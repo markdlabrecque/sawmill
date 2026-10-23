@@ -105,7 +105,7 @@ test('Pi selection reviews through the public CLI with literal model/effort, raw
   assert.equal(await readFile(output.log, 'utf8'), raw);
   assert.match(await readFile(output.stderrLog, 'utf8'), /diagnostic only/);
   assert.deepEqual((await y.status()).sessionIds.reviewer, ['pi-fixture-session']);
-  assert.match(y.ticket.comments.at(-1)!.body, /pi-fixture-session/);
+  assert.match((await y.cli('run', 'log', String(y.ticket.number))).stdout, /\[review-pass\][^]*reviewer: pi-fixture-session/);
 });
 
 test('Pi native reviewer command rules block writes, shell/interpreter bypasses and browser access', async t => {

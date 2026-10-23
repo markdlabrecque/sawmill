@@ -89,6 +89,8 @@ test('reset deletes only agent comments and keeps a comment written by a person'
   const y = await fixture(t);
   await y.cli('team', 'run', '19', '--json');
   assert.equal((await y.status()).tickets[0]!.state, 'logjam');
+  // Steps are log-only now; a person-requested stage report is still an agent comment.
+  assert.equal((await y.cli('tickets', 'comment', '19', 'Waiting on checks.', '--stage', 'ci-wait')).code, 0);
   await y.tracker.addComment(19, 'Please use 42, not 41.');
   const agent = y.thread.filter(c => c.body.startsWith('[sawmill:')).map(c => c.id);
   assert.ok(agent.length > 0, 'The run posted agent comments');

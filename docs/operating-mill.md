@@ -22,7 +22,7 @@ To work on a ticket by hand, stop it first with `mill run stop <n>`, then wait f
 
 ## Answering a stuck ticket
 
-1. Read the newest `[sawmill:*]` comment on the issue and the reason in `mill run status`.
+1. Read the reason in `mill run status` and the latest report, in full, with `mill run log <n>`. A stuck ticket gets only the `logjam` label, not a comment.
 2. Answer with `mill run answer <n> "<text>"`. Say what to do and why. A bare "go" gives the agent nothing new, so it often stops in the same place.
 3. For an outage you fixed, such as setup or the network, answer without text: `mill run answer <n>`.
 4. `answer` restarts the run in the background if it had ended. Check `mill run status` instead of starting a second run.

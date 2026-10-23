@@ -89,7 +89,8 @@ test('stop persists during an active role and saves remote WIP before any next r
   assert.equal(y.git('-C', y.remote, 'show', 'mill/19:unfinished.txt'), 'Keep the active role work.');
   assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
   assert.ok(y.labels.has('logjam'));
-  assert.ok(y.comments.some(body => body.includes('[sawmill:stopped]') && body.includes('test-writers') && body.includes('WIP pushed:')));
+  assert.deepEqual(y.comments, []);
+  assert.match((await y.cli('run', 'log', '19')).stdout, /\[stopped\] -> logjam \(stopped\) tracker: add-label\n[^]*WIP pushed:[^]*Stage reached: test-writers/);
   assert.match((await y.cli('run', 'status')).stdout, /logjam.*stopped/);
 });
 
@@ -121,12 +122,13 @@ test('WIP push rejection retains a recoverable stopped checkpoint and blocks rol
   assert.equal(y.git('show', `${(await y.status()).tickets[0]!.integration.mergedHead}:unfinished.txt`), 'Keep despite rejection');
 });
 
-test('stop still publishes WIP when the active session and stopped report mirrors fail', async t => {
+test('stop still publishes WIP when the stopped logjam label cannot be written', async t => {
   const y = await fixture(t);
+  const addLabel = y.tracker.addLabel;
   y.script(async request => {
     await writeFile(join(request.cwd, 'unfinished.txt'), 'Survive tracker outage');
     await y.cli('run', 'stop', '19');
-    y.mirror(async () => { throw new Error('Tracker unavailable'); });
+    y.tracker.addLabel = async () => { throw new Error('Tracker unavailable'); };
     return { outcome: { outcome: 'done', summary: 'Unfinished' } };
   });
   const first = await y.cli('team', 'run', '19', '--json');
@@ -134,10 +136,11 @@ test('stop still publishes WIP when the active session and stopped report mirror
   const state = await y.status(), row = state.tickets[0]!;
   assert.equal(row.reason, 'tracker');
   assert.equal(row.team.stop?.preserved, true);
-  assert.ok(state.pendingWrites.some(w => w.kind === 'comment' && w.payload.body.includes('[sawmill:stopped]')));
+  assert.ok(state.pendingWrites.some(w => w.kind === 'add-label' && w.payload.label === 'logjam'));
+  assert.ok(!state.pendingWrites.some(w => w.kind === 'comment'));
   assert.equal(y.git('-C', y.remote, 'show', 'mill/19:unfinished.txt'), 'Survive tracker outage');
   assert.equal(y.roles.length, 1);
-  y.mirror(undefined);
+  y.tracker.addLabel = addLabel;
   assert.equal((await y.cli('run', 'answer', '19', 'Tracker restored.')).code, 0);
   assert.equal((await y.status()).pendingWrites.length, 0);
   y.script(y.normal);
@@ -282,7 +285,8 @@ process.stdin.on('data', x => prompt += x); process.stdin.on('end', async () => 
     assert.equal(await readFile(join(y.root, 'finished'), 'utf8'), 'active role completed naturally');
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
     assert.equal(y.git('-C', y.remote, 'show', `mill/19:unfinished-${role}.txt`), 'saved before stop');
-    assert.match(await readFile(join(y.root, 'tracker.jsonl'), 'utf8'), /sawmill:stopped/);
+    assert.doesNotMatch(await readFile(join(y.root, 'tracker.jsonl'), 'utf8'), /sawmill:/);
+    assert.match((await command('run', 'log', '19')).stdout, /\[stopped\] -> logjam \(stopped\)/);
     const slot = row.worker!.slot;
     await until(() => readFile(join(slot, 'owner.json'), 'utf8').catch(() => ''), value => !value);
     await writeFile(resume, 'yes');
@@ -298,21 +302,31 @@ process.stdin.on('data', x => prompt += x); process.stdin.on('end', async () => 
   }
 });
 
-test('stop at the rebase report prevents tests, PR and merge and answer resumes integration only', async t => {
+test('stop during the rebase stage prevents tests, PR and merge and answer resumes integration only', async t => {
   const y = await fixture(t);
-  let stopCode: number | undefined;
-  y.mirror(async body => {
-    if (body.startsWith('[sawmill:rebase]') && stopCode === undefined) stopCode = (await y.cli('run', 'stop', '19')).code;
+  // The rebase report is log-only, so the stop arrives from a pre-rebase hook, once.
+  const hooks = join(y.root, 'hooks'), stopOutput = join(y.root, 'stop-output');
+  const bin = fileURLToPath(new URL('../src/bin.js', import.meta.url));
+  await import('node:fs/promises').then(fs => fs.mkdir(hooks));
+  await writeFile(join(hooks, 'pre-rebase'), `#!/bin/sh\n[ -e "${stopOutput}" ] && exit 0\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\nHOME="${y.home}" XDG_CONFIG_HOME="${y.home}/.config" "${process.execPath}" "${bin}" run stop 19 > "${stopOutput}"\n`);
+  await chmod(join(hooks, 'pre-rebase'), 0o755);
+  y.git('config', 'core.hooksPath', hooks);
+  // Integration moves on during review, so the ticket branch has something to rebase onto.
+  y.script(async (request, sink) => {
+    if (request.role === 'reviewer') {
+      await writeFile(join(y.cwd, 'other.txt'), 'Concurrent integration change\n');
+      y.git('add', 'other.txt'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+    }
+    return y.normal(request, sink);
   });
   const result = await y.cli('team', 'run', '19', '--json');
-  assert.equal(stopCode, 0);
+  assert.match(await readFile(stopOutput, 'utf8'), /Stop requested/);
   assert.equal(JSON.parse(result.stdout).outcome, 'stopped', result.stdout);
   assert.equal(y.merges(), 0);
   const stopped = (await y.status()).tickets[0]!;
   assert.equal(stopped.stage, 'rebase');
   assert.equal(stopped.team.stop?.resume, 'integrate');
   assert.equal(y.git('-C', y.remote, 'rev-parse', 'mill/19'), y.git('-C', y.path, 'rev-parse', 'HEAD'));
-  y.mirror(undefined);
   assert.equal((await y.cli('run', 'answer', '19', 'Continue integration.')).code, 0);
   const resumed = await y.cli('team', 'run', '19', '--json');
   assert.equal(resumed.code, 0, resumed.stdout);
@@ -413,17 +427,13 @@ test('standalone reviewer honors stop, retains its session and publishes saved w
 
 test('a stop during worktree setup resumes writers with a real baseline and does not rerun setup', async t => {
   const y = await fixture(t);
-  let once = false;
-  y.mirror(async body => {
-    if (body.startsWith('[sawmill:worktree-created]') && !once) {
-      once = true;
-      assert.equal((await y.cli('run', 'stop', '19')).code, 0);
-    }
-  });
+  // The worktree-created report is log-only, so setup itself records the stop request, once.
+  const stop = join(y.root, 'stop.cjs');
+  await writeFile(stop, `const { DatabaseSync } = require('node:sqlite');\nconst db = new DatabaseSync(${JSON.stringify(join(y.cwd, '.mill/run.sqlite'))});\ndb.exec('PRAGMA busy_timeout = 5000; UPDATE tickets SET stop_requested = 1 WHERE number = 19');\ndb.close();\n`);
+  await writeFile(join(y.cwd, '.mill/setup.sh'), `echo setup >> "$MILL_MILLYARD/.mill/setup-count"\n[ -e "${stop}.done" ] || { "${process.execPath}" "${stop}" && touch "${stop}.done"; }\n`);
   const first = await y.cli('team', 'run', '19', '--json');
   assert.equal(JSON.parse(first.stdout).outcome, 'stopped', first.stdout);
   assert.equal(y.roles.length, 0);
-  y.mirror(undefined);
   await y.cli('run', 'answer', '19');
   const resumed = await y.cli('team', 'run', '19', '--json');
   assert.equal(resumed.code, 0, resumed.stdout);

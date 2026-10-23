@@ -77,8 +77,9 @@ test('a base branch behind origin is refused once, before any work, with the com
   assert.equal(row.state, 'logjam');
   assert.equal(row.reason, 'environment');
   assert.equal(row.bounces, 0);
-  assert.equal(tracker.ticket(7).comments.length, 1);
-  assert.match(tracker.ticket(7).comments[0]!.body, /behind/i);
+  assert.deepEqual(tracker.ticket(7).comments, []);
+  assert.deepEqual(tracker.ticket(7).labels, ['logjam']);
+  assert.match((await yard.cli('run', 'log', '7')).stdout, /\[infrastructure\][^]*behind/i);
   assert.equal(yard.git('rev-parse', 'integration'), yard.git('rev-parse', 'origin/integration~1'));
 });
 
@@ -100,7 +101,7 @@ test('a clean worktree passes the preflight silently: no repair and no extra tra
   const result = await yard.cli('worktree', 'create', '7', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal((await yard.npmCalls()).filter(call => call === 'ci').length, 0);
-  assert.equal(tracker.ticket(7).comments.length, 1);
-  assert.match(tracker.ticket(7).comments[0]!.body, /^\[sawmill:worktree-created\]/);
+  assert.deepEqual(tracker.ticket(7).comments, []);
+  assert.match((await yard.cli('run', 'log', '7')).stdout, /\[worktree-created\]/);
   assert.deepEqual(tracker.ticket(7).labels, []);
 });

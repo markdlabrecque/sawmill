@@ -277,44 +277,48 @@ test('the ordinary loop releases a stopped team and dispatches the next queued t
   assert.equal((await y.status()).tickets.find(row => row.number === 3)?.state, 'done');
 });
 
-test('actual dispatcher resumes each completed role after its mirror outage without replaying roles', async t => {
-  for (const [stage, count] of [['tests-written', 1], ['implemented', 2], ['review-pass', 3]] as const) {
-    const y = await fixture(t, [1], true);
-    await y.release();
-    await writeFile(join(y.root, 'fail-mirror-stage'), stage);
-    const first = await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
-    assert.equal(JSON.parse(first.stdout).status, 'partial');
-    const before = (await y.status()).tickets[0]!;
-    assert.equal(before.reason, 'tracker');
-    assert.equal((await y.starts()).length, count);
-    assert.ok(before.team.testCommit);
-    await rm(join(y.root, 'fail-mirror-stage'));
-    await y.command(['run', 'answer', '1', '--json']);
-    const resumed = await y.command(['run', '--foreground', '--json']);
-    assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
-    const after = (await y.status()).tickets[0]!;
-    assert.equal(after.team.testCommit, before.team.testCommit);
-    assert.deepEqual(after.team.testFiles, before.team.testFiles);
-    assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
-  }
+test('actual dispatcher posts no comment per completed role and recovers a merged-comment outage without replaying roles', async t => {
+  const y = await fixture(t, [1], true);
+  await y.release();
+  await writeFile(join(y.root, 'fail-mirror-stage'), 'merged');
+  const first = await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
+  assert.equal(JSON.parse(first.stdout).status, 'partial');
+  const before = (await y.status()).tickets[0]!;
+  assert.equal(before.state, 'logjam'); assert.equal(before.reason, 'tracker');
+  assert.ok(before.mergeCommit); assert.ok(before.team.testCommit);
+  assert.equal((await y.starts()).length, 3);
+  const writes = (await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]);
+  const comments = writes.filter(args => args.some(arg => arg.includes('/comments')));
+  assert.ok(comments.length > 0, 'The merged report is attempted');
+  assert.ok(comments.every(args => args.includes('POST')), 'Only the merged report comment is attempted');
+  await rm(join(y.root, 'fail-mirror-stage'));
+  await y.command(['run', 'answer', '1', '--json']);
+  // The outage holds the logjam label; it is written with the retried report.
+  const retried = (await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]);
+  assert.ok(retried.some(args => args.some(arg => arg.endsWith('/labels'))), 'The logjam label is added');
+  await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.state, 'done');
+  assert.equal(after.mergeCommit, before.mergeCommit);
+  assert.equal(after.team.testCommit, before.team.testCommit);
+  assert.deepEqual(after.team.testFiles, before.team.testFiles);
+  assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
 });
 
 test('process recovery keeps the durable successor of a completed reviewer', async t => {
   const y = await fixture(t, [1], true);
   await y.release();
-  await writeFile(join(y.root, 'hold-review-mirror'), 'yes');
+  await writeFile(join(y.root, 'hold-change-request'), 'yes');
   await y.once();
-  const state = await until(y.status, s => s.tickets[0]?.stage === 'review-pass');
+  const state = await until(y.status, s => s.tickets[0]?.stage === 'pr-opened');
   const row = state.tickets[0]!;
   assert.equal(row.team.next, 'integrate');
   process.kill(row.worker!.pid!, 'SIGKILL');
-  await rm(join(y.root, 'hold-review-mirror'));
-  await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
-  const recovered = await y.status();
-  assert.equal(recovered.tickets[0]!.team.recovery?.stage, 'review-pass');
-  await y.command(['run', 'answer', '1']);
+  await rm(join(y.root, 'hold-change-request'));
+  // No step comment is left pending, so the recovered team resumes at integration without an answer.
   const resumed = await y.command(['run', '--foreground', '--json']);
   assert.equal(JSON.parse(resumed.stdout).status, 'ok', resumed.stdout);
+  assert.equal((await y.status()).tickets[0]!.state, 'done');
   assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
   assert.equal((await y.status()).tickets[0]!.team.testCommit, row.team.testCommit);
 });
@@ -368,17 +372,17 @@ test('environment recovery through dispatch retains the original writer checkpoi
 test('actual dispatcher re-reviews changed approval after reporting rejection and answer', async t => {
   const y = await fixture(t, [1], true);
   await y.release();
-  await writeFile(join(y.root, 'hold-review-mirror'), 'yes');
+  await writeFile(join(y.root, 'hold-change-request'), 'yes');
   await y.once();
-  const reviewed = (await until(y.status, s => s.tickets[0]?.stage === 'review-pass')).tickets[0]!;
+  const reviewed = (await until(y.status, s => s.tickets[0]?.stage === 'pr-opened')).tickets[0]!;
   const path = reviewed.worktree!;
   await writeFile(join(path, 'unreviewed.txt'), 'Concurrent implementation change.\n');
   y.git('-C', path, 'add', 'unreviewed.txt');
   y.git('-C', path, 'commit', '-m', 'Unreviewed implementation');
-  await rm(join(y.root, 'hold-review-mirror'));
+  await rm(join(y.root, 'hold-change-request'));
   const stopped = (await until(y.status, s => s.tickets[0]?.worker?.status === 'finished')).tickets[0]!;
   assert.equal(stopped.state, 'logjam');
-  assert.match(stopped.worker!.result!.error!, /Reviewed HEAD changed/);
+  assert.match(stopped.worker!.result!.error!, /local HEAD differs|fresh review is required/);
   assert.equal(stopped.mergeCommit, null);
   await y.command(['run', 'answer', '1', 'Review the concurrent change']);
   await y.command(['run', '--foreground', '--json']);
