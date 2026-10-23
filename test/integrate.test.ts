@@ -338,7 +338,10 @@ else process.exit(9);
 test('integration stops if a local stop or manual completion arrives at a stage boundary', async t => {
   for (const sql of ["UPDATE tickets SET state='logjam',reason='stopped'", "UPDATE tickets SET state='done',completion='manual'"]) {
     const y = await fixture(t);
-    y.tracker.beforeWrite = async body => { if (body?.startsWith('[sawmill:rebase]')) y.seed(sql); };
+    // Stage reports are log-only, so the change lands while the local tests run.
+    const script = join(y.root, 'seed.mjs');
+    await writeFile(script, `import { DatabaseSync } from 'node:sqlite';\nconst db = new DatabaseSync(${JSON.stringify(join(y.cwd, '.mill/run.sqlite'))});\ndb.exec(${JSON.stringify(sql)});\ndb.close();\n`);
+    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: ${process.execPath} ${script}`));
     const result = await y.cli('integrate', '9', '--json');
     assert.equal(result.code, 1, result.stdout);
     assert.equal(y.tracker.head('mill/9'), ''); assert.equal(y.tracker.requests.length, 0);
@@ -435,12 +438,6 @@ test('ci wait polls at the machine interval and merges only the tested head afte
     assert.equal((await y.status()).tickets[0].stage, 'ci-wait');
     return { headCommit: head, state: heads.length === 1 ? 'pending' : 'passed' };
   };
-  y.tracker.beforeWrite = async body => {
-    if (!body?.startsWith('[sawmill:ci-wait]')) return;
-    const row = (await y.status()).tickets[0];
-    assert.equal(row.stage, 'ci-wait');
-    assert.ok(row.comments.some((c: { body: string }) => c.body === body), 'CI wait persists before mirror');
-  };
   const result = await y.cli('integrate', '9', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'merged');
@@ -451,7 +448,8 @@ test('ci wait polls at the machine interval and merges only the tested head afte
   const row = (await y.status()).tickets[0];
   assert.equal(row.integration.pipeline.headCommit, head);
   assert.equal(row.integration.pipeline.state, 'passed');
-  assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-wait]')).length, 1);
+  assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-wait]')).length, 0);
+  assert.equal((await y.cli('run', 'log', '9')).stdout.match(/\[ci-wait\]/g)?.length, 1);
 });
 
 test('red CI returns repair evidence in text and JSON and persists it before mirroring', async t => {
@@ -462,14 +460,6 @@ test('red CI returns repair evidence in text and JSON and persists it before mir
     y.tracker.pipeline = async head => {
       assert.equal(++reads, 1, 'A terminal failure must not poll again');
       return { headCommit: head, state: 'failed', diagnostics: 'unit: assertion failed', logUrl: 'https://ci.example.invalid/runs/91' };
-    };
-    y.tracker.beforeWrite = async body => {
-      if (!body?.startsWith('[sawmill:ci-failed]')) return;
-      const row = (await y.status()).tickets[0];
-      assert.equal(row.stage, 'ci-failed');
-      assert.equal(row.integration.pipeline.state, 'failed');
-      assert.match(row.integration.pipeline.diagnostics, /assertion failed/);
-      assert.ok(row.comments.some((c: { body: string }) => c.body === body));
     };
     const result = await y.cli('integrate', '9', ...(json ? ['--json'] : []));
     assert.equal(result.code, 1, result.stdout);
@@ -484,7 +474,10 @@ test('red CI returns repair evidence in text and JSON and persists it before mir
     const row = (await y.status()).tickets[0];
     assert.equal(row.stage, 'ci-failed'); assert.equal(row.bounces, 0); assert.equal(row.completion, null);
     assert.equal(y.tracker.ticket.state, 'open');
-    assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-failed]')).length, 1);
+    assert.equal(row.integration.pipeline.state, 'failed');
+    assert.match(row.integration.pipeline.diagnostics, /assertion failed/);
+    assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-failed]')).length, 0);
+    assert.match((await y.cli('run', 'log', '9')).stdout, /\[ci-failed\][^]*unit: assertion failed/);
   }
 });
 
@@ -650,23 +643,22 @@ test('tracker outages and non-check merge refusals remain infrastructure without
   }
 });
 
-test('CI mirror outages hold the persisted stage and failure evidence and prevent merge', async t => {
-  for (const stage of ['ci-wait', 'ci-failed']) {
-    const y = await fixture(t);
-    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
-    let reads = 0;
-    y.tracker.pipeline = async head => { reads++; return { headCommit: head, state: 'failed', diagnostics: 'Repair this failure', logUrl: 'https://ci.example.invalid/failed' }; };
-    y.tracker.beforeWrite = async body => { if (body?.startsWith(`[sawmill:${stage}]`)) throw new Error('Mirror unavailable'); };
-    const result = await y.cli('integrate', '9', '--json');
-    assert.equal(result.code, 1, result.stdout);
-    assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
-    const snapshot = await y.status(), row = snapshot.tickets[0];
-    assert.equal(row.stage, stage); assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tracker');
-    assert.equal(reads, stage === 'ci-wait' ? 0 : 1);
-    if (stage === 'ci-failed') assert.equal(row.integration.pipeline.diagnostics, 'Repair this failure');
-    assert.ok(snapshot.pendingWrites.some((w: { payload: { body?: string } }) => w.payload.body?.startsWith(`[sawmill:${stage}]`)));
-    assert.deepEqual(y.tracker.methods, []);
-  }
+test('CI stage reports stay local, so a tracker outage cannot hold them, and failure evidence still prevents merge', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  let reads = 0;
+  y.tracker.pipeline = async head => { reads++; return { headCommit: head, state: 'failed', diagnostics: 'Repair this failure', logUrl: 'https://ci.example.invalid/failed' }; };
+  y.tracker.beforeWrite = async () => { throw new Error('Mirror unavailable'); };
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'ci-failed');
+  const snapshot = await y.status(), row = snapshot.tickets[0];
+  assert.equal(row.stage, 'ci-failed'); assert.equal(row.state, 'working'); assert.equal(reads, 1);
+  assert.equal(row.integration.pipeline.diagnostics, 'Repair this failure');
+  assert.deepEqual(snapshot.pendingWrites, []);
+  const log = (await y.cli('run', 'log', '9')).stdout;
+  assert.ok(log.indexOf('[ci-wait]') >= 0 && log.indexOf('[ci-wait]') < log.indexOf('[ci-failed]'), log);
+  assert.deepEqual(y.tracker.methods, []);
 });
 
 test('a stop while sleeping ends CI polling before another tracker read', async t => {

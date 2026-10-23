@@ -217,7 +217,8 @@ test('GitLab ci wait reports a later-page failed native trigger and its descenda
   assert.equal(value.pipeline.state, 'failed'); assert.match(value.message, /pipelines\/1/);
   const row = (await y.status()).tickets[0];
   assert.equal(row.stage, 'ci-failed'); assert.equal(row.completion, null);
-  assert.ok((await y.hostState()).notes[7].some((note: { body: string }) => note.body.startsWith('[sawmill:ci-failed]')));
+  assert.ok(!((await y.hostState()).notes[7] ?? []).some((note: { body: string }) => note.body.startsWith('[sawmill:ci-failed]')));
+  assert.match((await y.cli('run', 'log', '7')).stdout, /\[ci-failed\][^\n]*\n[^]*pipelines\/1/);
   assert.ok(!(await y.requests()).some(request => request.endpoint.endsWith('/merge')));
 });
 

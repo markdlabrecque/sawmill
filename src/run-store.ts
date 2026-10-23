@@ -269,17 +269,20 @@ export function readTicketLog(cwd: string, number: number): LogEntry[] {
   } finally { db.close(); }
 }
 
-/** `time [stage] -> state (reason)`, then the full report and any mirror failure. */
+/** `time [stage] -> state (reason)`, then the full report with the sessions known
+ * at that point, as its tracker comment had them, and any mirror failure. */
 export function formatTicketLog(entries: LogEntry[]): string {
   if (!entries.length) return 'No log entries.';
   const indent = (text: string) => text.split('\n').map(line => `  ${line}`).join('\n');
+  let sessions: RunTicket['sessionIds'] = {};
   return entries.map(({ time, event }) => {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }
     if (event.flaky) { const { stage, tests } = event.flaky as { stage: string; tests: string[] }; return `${time} [${stage}] flaky: ${tests.join(', ') || '(unnamed)'}`; }
     if (!event.change) return `${time} ${JSON.stringify(event)}`;
-    const change = event.change as { stage?: string | null; state?: string; reason?: string | null; worker?: WorkerOwnership; report?: Record<string, unknown> & { stage: string; details: string } };
+    const change = event.change as { stage?: string | null; state?: string; reason?: string | null; worker?: WorkerOwnership; sessionIds?: RunTicket['sessionIds']; report?: Record<string, unknown> & { stage: string; details: string } };
+    if (change.sessionIds) sessions = change.sessionIds;
     const writes = (event.writes ?? []) as MirrorWrite[];
     const report = change.report;
     const stage = report?.stage ?? change.stage;
@@ -288,6 +291,8 @@ export function formatTicketLog(entries: LogEntry[]): string {
     if (!report) return head;
     const fields = [report.details, ...([['round', 'Round'], ['retries', 'Retries'], ['error', 'Error'], ['reason', 'Reason'], ['reachedStage', 'Stage reached'], ['changeRequestUrl', 'Change request']] as const)
       .filter(([key]) => report[key] !== undefined && report[key] !== '').map(([key, label]) => `${label}: ${String(report[key])}`)];
+    const ids = Object.entries(sessions).flatMap(([role, values]) => (values ?? []).map(id => `${role}: ${id}`));
+    if (ids.length) fields.push(`Sessions:\n${ids.join('\n')}`);
     return [head, indent(fields.filter(Boolean).join('\n'))].join('\n');
   }).join('\n');
 }

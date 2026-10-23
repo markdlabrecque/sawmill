@@ -67,7 +67,8 @@ test('configured Codex review starts a direct child and persists its completed o
   assert.equal(value.sessionId, 'codex-fixture-session');
   assert.deepEqual((await y.status()).sessionIds.reviewer, ['codex-fixture-session']);
   assert.equal(await readFile(value.log, 'utf8'), stream);
-  assert.ok(y.ticket.comments.some(c => c.body.includes('review-pass')));
+  assert.ok(!y.ticket.comments.some(c => c.body.includes('review-pass')));
+  assert.match((await y.cli('run', 'log', '22')).stdout, /\[review-pass\]/);
 });
 
 test('Codex keeps raw split UTF-8 streams, exact model/effort, role restrictions and handoff', async t => {
@@ -126,7 +127,7 @@ for (const [name, events, expected] of [
     const value = JSON.parse(result.stdout);
     assert.equal(value.outcome.outcome, expected);
     assert.deepEqual((await y.status()).sessionIds.reviewer, ['codex-fixture-session']);
-    if (expected === 'question') assert.match(y.ticket.comments.at(-1)!.body, /Which interface/);
+    if (expected === 'question') assert.match((await y.cli('run', 'log', '22')).stdout, /Which interface/);
   });
 }
 
