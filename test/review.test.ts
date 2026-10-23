@@ -190,8 +190,12 @@ test('role timeout kills a stubborn process group and preserves partial logs and
     setTimeout(() => process.exit(), 2000);
   `);
   const running = yard.invoke(['team', 'review', '11', '--json'], { runtime });
-  await new Promise(resolve => setTimeout(resolve, 200));
-  const during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  // Wait for the session to be recorded rather than for a fixed time; a busy machine starts the fixture late.
+  let during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  for (let attempt = 0; attempt < 100 && !during.sessionIds.reviewer?.length; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  }
   assert.deepEqual(during.sessionIds.reviewer, ['fixture-session']);
   const result = await running;
   assert.equal(result.code, 1, result.stdout);
