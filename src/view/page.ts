@@ -20,6 +20,7 @@ h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var
 .done .chip{background:var(--done)}.logjam .chip{background:var(--jam);animation:pulse 1s ease-in-out infinite}.blocked .chip{background:var(--blk)}.queued .chip{background:var(--dim)}
 .t.bounce{animation:shake .5s}
 @keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(255,92,92,.25)}}@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+@media (prefers-reduced-motion:reduce){.chip{transition:none}.working .chip:after,.logjam .chip,.t.bounce{animation:none}}
 .badge{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--line);color:var(--fg)}.badge.jam{background:var(--jam);color:#fff}.badge.b{background:#3a3020;color:var(--blk)}
 @media (max-width:520px){.c .full{display:none}}@media (min-width:521px){.c .short{display:none}}
 .empty{color:var(--dim);text-align:center;padding:40px 0}
