@@ -127,7 +127,7 @@ test('a reviewer-requested correction reaches the test writers, gets a fresh rev
   assert.match(review!.handoff, /correct/i);
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'done'); assert.equal(y.requests.length, 1);
-  const corrected = y.git('-C', y.path, 'log', '--format=%H', '--grep=Correct test', '-1');
+  const corrected = y.git('log', '--format=%H', '--grep=Correct test', '-1', row.integration.mergedHead);
   assert.equal(row.team.testCommit, corrected);
   assert.equal(row.team.testCommits.length >= 2, true, 'Original writer commits stay in history');
   assert.equal(y.git('show', `${row.team.testCommits[0]}:answer.test.cjs`).includes('pass 1\''), true);
