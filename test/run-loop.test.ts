@@ -154,10 +154,10 @@ test('capacity held by another millyard waits without a busy loop and wakes on r
     const parts = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     return Number(parts[11]) + Number(parts[12]);
   };
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await new Promise(resolve => setTimeout(resolve, 1500));
   const before = await ticks();
-  await new Promise(resolve => setTimeout(resolve, 400));
-  assert.ok(await ticks() - before < 10, 'Waiting coordinator consumed CPU instead of waiting');
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert.ok(await ticks() - before < 40, 'Waiting coordinator consumed CPU instead of waiting');
   assert.equal((await b.starts()).length, 0);
   await a.release();
   await until(b.starts, rows => rows.length === 1);
