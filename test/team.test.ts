@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
@@ -181,6 +182,63 @@ test('persistent protected-test changes exhaust the cap without review or integr
     assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`).includes('assert.equal'), true);
     if (mode !== 'committed') assert.notEqual(y.git('-C', y.path, 'status', '--porcelain'), '', 'Saved files must remain untouched');
   }
+});
+
+test('approve-tests moves the protected baseline to the corrected tests so the next role is not bounced', async t => {
+  const y = await fixture(t);
+  let attempted = false;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && attempted) return { outcome: { outcome: 'done', summary: 'Tests remain changed.' } };
+    const result = await y.normal(request, sink);
+    if (request.role === 'implementer') {
+      attempted = true;
+      await writeFile(join(request.cwd, 'answer.test.cjs'), "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1 corrected');\n");
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', 'Correct the test');
+    }
+    return result;
+  });
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  const stuck = (await y.status()).tickets[0];
+  assert.equal(stuck.state, 'logjam');
+  const corrected = y.git('-C', y.path, 'rev-parse', 'HEAD');
+  assert.notEqual(stuck.team.testCommit, corrected);
+
+  const approved = await y.cli('run', 'approve-tests', '12', '--json');
+  assert.equal(approved.code, 0, approved.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.team.testCommit, corrected);
+  assert.equal(row.team.repair, undefined); assert.equal(row.team.question, undefined); assert.equal(row.team.activeRole, undefined);
+  assert.equal(row.team.next, 'reviewer');
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  const events = (db.prepare('SELECT event FROM log WHERE ticket = 12').all() as { event: string }[]).map(r => r.event);
+  db.close();
+  assert.ok(events.some(event => event.includes(corrected) && /approv/i.test(event)), 'Approval must be logged with its commit');
+
+  const before = y.inputs.length;
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.slice(before).map(r => r.role), ['reviewer']);
+  assert.equal((await y.status()).tickets[0].state, 'done');
+});
+
+test('a repair whose fix a person already committed proceeds to review instead of stopping', async t => {
+  const y = await fixture(t);
+  let reviews = 0, implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer' && ++reviews === 1) return { outcome: { outcome: 'bounce', feedback: 'Document answer.' } };
+    if (request.role === 'implementer' && ++implementations === 2) return { outcome: { outcome: 'done', summary: 'Nothing new to commit.' } };
+    return y.normal(request, sink);
+  });
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  assert.equal((await y.status()).tickets[0].state, 'logjam');
+  await writeFile(join(y.path, 'API.md'), 'Answer is synchronous.\n');
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Fix documentation by hand');
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.status()).tickets[0].state, 'done');
+  assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 2);
 });
 
 test('team requires committed writer evidence and clean completed roles while preserving unfinished files', async t => {
