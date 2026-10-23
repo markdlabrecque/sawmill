@@ -142,14 +142,14 @@ export function recordWorker(cwd: string, number: number, worker: WorkerOwnershi
   });
 }
 
-/** A failed launch has no team to report it. Persist its logjam before mirroring. */
+/** A failed launch has no team to report it. Persist its logjam before mirroring;
+ * the report stays in the run log and the tracker gets only the label. */
 export async function failWorkerLaunch(cwd: string, project: ProjectConfig, number: number, worker: WorkerOwnership, error: string): Promise<boolean> {
   const row = readRun(cwd).tickets.find(row => row.number === number);
   if (!row) return false;
   const report = { stage: 'infrastructure' as const, details: error, reachedStage: 'team-launch' };
   return recordWorker(cwd, number, { ...worker, status: 'finished', finished: new Date().toISOString(), result: { outcome: 'infrastructure', ticket: number, stage: 'team-launch', error } },
-    { state: 'logjam', reason: 'environment', stage: 'team-launch' }, [
-      { kind: 'comment', payload: { body: await reportComment(cwd, report, row) } },
+    { state: 'logjam', reason: 'environment', stage: 'team-launch', report }, [
       { kind: 'add-label', payload: { label: project.labels.logjam } },
     ]);
 }
@@ -163,8 +163,11 @@ export async function transition(cwd: string, project: ProjectConfig, tracker: T
   const pending = [...writes];
   const mergeCommit = change.mergeCommit ?? ticket.mergeCommit;
   if (change.report) {
-    pending.unshift({ kind: 'comment', payload: { body: await reportComment(cwd, change.report, { ...ticket, ...change }) } });
     if (change.report.stage === 'merged' && mergeCommit) next.state = 'done';
+    // Every report is in the run log; the tracker hears only the outcome, notes for a person to try, or a requested post.
+    if (next.state === 'done' || change.report.stage === 'user-testing' || change.report.post) {
+      pending.unshift({ kind: 'comment', payload: { body: await reportComment(cwd, change.report, { ...ticket, ...change }) } });
+    }
   }
   if (next.state === 'done') {
     next.completion = mergeCommit ? 'merged' : 'manual';

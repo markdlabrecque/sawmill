@@ -255,6 +255,43 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref))].filter(Boolean).join('\n');
 }
 
+export interface LogEntry { id: number; time: string; event: Record<string, unknown> }
+
+/** One ticket's log rows, oldest first, read without writing the run file. */
+export function readTicketLog(cwd: string, number: number): LogEntry[] {
+  if (!existsSync(runPath(cwd))) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+  const db = new DatabaseSync(runPath(cwd), { readOnly: true });
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    if (!db.prepare('SELECT number FROM tickets WHERE number = ?').get(number)) throw new CliError(`Ticket #${number} is not in the run.`);
+    return db.prepare('SELECT id, time, event FROM log WHERE ticket = ? ORDER BY id').all(number)
+      .map(row => ({ id: Number(row.id), time: String(row.time), event: JSON.parse(String(row.event)) as Record<string, unknown> }));
+  } finally { db.close(); }
+}
+
+/** `time [stage] -> state (reason)`, then the full report and any mirror failure. */
+export function formatTicketLog(entries: LogEntry[]): string {
+  if (!entries.length) return 'No log entries.';
+  const indent = (text: string) => text.split('\n').map(line => `  ${line}`).join('\n');
+  return entries.map(({ time, event }) => {
+    if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
+    if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
+    if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }
+    if (event.flaky) { const { stage, tests } = event.flaky as { stage: string; tests: string[] }; return `${time} [${stage}] flaky: ${tests.join(', ') || '(unnamed)'}`; }
+    if (!event.change) return `${time} ${JSON.stringify(event)}`;
+    const change = event.change as { stage?: string | null; state?: string; reason?: string | null; worker?: WorkerOwnership; report?: Record<string, unknown> & { stage: string; details: string } };
+    const writes = (event.writes ?? []) as MirrorWrite[];
+    const report = change.report;
+    const stage = report?.stage ?? change.stage;
+    const head = [time, stage ? `[${stage}]` : '', change.state ? `-> ${change.state}` : '', change.reason ? `(${change.reason})` : '',
+      change.worker ? `worker ${change.worker.status}` : '', writes.length ? `tracker: ${writes.map(write => write.kind).join(', ')}` : ''].filter(Boolean).join(' ');
+    if (!report) return head;
+    const fields = [report.details, ...([['round', 'Round'], ['retries', 'Retries'], ['error', 'Error'], ['reason', 'Reason'], ['reachedStage', 'Stage reached'], ['changeRequestUrl', 'Change request']] as const)
+      .filter(([key]) => report[key] !== undefined && report[key] !== '').map(([key, label]) => `${label}: ${String(report[key])}`)];
+    return [head, indent(fields.filter(Boolean).join('\n'))].join('\n');
+  }).join('\n');
+}
+
 function assignmentNote({ number, assignment }: RunTicket, ref: (number: number) => string): string | undefined {
   switch (assignment?.status) {
     case 'held': return `${ref(number)}: already assigned to ${assignment.by}; left with them.`;

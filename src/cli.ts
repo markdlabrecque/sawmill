@@ -23,7 +23,7 @@ import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
 import { answerTicket, closeTicket, flushAssignments, requestStop, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
-import { formatRun, readRun, type MirrorWrite, type RunSnapshot } from './run-store.js';
+import { formatRun, formatTicketLog, readRun, readTicketLog, type MirrorWrite, type RunSnapshot } from './run-store.js';
 import { ticketRef } from './links.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 import { resolveMillyard } from './millyard.js';
@@ -203,6 +203,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           : `Tracker logjam for ${ref(result.ticket)}; pending writes retained. Run mill run reset ${result.ticket} again to retry.`);
         return result.status === 'ok' ? 0 : 1;
       }
+      if (positional[0] === 'run' && positional[1] === 'log') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run log'), 2);
+        const entries = readTicketLog(cwd, Number(positional[2]));
+        emit(entries, formatTicketLog(entries));
+        return 0;
+      }
       if (positional[0] === 'run' && positional[1] === 'approve-tests') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run approve-tests'), 2);
         const result = await approveTests(cwd, config.project, Number(positional[2]));
@@ -230,7 +236,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const write: MirrorWrite = positional[1] === 'comment'
           ? { kind: 'comment', payload: { body: positional[3] } }
           : { kind: positional[4] === '--remove' ? 'remove-label' : 'add-label', payload: { label: positional[3] } };
-        const report = positional[1] === 'comment' && positional[4] === '--stage' ? { stage: positional[5] as ReportStage, details: positional[3] } : undefined;
+        const report = positional[1] === 'comment' && positional[4] === '--stage' ? { stage: positional[5] as ReportStage, details: positional[3], post: true } : undefined;
         const ok = await transition(cwd, config.project, tracker, Number(positional[2]), report ? { report } : {}, report ? [] : [write], options);
         const snapshot = readRun(cwd);
         emit({ ...snapshot, status: ok ? 'ok' : 'logjam' }, table(snapshot));
