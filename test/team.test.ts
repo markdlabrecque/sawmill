@@ -125,6 +125,26 @@ test('team run carries real committed red tests through implementation, full rev
   for (const text of [value.mergeCommit, 'answer.test.cjs', 'test-writers-session', 'implementer-session', 'reviewer-session']) assert.ok(summary.includes(text), summary);
 });
 
+test('files changed on integration before the test-writers commit are not protected', async t => {
+  const y = await fixture(t);
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') {
+      await writeFile(join(y.cwd, 'notes.txt'), 'From integration.\n');
+      y.git('add', '.'); y.git('commit', '-m', 'Advance integration'); y.git('push');
+      y.git('-C', request.cwd, 'rebase', 'integration');
+    } else if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'notes.txt'), 'Changed by the implementer.\n');
+      y.git('-C', request.cwd, 'add', 'notes.txt'); y.git('-C', request.cwd, 'commit', '-m', '#12: Touch notes');
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 0);
+  assert.deepEqual(row.team.testFiles, ['answer.test.cjs']);
+});
+
 test('persistent protected-test changes exhaust the cap without review or integration', async t => {
   for (const mode of ['committed', 'staged', 'unstaged', 'deleted', 'renamed', 'hidden-index']) {
     const y = await fixture(t);
