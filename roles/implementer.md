@@ -29,7 +29,7 @@ The team runner diffs the test writers' files against the tree after you finish.
 
 ## Fix rounds
 
-When the handoff carries reviewer feedback, a pipeline log, or a conflict: address exactly that, as its own commit. The reviewer will see only that commit's diff plus their own feedback. Do not bundle other changes into it.
+When the handoff carries reviewer feedback, a pipeline log, or a conflict: address exactly that, in new commits on top of the existing history. Checkpoint commits are fine; do not amend or squash earlier commits, and rebase only when the handoff's conflict repair tells you to. The reviewer will see only the diff since their bounce plus their own feedback. Do not bundle other changes into it.
 
 If a failed test run or CI log does not reproduce in your worktree and the test command passes, do not invent a fix. Leave HEAD and the worktree untouched and finish with `no-change`, quoting the passing test result in the summary. A person will look at it.
 
