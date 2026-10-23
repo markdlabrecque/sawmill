@@ -84,10 +84,12 @@ let input = '';
 process.stdin.on('data', x => input += x);
 process.stdin.on('end', async () => {
   const number = Number(require('node:path').basename(process.cwd()));
-  const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: process.env.FIXTURE_YARD, encoding: 'utf8' }));
+  // Locate the millyard from the worktree so one shared scheduler can serve several fixtures.
+  const yard = require('node:path').dirname(cp.execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim());
+  const root = require('node:path').dirname(yard);
+  const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: yard, encoding: 'utf8' }));
   const row = status.tickets.find(x => x.number === number);
-  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
-  const root = process.env.FIXTURE_DIR;
+  fs.appendFileSync(root + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
   if (fs.existsSync(root + '/peer.py') && !fs.existsSync(root + '/peer-pid')) {
     const log = fs.openSync(root + '/peer-output', 'a');
     const peer = cp.spawn('python3', ['-u', root + '/peer.py', root + '/readable-peer', root + '/exit-peer'], {env:{PATH:process.env.PATH}, stdio:['ignore', log, log]});
