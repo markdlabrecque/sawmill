@@ -1,6 +1,7 @@
 import { runTeam } from './team-runner.js';
 import { dispatchOnce, dispatchPreflight } from './dispatch.js';
 import { resumeRun, runLoop } from './run-loop.js';
+import { lockHeld } from './run-lock.js';
 import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler } from './scheduler.js';
 import { listMillyards, registerMillyard } from './registry.js';
 import { tailTicket } from './team-tail.js';
@@ -207,7 +208,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
-        await dispatchPreflight(cwd, config.project);
+        // An integrating ticket holds the checkout for as long as CI takes; the scheduler preflights once it is free.
+        if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project);
         const activated = activateRun(cwd);
         await registerMillyard(home, cwd);
         const { run } = readRun(cwd);

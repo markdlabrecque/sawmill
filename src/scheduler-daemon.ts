@@ -34,15 +34,21 @@ if (owner.token !== token) {
 interface Candidate { cwd: string; project: ProjectConfig; machine: MachineConfig }
 const turns = new Map<string, number>();
 let turn = 0;
-const problems = new Map<string, { message: string; retry: number }>();
+const problems = new Map<string, { message: string; retry: number; stage: 'inspect' | 'admit' }>();
 let stopping = false;
 let wakeNow = () => {};
 process.on('SIGTERM', () => { stopping = true; wakeNow(); });
 
-function report(cwd: string, error: unknown) {
+function report(cwd: string, stage: 'inspect' | 'admit', error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   if (problems.get(cwd)?.message !== message) say(`${cwd}: ${message}`);
-  problems.set(cwd, { message, retry: Date.now() + backoff });
+  problems.set(cwd, { message, retry: Date.now() + backoff, stage });
+}
+
+function resolved(cwd: string, stage: 'inspect' | 'admit') {
+  if (problems.get(cwd)?.stage !== stage) return;
+  problems.delete(cwd);
+  say(`${cwd}: ${stage === 'inspect' ? 'readable' : 'dispatching'} again.`);
 }
 
 /** A notification only means "reread"; it never authorizes work. Subscribe before reading. */
@@ -65,17 +71,18 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
   if (Date.now() < (problems.get(cwd)?.retry ?? 0)) return undefined;
   try {
     const before = readRun(cwd);
-    if (before.run.lifecycle === 'inactive' || before.run.lifecycle === 'completed') return undefined;
+    // A completed run is still watched while a worker finishes its cleanup, so a crash there is recovered.
+    if (before.run.lifecycle === 'inactive' || (before.run.lifecycle === 'completed' && before.tickets.every(row => !row.worker || row.worker.status === 'finished'))) return undefined;
     const config = await loadConfig(cwd, home!);
     if (!config.valid) throw new Error(config.issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('; '));
     await recoverWorkers(cwd, home!);
     if (before.run.lifecycle !== 'stopped') consumeResults(cwd, config.machine.pause_threshold);
     const snapshot = readRun(cwd);
-    if (problems.delete(cwd)) say(`${cwd}: readable again.`);
+    resolved(cwd, 'inspect');
     // A foreground coordinator owns its run while attached; an integrating ticket holds preflight.
     if (snapshot.run.lifecycle !== 'active' || !readyTickets(snapshot).length || lockHeld(cwd, 'loop') || lockHeld(cwd, 'integration')) return undefined;
     return { cwd, project: config.project, machine: config.machine };
-  } catch (error) { report(cwd, error); return undefined; }
+  } catch (error) { report(cwd, 'inspect', error); return undefined; }
 }
 
 /** One launch attempt through the ordinary dispatch claims, slot leases and locks. */
@@ -85,8 +92,9 @@ async function admit({ cwd, project, machine }: Candidate): Promise<boolean> {
       () => !consumeResults(cwd, machine.pause_threshold).pausedReason && readRun(cwd).run.lifecycle === 'active', { limit: 1, wait: false }));
     for (const row of result.started) say(`${cwd}: started #${row.ticket} (worker pid ${row.worker.pid}).`);
     for (const row of result.failures) say(`${cwd}: #${row.ticket} did not start: ${row.error}`);
+    resolved(cwd, 'admit');
     return result.started.length + result.failures.length > 0;
-  } catch (error) { report(cwd, error); return false; }
+  } catch (error) { report(cwd, 'admit', error); return false; }
 }
 
 /** Round-robin admission: one ticket per project per round, least recently served first,
