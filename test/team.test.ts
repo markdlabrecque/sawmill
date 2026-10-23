@@ -1400,8 +1400,8 @@ test('infrastructure retry resumes only the implementer and preserves committed 
 test('a real integration test timeout retries integration without rerunning roles or spending bounces', async t => {
   const y = await fixture(t);
   await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 1\n');
-  // The first run is the red check after the test-writers; only the second run (integration) hangs.
-  const command = 'echo run >> "$HOME/test-runs"; if [ "$(wc -l < "$HOME/test-runs")" -eq 2 ]; then echo timed-command-started; sleep 5; fi; node answer.test.cjs';
+  // Runs are the red check, the pre-review check, then integration; only integration hangs.
+  const command = 'echo run >> "$HOME/test-runs"; if [ "$(wc -l < "$HOME/test-runs")" -eq 3 ]; then echo timed-command-started; sleep 5; fi; node answer.test.cjs';
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', `command: '${command}'`).replace('timeout: 30m', 'timeout: 1s'));
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
