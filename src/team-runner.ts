@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createRuntime } from './runtime-factory.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
-import { CliError } from './errors.js';
+import { CliError, FinalError } from './errors.js';
 import { integrate, type IntegrationResult } from './integrate.js';
 import { checkMillyard } from './millyard.js';
 import { withRunLock } from './run-lock.js';
@@ -81,7 +81,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         let result: T | undefined, error: string | undefined;
         try { result = await work(); error = failure(result); }
         catch (caught) {
-          if (caught instanceof StopRequested) throw caught;
+          if (caught instanceof StopRequested || caught instanceof FinalError) throw caught;
           error = (caught instanceof Error ? caught.message : String(caught)) || 'Infrastructure invocation failed.';
         }
         // Questions own their preservation/report boundary. A recovery mirror
