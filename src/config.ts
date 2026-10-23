@@ -12,7 +12,8 @@ export interface ProjectConfig {
   runtime: 'claude-code' | 'pi' | 'codex';
   roles: Record<Role, { model: string; effort: Effort }>;
   role_timeout: string;
-  tests: { command: string; timeout: string; preflight?: string };
+  /** none: the project has no tests, on purpose. No red check, no test run before merge. */
+  tests: { command: string; timeout: string; preflight?: string } | 'none';
   ci: 'wait' | 'none';
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
@@ -41,6 +42,8 @@ interface Rule {
   choices?: string[];
   check?: (value: string | number) => boolean;
   hint?: string;
+  /** An object rule that also accepts the literal string none as an explicit opt-out. */
+  none?: boolean;
 }
 const string: Rule = { type: 'string' };
 const choice = (...choices: string[]): Rule => ({ type: 'string', choices });
@@ -60,7 +63,7 @@ const projectSchema = object({
   runtime: choice('claude-code', 'pi', 'codex'),
   roles: object({ 'test-writers': role, implementer: role, reviewer: role }),
   role_timeout: { ...duration, default: '60m' },
-  tests: object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true } }),
+  tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true } }), none: true, hint: 'set tests: none to opt out of tests' },
   ci: choice('wait', 'none'),
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
   test_harness: { ...choice('ddev', 'docker', 'none'), hint: 'set test_harness: none to opt out of user testing' },
@@ -85,7 +88,8 @@ function validate(value: unknown, rule: Rule, source: string, key: string, issue
     else { issue('missing'); return undefined; }
   }
   if (rule.type === 'object') {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) { issue('bad type', 'expected a mapping'); return undefined; }
+    if (rule.none && value === 'none') return value;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) { issue('bad type', rule.none ? 'expected a mapping or none' : 'expected a mapping'); return undefined; }
     const record = value as Record<string, unknown>;
     const result: Record<string, unknown> = {};
     for (const [field, child] of Object.entries(rule.fields ?? {})) {

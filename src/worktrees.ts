@@ -103,6 +103,7 @@ async function checkWorkspace(project: ProjectConfig, number: number, path: stri
     try { await execute('npm', ['ci'], { cwd: path, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
     catch (error) { throw new PreflightError(`node_modules was missing and \`npm ci\` failed in the worktree.\nFix: make \`npm ci\` succeed in ${JSON.stringify(path)} (or install dependencies in .mill/setup.sh), ${resume}.\n${failure(error)}`); }
   }
+  if (project.tests === 'none') return;
   if (project.tests.preflight) {
     try { await execute('bash', ['-c', project.tests.preflight], { cwd: path, encoding: 'utf8' }); }
     catch (error) { throw new PreflightError(`tests.preflight failed in the worktree: ${project.tests.preflight}\nFix: make it pass in ${JSON.stringify(path)} (usually in .mill/setup.sh), ${resume}.\n${failure(error)}`); }

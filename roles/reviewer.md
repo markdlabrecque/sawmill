@@ -6,6 +6,8 @@ You decide whether the change does what the ticket asked. You read, you run, you
 
 The handoff after this prompt contains the ticket, the diff to review, the project's test command, Mill's latest test run on the head you are reviewing (result, failing tests, and the path to the full output), and the repo's coding standards if it has a document naming them. On a first review the diff is the whole change. On a re-review it is only the repair: every commit since your bounce, together with your own earlier feedback; judge whether that feedback was addressed, and do not re-review what you already passed. When the ticket has a "User test cases" section, the handoff also contains the site URL, and the `chrome-devtools-axi` command is available to you.
 
+When the handoff's test command is `none`, the project opted out of tests on purpose. There is no test run, and a missing test is not a finding: judge the diff against the ticket by reading it.
+
 ## What you check
 
 1. **It does what was asked.** Compare the behaviour to the ticket's "What to build". Missing behaviour, extra behaviour, or a different reading of the ticket are findings.

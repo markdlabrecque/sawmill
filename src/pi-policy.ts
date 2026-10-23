@@ -12,7 +12,7 @@ interface PiAPI {
 export default function policy(pi: PiAPI) {
   const request = JSON.parse(process.env.SAWMILL_PI_POLICY ?? '{}');
   if (!request.nonce || !request.model || !request.effort || !['reviewer', 'test-writers', 'implementer'].includes(request.role)
-    || typeof request.browser !== 'boolean' || !literalCommand(request.testCommand)) throw new Error('Missing or unsupported Sawmill Pi permission policy/test command.');
+    || typeof request.browser !== 'boolean' || (request.testCommand !== undefined && !literalCommand(request.testCommand))) throw new Error('Missing or unsupported Sawmill Pi permission policy/test command.');
   const writer = request.role !== 'reviewer';
   const tools = ['read', 'grep', 'find', 'ls', 'bash', ...(writer ? ['edit', 'write'] : [])];
   const check = (_event: unknown, ctx: Context) => {
@@ -40,7 +40,7 @@ export default function policy(pi: PiAPI) {
     if (allowed) args[0] = request.browserExecutable;
     // The exact configured test command is trusted project code, including its
     // transitive effects. This is deliberately not a read-only or OS sandbox.
-    if (!browser && command === request.testCommand) allowed = true;
+    if (!browser && request.testCommand !== undefined && command === request.testCommand) allowed = true;
     if (args[0] === 'git') {
       const subcommand = args[1];
       const rest = args.slice(2);

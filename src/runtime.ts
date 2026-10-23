@@ -17,7 +17,8 @@ export interface RuntimeRequest {
   handoff: string;
   model: string;
   effort: Effort;
-  testCommand: string;
+  /** Absent when the project opted out of tests (tests: none): no role may run one. */
+  testCommand?: string;
   timeoutMs: number;
   /** Browser case handling is a separate capability; never silently grant it. */
   browser: boolean;

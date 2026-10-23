@@ -104,7 +104,7 @@ export class PiRuntime implements Runtime {
           if (event.isError === true) {
             const text = Array.isArray(event.result?.content) ? event.result.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n') : JSON.stringify(event.result);
             const name = tool?.name ?? event.toolName;
-            const expectedRed = name === 'bash' && tool?.command !== undefined
+            const expectedRed = name === 'bash' && tool?.command !== undefined && request.testCommand !== undefined
               && JSON.stringify(literalCommand(tool.command)) === JSON.stringify(literalCommand(request.testCommand))
               && /(?:exit code|exited with code|exit status)\s*[1-9]\d*/i.test(text)
               && !/command not found|permission denied|timed? out|ENOENT/i.test(text);

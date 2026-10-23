@@ -55,6 +55,15 @@ role_timeout: 60m
 # setup.sh, before any role. Non-zero puts the ticket in logjam. Without it,
 # Mill checks that the test command's first word resolves and, when
 # package.json exists, that node_modules does.
+#
+# A project with no tests can opt out on purpose by replacing the whole block
+# below with this one line:
+#
+#   tests: none
+#
+# That turns off the test-writers, the red check after them, every test run
+# Mill hands to a role, and the local test run before merge. A missing tests
+# key is still an error, so nobody ends up with no tests by accident.
 tests:
   command: npm test
   timeout: 30m
