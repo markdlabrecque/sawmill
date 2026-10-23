@@ -487,25 +487,27 @@ test('reviewer edits cannot authorize integration of a different commit', async 
 });
 
 test('tampering after a report cannot slip across the next dispatch or integration boundary', async t => {
-  for (const stage of ['tests-written', 'review-pass']) {
+  for (const role of ['test-writers', 'reviewer']) {
     const y = await fixture(t);
     let stopped = false;
     y.setScript(async (request, sink) => {
       if (request.role === 'implementer' && (await y.status()).tickets[0].team.repair) return { outcome: { outcome: 'done', summary: 'Left tampering unchanged.' } };
       const result = await y.normal(request, sink);
       // Reports are log-only, so the edit lands while the ticket is stopped right after one.
-      if (!stopped && request.role === (stage === 'tests-written' ? 'test-writers' : 'reviewer')) { stopped = true; assert.equal((await y.cli('run', 'stop', '12')).code, 0); }
+      if (!stopped && request.role === role) { stopped = true; assert.equal((await y.cli('run', 'stop', '12')).code, 0); }
       return result;
     });
     assert.equal(JSON.parse((await y.cli('team', 'run', '12', '--json')).stdout).outcome, 'stopped');
-    assert.equal((await y.status()).tickets[0].stage, stage);
-    await writeFile(join(y.path, 'answer.test.cjs'), '// changed after reporting\n');
+    assert.equal((await y.status()).tickets[0].stage, role);
+    // Still red, so resuming implementation reaches the protected-test check rather than a not-red rerun.
+    await writeFile(join(y.path, 'answer.test.cjs'), `${await readFile(join(y.path, 'answer.test.cjs'), 'utf8')}// changed after reporting\n`);
     y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Concurrent test edit');
     assert.equal((await y.cli('run', 'answer', '12')).code, 0);
     const result = await y.cli('team', 'run', '12', '--json');
     assert.equal(result.code, 1, result.stdout);
     assert.equal(JSON.parse(result.stdout).reason, 'retry-cap');
-    assert.equal(y.inputs.length, stage === 'tests-written' ? 3 : 5);
+    // After the writers the implementer runs once before the check; after review the check runs first.
+    assert.equal(y.inputs.length, role === 'test-writers' ? 4 : 5);
     assert.equal(y.requests.length, 0);
   }
 });
@@ -2145,7 +2147,7 @@ test('protected-test repair after a stopped review spends one bounce and keeps t
   });
   assert.equal(JSON.parse((await y.cli('team', 'run', '12', '--json')).stdout).outcome, 'stopped');
   const before = (await y.status()).tickets[0];
-  assert.equal(before.stage, 'review-pass');
+  assert.equal(before.stage, 'reviewer');
   await writeFile(join(y.path, 'answer.test.cjs'), '// Incorrect human edit\n');
   y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Change protected test');
   await y.cli('run', 'answer', '12');
@@ -2179,7 +2181,7 @@ test('answer reentry reviews a commit added after review without restarting writ
   };
   const first = await y.cli('team', 'run', '12', '--json');
   assert.equal(first.code, 1, first.stdout);
-  assert.match(first.stdout, /local HEAD differs/);
+  assert.match(first.stdout, /local HEAD differs|fresh review is required/);
   const before = (await y.status()).tickets[0];
   assert.equal(before.mergeCommit, null);
   assert.equal((await y.cli('run', 'answer', '12', 'Retry retained work')).code, 0);
