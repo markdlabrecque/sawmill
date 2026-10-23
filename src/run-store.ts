@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Role, ProjectConfig } from './config.js';
@@ -136,6 +136,8 @@ export type MirrorWrite =
 export type PendingWrite = MirrorWrite & { id: number; ticket: number; attempts: number };
 
 export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');
+/** Each replaced run is kept here as `<run id>.sqlite`; only the draft path writes it. */
+export const historyPath = (cwd: string) => join(cwd, '.mill/history');
 
 const pendingRunMessage = 'Run has pending tracker writes; use mill run answer to flush them or --replace to discard them.';
 const activeRunMessage = 'Run has working or logjam tickets; use --replace to overwrite it.';
@@ -168,6 +170,12 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
       `);
     if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
+    // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
+    const old = db.prepare('SELECT id FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get();
+    if (old) {
+      mkdirSync(historyPath(cwd), { recursive: true });
+      copyFileSync(runPath(cwd), join(historyPath(cwd), `${String(old.id)}.sqlite`));
+    }
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
     db.prepare('INSERT INTO run (id, created, base_branch, source, tracker) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker));
@@ -185,8 +193,13 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
 }
 
 export function readRun(cwd: string): RunSnapshot {
-  if (!existsSync(runPath(cwd))) throw new CliError('No drafted run; use mill run draft <numbers...>.');
-  const db = new DatabaseSync(runPath(cwd), { readOnly: true });
+  return readRunFile(runPath(cwd));
+}
+
+/** Reads any run file, current or archived, without writing it. */
+export function readRunFile(file: string): RunSnapshot {
+  if (!existsSync(file)) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+  const db = new DatabaseSync(file, { readOnly: true });
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN');
     const run = db.prepare('SELECT * FROM run').get();

@@ -25,6 +25,13 @@ The only way to see what Sawmill is doing is `mill run status` in each millyard'
 6. As the human user, I want `mill build` and `mill run draft` to record the millyard in a machine-wide list, so that `mill board` finds idle and logjammed runs, not only the ones with a worker alive.
 7. As the human user, I want `mill board --json` to print the same rows the page shows and exit, so that scripts and tests can read the whole machine's state at once.
 
+### Archive
+
+10. As the human user, I want the Active Section to show only each project's current, unfinished run, so that finished and test projects do not crowd out the work happening now.
+11. As the human user, I want a run whose tickets are all done to move to a collapsed Archive Section at the bottom of the board, grouped by project with the newest run first, so that finished work is out of the way but not gone.
+12. As the human user, I want `mill run draft` to keep the run it replaces, finished or not, so that starting a new run never erases the old one.
+13. As the human user, I want a search box at the top of the Archive Section that matches project names loosely, and a magnifying glass on each archived project that searches its tickets by number or title, so that I can find an old project or ticket quickly.
+
 ### Staying inside the rules
 
 8. As the human user, I want `mill board` to open every run file read-only and to be unable to change a run, so that the board can never be the thing that broke a run.
@@ -38,15 +45,21 @@ The only way to see what Sawmill is doing is `mill run status` in each millyard'
 
 **View model.** One module, `src/view/model.ts`, is the seam between the data and any front end. It discovers millyards, calls `readRun()` on each, and returns one snapshot: a time, and per project its name from `.mill/config.yaml`, its millyard path, its run id, an error string if the run file could not be read, and its tickets. Per ticket: number, title, state, stage, active role from `team.activeRole`, bounces, time in stage, blockers, reason, stop flag, and a lane. Nothing else from the run file crosses this seam.
 
+**Run history.** Before `mill run draft` wipes the run file, it copies it to `.mill/history/<run id>.sqlite`, inside the same lock as the wipe, unless the run has no tickets. A run replaced with `--replace` before it finished is kept as it was. Only the draft path writes history; the board reads it read-only.
+
+**Active and Archive.** The snapshot is `{ time, projects, archive }`. `projects` is the Active Section: one entry per project whose current run is not complete, shaped as above. A run is complete when it has tickets and every one is done. `archive` is the Archive Section: per project its name, millyard path, and runs newest first, each with its run id, created time, an error string if the file could not be read, and its tickets. It holds every file in `.mill/history` plus the current run when complete; a run seen in both is listed once, matched on run id. A project can be in both lists at once.
+
 **Lanes.** Ten, in order: queued, launch, worktree, tests, implement, review, rebase, PR, CI, merged. A ticket's lane is `merged` when done; `queued` when queued or blocked; otherwise the active role's lane when a role is running (test-writers, implementer, reviewer), else the last stage's lane (team-launch, worktree-created, tests-written, implemented, review-pass, user-testing, integrate, rebase, pr-opened, ci-wait, ci-failed, merged). A logjam keeps the lane it reached. An unknown stage lands on launch.
 
 **Feed.** The server reads every millyard at most twice a second and pushes a snapshot over Server-Sent Events at `/events` only when something other than time in stage changed. The browser counts time in stage itself between pushes. `/view.json` returns the latest snapshot for curl and tests. No file watching, no event feed from `mill run`: the spike measured a writer under three readers in a tight loop at a mean of 0.55 ms and a max of 3.21 ms per write transaction, and a viewer polling twice a second is nowhere near that.
 
 **Page.** One HTML document held as a string in the package, no framework, no build step, no dependency. One card per project with its name, path, and counts by state. One row per ticket with number, title, a bounce badge, a stop badge, and a detail line that says the same things as `mill run status`. Under it, the lane with a marker whose position is a CSS transition, so a stage change slides. A working marker has a rotating ring; a logjam marker pulses red; a bounce shakes the row once. Under 520 px wide the lane labels become one or two letters and titles truncate with an ellipsis. Dark theme by default.
 
+The cards above sit in the Active Section. Under it, the Archive Section is a `<details>` element, closed by default, so Enter or Space on its header opens and closes it. Open, it shows a project search box (a case-insensitive subsequence match on the project name, so missing letters still match) and one card per archived project listing each run's tickets. Each card has a magnifying glass button that opens a ticket search box matching `#12`, `12`, or part of a title; clicking the glass again, or Escape in the box, closes it and clears it. Escape in the project box clears it, then closes the section. An empty result says so. Search boxes use a 16 px font so a phone does not zoom on focus.
+
 **Phone.** `tailscale serve --bg --https=4444 http://127.0.0.1:4444` on the desktop, then `https://<machine>.<tailnet>.ts.net:4444` on the phone. Tailscale terminates HTTPS and keeps it tailnet-only. `tailscale serve --https=4444 off` removes it. The README documents this; `mill board` does not run it, because serve configuration is persistent machine state the user owns.
 
-**Read-only.** `src/view/` imports `readRun`, `listSlots`, and the config reader for the project name. It never imports `transitions.ts`, the tracker, or the runtime. `readRun()` opens the database with `readOnly: true`.
+**Read-only.** `src/view/` imports `readRun`, `readRunFile`, `listSlots`, and the config reader for the project name. It never imports `transitions.ts`, the tracker, or the runtime. `readRunFile()` opens the database with `readOnly: true`, for the current run and saved runs alike. The board never writes; the draft path is the only writer of `.mill/history`.
 
 **Front ends.** The web page is the first. A terminal front end is wanted later and is not ruled out: it would be a second consumer of `src/view/model.ts` (or of `mill board --json`), and nothing in the model is shaped for the browser.
 
@@ -57,7 +70,8 @@ Through the CLI seam, against temporary millyards and a temporary home, as in `d
 - Registry: `mill build` and `mill run draft` leave a file under `<home>/.local/state/sawmill/millyards/` containing the millyard path; `mill board --json` lists a registered millyard with no slot lease and skips a registered path whose run file is gone.
 - Snapshot: two temp millyards with seeded run files yield two projects with the right names, and a ticket in each state lands on the right lane, including a working ticket with an active role and a logjam that keeps its lane.
 - Server: `mill board --port 0` style ephemeral port, `GET /view.json` returns the snapshot, `GET /events` sends the snapshot as its first event, and no request can change a run file (its hash before and after is the same).
-- Not tested: the animation and the phone layout, checked by hand at a 390 px viewport before merge; `tailscale serve`.
+- Archive: drafting a second run keeps the first in `.mill/history`, a `--replace`d unfinished run is kept as it was, a complete run is in `archive` and not `projects`, and a project with an old and a current run is in both. The page names both sections and has the search wiring.
+- Not tested: the search and toggle behaviour in the browser, the animation and the phone layout, checked by hand at a 390 px viewport before merge; `tailscale serve`.
 
 ## Out of Scope
 
@@ -65,6 +79,7 @@ Through the CLI seam, against temporary millyards and a temporary home, as in `d
 - Changing how or when the run file is written, including WAL mode.
 - Notifications and push alerts.
 - Authentication beyond the tailnet boundary.
-- History, timelines, or anything older than the current run file.
+- Timelines, or any history beyond the saved run files in the Archive Section.
+- Removing projects from the registry, or deleting or rewriting any run file from the board.
 - Logs in the page. A tap-for-log tail is a natural follow-up, not part of this.
 - The terminal front end. Later, as its own epic, over the same view model.

@@ -172,11 +172,13 @@ Add `--json` for machine-readable output; tail streams JSON events. Exit codes a
 
 Commands other than `mill build` also work from inside a ticket worktree: they find the millyard and use its settings and run state. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
-One millyard holds one run. `--replace` on `run draft` discards the saved run, including pending tracker writes. Finish or stop its active teams before replacing it.
+One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite`, where the board's Archive Section finds it. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
 
 ### Watching every run
 
 `mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+
+The Active Section at the top shows each project's current, unfinished run. When every ticket in a run is done, the run moves to the Archive Section at the bottom, which is collapsed until you open it. It groups every finished or replaced run by project, newest first. The search box at its top narrows projects by name, and missing letters still match. The magnifying glass on each archived project opens a box that narrows its tickets by number (`12` or `#12`) or by part of a title.
 
 #### Watch every run from your phone
 
