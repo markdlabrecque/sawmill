@@ -3,6 +3,10 @@ import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { createRuntime } from './runtime-factory.js';
 import { stopAtBoundary } from './cooperative-stop.js';
 import { preserveWip } from './preserve-wip.js';
+import { tests } from './integrate.js';
+import { recordChild } from './process-ownership.js';
+import { processStart } from './slots.js';
+import { reportTestRun } from './test-results.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -59,10 +63,16 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
   let head = '';
   let committed = false;
+  let latest = '';
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
-    committed = !(await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
+    const status = (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
+    committed = !status;
+    const run = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+    if ((await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim() !== head ||
+      (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim() !== status) throw new Error('Tests changed the ticket worktree or HEAD.');
+    latest = `\n\n${(await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout)).handoff}`;
     diff = progress.reviewedHead && progress.repair
       ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
       : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;
@@ -75,7 +85,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const duration = Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0);
   const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
     role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
-    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests.command}${browser.handoff}`,
+    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests.command}${latest}${browser.handoff}`,
     testCommand: project.tests.command, timeoutMs: duration, browser: browser.browser, signal: options.signal,
   }, options);
   const outcome = result.outcome;

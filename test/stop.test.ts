@@ -436,8 +436,12 @@ test('a concurrent stop lets real integration tests finish naturally and prevent
   const started = join(y.root, 'tests-started'), release = join(y.root, 'tests-release'), finished = join(y.root, 'tests-finished');
   await writeFile(join(y.cwd, 'gate.cjs'), `
 const fs = require('node:fs');
-// The red check after the test-writers must fail fast; only the integration run, with the answer built, is gated.
+// Runs are the red check, the pre-review check, then integration; only integration is gated.
+const runsFile = ${JSON.stringify(join(y.root, 'test-runs'))};
+const runs = Number(fs.existsSync(runsFile) ? fs.readFileSync(runsFile, 'utf8') : '0') + 1;
+fs.writeFileSync(runsFile, String(runs));
 if (require('node:child_process').spawnSync('node', ['answer.test.cjs']).status !== 0) process.exit(1);
+if (runs !== 3) process.exit(0);
 fs.writeFileSync(${JSON.stringify(started)}, String(process.pid));
 const poll = setInterval(() => {
   if (!fs.existsSync(${JSON.stringify(release)})) return;
