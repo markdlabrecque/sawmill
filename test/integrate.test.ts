@@ -196,9 +196,10 @@ test('a final test run that fails once and passes on the rerun proceeds and is l
   assert.equal((await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length, 2);
   const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
   try {
-    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[]).map(row => row.event).filter(event => event.includes('flaky') && event.includes('flaky case one'));
+    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[])
+      .map(row => JSON.parse(row.event)).filter(event => event.flaky);
     assert.equal(events.length, 1, 'one flaky event names the failed tests');
-    assert.ok(events[0]!.includes('flaky case two'));
+    assert.deepEqual(events[0]!.flaky.tests, ['flaky case one', 'flaky case two']);
   } finally { db.close(); }
 });
 
