@@ -66,6 +66,13 @@ Request: $ARGUMENTS
   Explain that the current draft still includes it. Ask before changing the
   selected set; after approval, re-draft the complete remaining numbers. A split
   stays a proposal until real child tickets exist and the user selects them.
+- **Successful draft, assignment:** drafting assigns each ticket to the user the
+  tracker CLI is logged in as, and records the outcome in the ticket's
+  `assignment`. Tell the user about every ticket whose `assignment.status` is
+  `held` (name the holder from `by`; Sawmill left it with them), `pending` (not
+  assigned yet; quote `error` and suggest `mill run answer <n>`), or `refused`
+  (left unassigned; quote `error`). Ask whether to keep a held ticket in the
+  batch. Say nothing for `assigned` or a missing `assignment`.
 
 ## Show the run
 

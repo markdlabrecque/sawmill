@@ -20,8 +20,8 @@ Sawmill: a run is a batch of tickets, in dependency order, executed from a milly
 4. As the human user, I want draft to refuse to overwrite a run that still has working or logjam tickets, so that I cannot lose a run by accident.
 5. As the human user, I want a `sawmill` Claude Code plugin with a `draft` skill that calls `mill run draft` and applies judgment on top (drop a ticket, split one, ask me about an odd dependency), so that `/sawmill:draft all tickets with label xyz` is enough to set up a run.
 6. As the human user, I want the millyard to be the checkout I run `mill` in, and I want `mill run draft` and `mill run` to refuse unless it is on the integration branch and clean, so that every worktree is cut from the right base.
-6a. As the human user, I want draft to assign every ticket in the run to me (the user the tracker CLI is logged in as), queued and mirrored like any other tracker write, skipping and naming any ticket someone else already holds, so that nobody starts a ticket Sawmill is about to work on.
 6a. As the human user, I want `.mill/config.yaml` to carry a `name` key that I set by hand, used for the DDEV project name and the worktrees root layout, and I want every `mill` command to halt when it is missing, so that a sandbox is never named after a folder called `main`.
+6b. As the human user, I want draft to assign every ticket in the run to me (the user the tracker CLI is logged in as), queued and mirrored like any other tracker write, skipping and naming any ticket someone else already holds, with each ticket's outcome kept in the run so status shows it, so that nobody starts a ticket Sawmill is about to work on.
 
 ### Running and watching
 

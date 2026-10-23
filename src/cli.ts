@@ -222,9 +222,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
         await draft(cwd, config.project, parsed.selection, tracker, parsed.replace, Boolean(writer));
-        const notes = writer ? await flushAssignments(cwd, config.project, writer, options) : [];
+        if (writer) await flushAssignments(cwd, config.project, writer, options);
         const snapshot = readRun(cwd);
-        emit(snapshot, [table(snapshot), ...notes].join('\n'));
+        emit(snapshot, table(snapshot));
         return 0;
       }
       const message = unknownCommand(positional);
