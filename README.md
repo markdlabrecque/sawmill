@@ -96,27 +96,46 @@ mill run status
 mill run
 ```
 
-Drafting snapshots the tickets and their dependencies without starting agents. Open blockers outside the selection and dependency cycles must be resolved before the draft can be saved.
+Drafting snapshots the tickets and their dependencies without starting agents. Open blockers outside the selection and dependency cycles must be resolved before the draft can be saved. A drafted run is **inactive**: nothing runs until you have inspected it and started it with `mill run`. Replacing a draft also leaves the new run inactive.
 
 Drafting also assigns every ticket in the run to you, the user `gh` or `glab` is logged in as, so the tracker shows they are taken. A ticket someone else already holds is left with them and named in the output. If the tracker is unreachable, the draft still saves and the assignment stays queued; retry it with `mill run answer <n>`.
 
-`mill run` starts ready tickets, waits for teams, and starts dependents as their blockers finish. It creates and merges PRs or MRs into the configured integration branch when review, local tests, and configured CI pass. Release promotion is a separate step.
+`mill run` activates the run once and hands it to the shared **scheduler**, starting the scheduler if none is running, then returns. The scheduler starts ready tickets and waits for teams. It starts dependents as their blockers finish, and answered tickets once you have answered them. It creates and merges PRs or MRs into the configured integration branch when review, local tests, and configured CI pass. Release promotion is a separate step.
 
-`mill run` goes to the background: it returns once the run has started and prints the pid and a log file under `.mill/logs/`; the final result or a crash shows up there. From the same millyard, watch progress and stop a ticket with:
+From the same millyard, watch progress and stop a ticket or the whole run with:
 
 ```sh
 mill run status
 mill team tail 12
 mill run stop 12
+mill run stop
 ```
 
-To keep the terminal until the run ends, as before, run it in the foreground instead:
+#### One scheduler for every project
+
+One scheduler runs per user on a machine. It serves every active run in the millyards registered under `~/.local/state/sawmill/millyards`, and each run's `.mill/run.sqlite` stays the only record of that run. The scheduler rereads state whenever a run file, the registry or the machine slots change, and it also scans every two seconds in case it missed a change. An active run that is waiting for a dependency, an answer or a free slot stays active, so it keeps moving without another command. Running `mill run` again is harmless.
+
+The machine-wide `concurrency` limit is shared. Projects take turns: each runnable project gets one ticket per round, and the project served least recently goes first. Each run keeps its own ticket order, dependencies, claims and locks. A project whose run file is unreadable, whose checkout is dirty, or that is waiting on its integration lock is skipped and logged. Other projects carry on.
+
+Two projects, one slot:
 
 ```sh
-mill run --foreground
+cd ~/projects/tool/main && mill run draft 12 14 && mill run
+cd ~/projects/site/main && mill run draft 7 && mill run
+mill scheduler status
 ```
 
-Only one run per millyard can be going, in the foreground or the background. `mill run --background` still works and does the same as `mill run`.
+With `concurrency: 1`, `tool` starts #12. When the slot frees up, `site` gets #7, and then `tool` gets #14.
+
+`mill run status` starts with the run's state (`inactive`, `active`, `paused`, `stopped` or `completed`) and whether the scheduler is running. `mill scheduler status` lists every registered run and prints the scheduler log path, `~/.local/state/sawmill/scheduler/scheduler.log`. `mill scheduler stop` stops the scheduler. Working tickets carry on, and the next `mill run` starts a new scheduler that recovers dead workers and adopts live ones before dispatching. The scheduler keeps the environment, such as `PATH` and credentials, of the command that started it. Restart it after changing them.
+
+Compatibility with the older modes:
+
+- `mill run --background` does the same as `mill run`.
+- `mill run --foreground` activates the run and coordinates it in the terminal, as before, retrying work held by a pause. It returns once the run finishes, has no runnable work, pauses, or is stopped. While it is attached, the scheduler leaves that run to it.
+- `mill run once` and `mill team run` stay manual. They use the same capacity, claims and locks, but they never activate a run.
+
+Before you work around a live run by hand, read [Operating Mill](docs/operating-mill.md). It lists what is safe to do, what to avoid, and which command replaces each hand fix.
 
 Before you work around a live run by hand, read [Operating Mill](docs/operating-mill.md). It lists what is safe to do, what to avoid, and which command replaces each hand fix.
 
@@ -156,11 +175,14 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill run draft 12 14 15` | Select explicit issue numbers. |
 | `mill run draft --label ready-for-agent` | Select issues with one label. |
 | `mill run draft --spec 40` | Select direct children of a spec issue. |
-| `mill run status` | Show queued, blocked, working, done, and logjam tickets. |
-| `mill run` | Start the run detached, print its log path, and return. |
-| `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. If a run is already going, wait for it first. |
+| `mill run status` | Show the run's state, whether the scheduler is running, and queued, blocked, working, done, and logjam tickets. |
+| `mill run` | Activate the run, make sure the shared scheduler is running, print its log path, and return. |
+| `mill run --foreground` | Activate the run and coordinate it in the terminal until it finishes, has no runnable work, pauses, or is stopped. |
 | `mill run log 12` | Print every step Mill took on a ticket, oldest first, with each report in full. |
-| `mill run once` | Dispatch one pass and return; detached workers continue. |
+| `mill run once` | Dispatch one pass and return; detached workers continue. The run stays inactive if it was. |
+| `mill run stop` | Stop the run: no new tickets start until `mill run`. |
+| `mill scheduler status` | Show the shared scheduler, its log, and every registered run. |
+| `mill scheduler stop` | Stop the shared scheduler; working tickets keep going. |
 | `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
 | `mill run approve-tests 12` | Accept a logjammed ticket's committed tests as its new protected baseline. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
@@ -217,7 +239,7 @@ A **logjam** means the ticket needs attention. Status shows the reason and stage
 mill run answer 12 "Use the existing schema; no migration is needed."
 ```
 
-`answer` posts the supplied text, flushes held tracker writes, removes the logjam label, and requeues unfinished work at its saved boundary. If a `mill run` was driving the run and has since ended, `answer` restarts it in the background and prints its log; a running coordinator picks the ticket up by itself. Tickets you dispatch by hand with `mill run once` or `mill team run` stay manual. To retry an outage after fixing its cause, omit the text:
+`answer` posts the supplied text, flushes held tracker writes, removes the logjam label, and requeues unfinished work at its saved boundary. In an active run, the scheduler picks the ticket up, and `answer` starts the scheduler if it was not running. An answer never starts an inactive draft. `mill run answer` also leaves a stopped run stopped until you start it with `mill run`. Once board controls arrive (#93), an answer given on the board will also start a stopped run. Tickets in a run you dispatch by hand with `mill run once` or `mill team run` stay manual. To retry an outage after fixing its cause, omit the text:
 
 ```sh
 mill run answer 12
@@ -242,7 +264,7 @@ mill run stop 12
 
 The active stage finishes naturally. Wait for the stopped logjam before answering to resume.
 
-When a ticket has gone wrong and resuming would only repeat it, `mill run reset 12` starts it over. It deletes the comments the run posted on the issue (those whose first line starts with `[sawmill:`; a comment you wrote that starts that way is deleted too), removes the logjam label, runs teardown and force-removes the worktree with any WIP, deletes the `mill/12` branch locally and on `origin`, and deletes `.mill/logs/12/`. The ticket goes back to `queued` with no saved progress, and the next `mill run` starts it from the test writers. Reset refuses a `working` ticket (stop it with `mill run stop 12` first) and a `done` one. If a tracker write fails part-way, the ticket keeps its old progress; run the reset again.
+When a ticket has gone wrong and resuming would only repeat it, `mill run reset 12` starts it over. It deletes the comments the run posted on the issue (those whose first line starts with `[sawmill:`; a comment you wrote that starts that way is deleted too), removes the logjam label, runs teardown and force-removes the worktree with any WIP, deletes the `mill/12` branch locally and on `origin`, and deletes `.mill/logs/12/`. The ticket goes back to `queued` with no saved progress. In an active run the scheduler starts it again from the test writers. Reset refuses a `working` ticket (stop it with `mill run stop 12` first) and a `done` one. If a tracker write fails part-way, the ticket keeps its old progress; run the reset again.
 
 To mark a ticket complete by hand and close its tracker issue without merging:
 
@@ -261,7 +283,7 @@ mill run close 12
 | `.mill/teardown.sh` | Release project resources before removing a worktree. |
 | `.mill/logs/<ticket>/` | Raw role streams, stderr, sessions, and worker logs. |
 
-Machine defaults are two concurrent tickets across all millyards, three infrastructure retries, a pause threshold of three consecutive infrastructure results, and a 30-second CI polling interval. A success from a live team clears a pause. If no team remains, the loop exits visibly; a fresh `mill run` retries queued work.
+Machine defaults are two concurrent tickets across all millyards, three infrastructure retries, a pause threshold of three consecutive infrastructure results, and a 30-second CI polling interval. A success from a live team clears a pause. Otherwise the run stays paused, and status shows why. Restarting the scheduler or running `mill run` again does not clear the pause. Fix the cause, then run `mill run stop` and `mill run` to retry queued work. `mill run --foreground` also retries it.
 
 `mill build` preserves existing house settings and hooks. `mill build --force` regenerates project config from house defaults, replacing local config edits. See the annotated [project defaults](templates/default.yaml) and [machine settings](templates/config.yaml) for every supported key.
 

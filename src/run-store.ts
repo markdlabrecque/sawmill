@@ -139,12 +139,15 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
   status: 'ok';
-  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress };
+  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string; lifecycle?: RunLifecycle };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
 }
 export interface LoopProgress { cursor: number; consecutiveInfrastructure: number; pausedReason?: string }
+/** Derived from durable intent and always set by readRun. An active run may be waiting on
+ * dependencies, answers or capacity. */
+export type RunLifecycle = 'inactive' | 'active' | 'paused' | 'stopped' | 'completed';
 
 /** Merge acceptance is irreversible; every unfinished cleanup remains retryable. */
 export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'integration'>): boolean {
@@ -248,7 +251,12 @@ export function readRunFile(file: string): RunSnapshot {
       if (ticket.state === 'queued' || ticket.state === 'blocked') ticket.state = ticket.blockers.length ? 'blocked' : 'queued';
     }
     const pendingWrites = db.prepare('SELECT * FROM pending_writes ORDER BY id').all().map(row => ({ id: Number(row.id), ticket: Number(row.ticket), kind: row.kind, payload: JSON.parse(String(row.payload)), attempts: Number(row.attempts) })) as PendingWrite[];
-    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(run.loop_control ? { loop: JSON.parse(String(run.loop_control)) as LoopProgress } : {}) }, tickets, edges, pendingWrites };
+    const loop = run.loop_control ? JSON.parse(String(run.loop_control)) as LoopProgress : undefined;
+    // A run drafted before activation existed has no column and stays inactive until started.
+    const lifecycle: RunLifecycle = tickets.length && tickets.every(ticket => ticket.state === 'done') ? 'completed'
+      : !run.activated ? 'inactive' : run.stopped ? 'stopped' : loop?.pausedReason ? 'paused' : 'active';
+    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(loop ? { loop } : {}),
+      ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}), lifecycle }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 

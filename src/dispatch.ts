@@ -33,13 +33,16 @@ export function workerEvents(snapshot: RunSnapshot): WorkerEvent[] {
   return snapshot.tickets.flatMap(row => row.worker ? [{ ticket: row.number, worker: row.worker }] : []);
 }
 
-export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true): Promise<DispatchResult> {
+/** `limit` bounds the launch attempts of one pass, so a shared scheduler can give each
+ * project a turn; `wait: false` skips a project whose integration lock is held. */
+export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true,
+  options: { limit?: number; wait?: boolean } = {}): Promise<DispatchResult> {
   cwd = await realpath(cwd);
-  const snapshot = await dispatchPreflight(cwd, project);
+  const snapshot = await dispatchPreflight(cwd, project, options.wait);
   const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
-    if (!beforeClaim()) break;
+    if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
     const token = randomUUID(), started = new Date().toISOString();
     const lease = claimSlot(home, machine.concurrency, { token, processToken: token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, launcherStart: processStart(process.pid), pid: null, created: started });
     if (!lease) { result.slotsFull = true; break; }
@@ -67,9 +70,9 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   return result;
 }
 
-export async function dispatchPreflight(cwd: string, project: ProjectConfig): Promise<RunSnapshot> {
+export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true): Promise<RunSnapshot> {
   readRun(cwd);
-  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
+  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), wait);
   const snapshot = readRun(cwd);
   const a = snapshot.run.tracker, b = project.tracker;
   if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
