@@ -12,7 +12,7 @@ export interface ProjectConfig {
   runtime: 'claude-code' | 'pi' | 'codex';
   roles: Record<Role, { model: string; effort: Effort }>;
   role_timeout: string;
-  tests: { command: string; timeout: string };
+  tests: { command: string; timeout: string; preflight?: string };
   ci: 'wait' | 'none';
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
@@ -59,7 +59,7 @@ const projectSchema = object({
   runtime: choice('claude-code', 'pi', 'codex'),
   roles: object({ 'test-writers': role, implementer: role, reviewer: role }),
   role_timeout: { ...duration, default: '60m' },
-  tests: object({ command: string, timeout: { ...duration, default: '30m' } }),
+  tests: object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true } }),
   ci: choice('wait', 'none'),
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
   test_harness: { ...choice('ddev', 'docker', 'none'), hint: 'set test_harness: none to opt out of user testing' },

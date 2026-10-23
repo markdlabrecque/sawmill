@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { CliError } from './errors.js';
 import { readRun, runPath, type RunTicket } from './run-store.js';
@@ -79,6 +80,53 @@ async function hook(cwd: string, project: ProjectConfig, number: number, path: s
   }); } catch (error) { throw new CliError(`${name}.sh failed: ${failure(error)}`); }
 }
 
+/** A workspace that cannot work: stop once, before any role, with the fix. Never retried. */
+class PreflightError extends CliError {}
+
+/** The new ticket branch is cut from the local integration branch; refuse it when origin has moved on. */
+async function checkBase(cwd: string, project: ProjectConfig, number: number) {
+  try { await git(cwd, 'remote', 'get-url', 'origin'); } catch { return; }
+  const branch = project.integration, remote = `refs/remotes/origin/${branch}`;
+  const resume = `then mill run answer ${number}`;
+  try { await execute('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${remote}`], { cwd, encoding: 'utf8', timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }); }
+  catch (error) { throw new PreflightError(`Cannot check that ${branch} is current: fetching it from origin failed.\nFix: make \`git -C ${JSON.stringify(cwd)} fetch origin ${branch}\` succeed, ${resume}.\n${failure(error)}`); }
+  const [ahead, behind] = (await git(cwd, 'rev-list', '--left-right', '--count', `refs/heads/${branch}...${remote}`)).split(/\s+/).map(Number);
+  if (ahead && behind) throw new PreflightError(`Local ${branch} has commits that aren't on origin/${branch}, and is ${behind} commit(s) behind it.\nFix: put local ${branch} back in line with origin/${branch} by hand (for example \`git rebase origin/${branch}\` in ${cwd}), ${resume}.`);
+  if (behind) throw new PreflightError(`Base branch ${branch} is ${behind} commit(s) behind origin/${branch}.\nFix: run \`git pull --ff-only origin ${branch}\` in ${cwd}, ${resume}.`);
+}
+
+/** After setup: repair missing Node dependencies once, then check the test command can start. */
+async function checkWorkspace(project: ProjectConfig, number: number, path: string) {
+  const resume = `then mill run answer ${number}`;
+  const node = existsSync(join(path, 'package.json')), modules = join(path, 'node_modules');
+  if (node && existsSync(join(path, 'package-lock.json')) && !existsSync(modules)) {
+    try { await execute('npm', ['ci'], { cwd: path, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
+    catch (error) { throw new PreflightError(`node_modules was missing and \`npm ci\` failed in the worktree.\nFix: make \`npm ci\` succeed in ${JSON.stringify(path)} (or install dependencies in .mill/setup.sh), ${resume}.\n${failure(error)}`); }
+  }
+  if (project.tests.preflight) {
+    try { await execute('bash', ['-c', project.tests.preflight], { cwd: path, encoding: 'utf8' }); }
+    catch (error) { throw new PreflightError(`tests.preflight failed in the worktree: ${project.tests.preflight}\nFix: make it pass in ${JSON.stringify(path)} (usually in .mill/setup.sh), ${resume}.\n${failure(error)}`); }
+    return;
+  }
+  if (node && !existsSync(modules)) throw new PreflightError(`node_modules is missing in the worktree, so the test command cannot run.\nFix: install dependencies in .mill/setup.sh (for example \`npm ci\`), ${resume}.`);
+  const program = project.tests.command.trim().split(/\s+/).find(word => !/^[A-Za-z_]\w*=/.test(word));
+  if (!program) return;
+  try { await execute('bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd: path, encoding: 'utf8' }); }
+  catch { throw new PreflightError(`The test command cannot run: ${program} was not found in the worktree.\nFix: install ${program} or set it up in .mill/setup.sh, ${resume}.`); }
+}
+
+/** Warn, never fail, when this project is Sawmill itself and the running mill is older than origin. */
+async function millBehind(cwd: string, project: ProjectConfig) {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  if (!existsSync(join(root, '.git'))) return undefined;
+  try {
+    const head = await git(root, 'rev-parse', 'HEAD'), remote = `refs/remotes/origin/${project.integration}`;
+    await git(cwd, 'merge-base', '--is-ancestor', head, remote);
+    const behind = Number(await git(cwd, 'rev-list', '--count', `${head}..${remote}`));
+    return behind ? `The running mill (${head.slice(0, 7)}) is ${behind} commit(s) behind origin/${project.integration}; rebuild it with \`git pull && npm ci && npm run build\` in ${root}.` : undefined;
+  } catch { return undefined; }
+}
+
 export async function createWorktree(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number, options: WorktreeOptions = {}) {
   cwd = resolve(cwd);
   const path = machine.worktrees ? resolve(cwd, machine.worktrees, project.name, String(number)) : resolve(dirname(cwd), String(number));
@@ -108,12 +156,19 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing.path, branch, reused: true };
   }
   let created = false;
+  const warnings: string[] = [];
   try {
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
-    else await git(cwd, 'worktree', 'add', '-b', branch, path, `refs/heads/${project.integration}`);
+    else {
+      await checkBase(cwd, project, number);
+      const warning = await millBehind(cwd, project);
+      if (warning) warnings.push(warning);
+      await git(cwd, 'worktree', 'add', '-b', branch, path, `refs/heads/${project.integration}`);
+    }
     created = true;
     if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
     await hook(cwd, project, number, path, 'setup', options);
+    await checkWorkspace(project, number, path);
   } catch (error) {
     let message = failure(error);
     if (created) {
@@ -126,7 +181,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     }
     if (tracker) await transition(cwd, project, tracker, number, {
       state: 'logjam', reason: 'environment', stage: 'worktree-create', worktree: created ? path : null, branch,
-      report: { stage: 'infrastructure', details: 'Worktree creation failed.', error: message, reason: 'environment', reachedStage: 'worktree-create' },
+      report: { stage: 'infrastructure', details: error instanceof PreflightError ? 'Workspace preflight failed.' : 'Worktree creation failed.', error: message, reason: 'environment', reachedStage: 'worktree-create' },
     }, [], options);
     throw new CliError(message);
   }
@@ -135,7 +190,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     worktree: path, branch, provisioned: true, stage: 'worktree-created',
     report: { stage: 'worktree-created', details: `Worktree: ${path}\nBranch: ${branch}` },
   }, [], options);
-  return { status: ok && ticket?.state !== 'logjam' ? 'ok' as const : 'logjam' as const, ticket: number, path, branch, reused: false };
+  return { status: ok && ticket?.state !== 'logjam' ? 'ok' as const : 'logjam' as const, ticket: number, path, branch, reused: false, ...(warnings.length ? { warnings } : {}) };
 }
 
 export async function removeWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {

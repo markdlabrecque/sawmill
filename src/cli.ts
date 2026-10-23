@@ -158,7 +158,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return result.status === 'ok' ? 0 : 1;
         }
         const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
-        emit(result, result.status === 'ok' ? result.path : `Ticket in logjam: ${result.path}`);
+        emit(result, [result.status === 'ok' ? result.path : `Ticket in logjam: ${result.path}`, ...('warnings' in result ? result.warnings ?? [] : []).map(warning => `Warning: ${warning}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'status') {
