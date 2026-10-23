@@ -96,14 +96,14 @@ The copy of run-file changes posted to the tracker for visibility, written after
 _Avoid_: Sync
 
 **Registry**:
-The machine-wide list of millyards that have had a run, used by the live view to find them.
+The machine-wide list of millyards that have had a run, used by the board to find them.
 
-**Live view**:
+**Board**:
 The read-only page showing every run on the machine at once, each ticket placed on its lane.
-_Avoid_: Dashboard, UI
+_Avoid_: Dashboard, Live view, UI
 
 **Lane**:
-The live view's track of ten stops (queued to merged) along which a ticket's marker moves.
+The board's track of ten stops (queued to merged) along which a ticket's marker moves.
 _Avoid_: Column, swimlane
 
 ### Teams and agents

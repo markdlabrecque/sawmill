@@ -24,7 +24,7 @@ export const commands: Command[] = [
   { name: 'worktree gc', usage: 'mill worktree gc [--json]', summary: 'Clean up worktrees for locally done tickets.' },
   { name: 'tickets comment', usage: 'mill tickets comment <n> <text> [--stage <stage>] [--json]', summary: 'Comment on a ticket in the run; --stage records a stage report.' },
   { name: 'tickets label', usage: 'mill tickets label <n> <label> [--remove] [--json]', summary: 'Add or, with --remove, remove a label on a ticket in the run.' },
-  { name: 'view', usage: 'mill view [--port <n>] [--json]', summary: 'Serve a live, read-only page of every run on this machine; --json prints one snapshot.' },
+  { name: 'board', usage: 'mill board [--port <n>] [--json]', summary: 'Serve a live, read-only page of every run on this machine; --json prints one snapshot.' },
 ];
 
 const options = [
