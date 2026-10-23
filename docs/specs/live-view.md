@@ -35,7 +35,8 @@ The only way to see what Sawmill is doing is `mill run status` in each millyard'
 ### Staying inside the rules
 
 8. As the human user, I want `mill board` to open every run file read-only and to be unable to change a run, so that the board can never be the thing that broke a run.
-9. As the human user, I want the page to carry no tracker configuration, credentials, ticket bodies, comments, or logs, so that serving it on the tailnet leaks nothing that is not already on my screen.
+9. As the human user, I want the page to carry no tracker configuration, credentials, ticket bodies, comments, or logs, so that serving it on the tailnet leaks nothing that is not already on my screen. Each ticket's derived issue URL is the one exception.
+14. As the human user, I want each ticket on the board, active or archived, to link to its tracker issue, so that I can open the full discussion without finding it by hand.
 
 ## Implementation Decisions
 
@@ -43,7 +44,7 @@ The only way to see what Sawmill is doing is `mill run status` in each millyard'
 
 **Registry.** `~/.local/state/sawmill/millyards/<sha1 of the absolute millyard path>`, a plain file containing that path. `mill build` and `mill run draft` write it (both already take `home`). It holds paths only, so the run file stays the single source of truth. `mill board` unions the registry with the slot leases in `~/.local/state/sawmill/slots` and skips any path with no `.mill/run.sqlite`. The viewer never deletes a registry entry; stale entries are harmless and `mill build` rewrites its own.
 
-**View model.** One module, `src/view/model.ts`, is the seam between the data and any front end. It discovers millyards, calls `readRun()` on each, and returns one snapshot: a time, and per project its name from `.mill/config.yaml`, its millyard path, its run id, an error string if the run file could not be read, and its tickets. Per ticket: number, title, state, stage, active role from `team.activeRole`, bounces, time in stage, blockers, reason, stop flag, and a lane. Nothing else from the run file crosses this seam.
+**View model.** One module, `src/view/model.ts`, is the seam between the data and any front end. It discovers millyards, calls `readRun()` on each, and returns one snapshot: a time, and per project its name from `.mill/config.yaml`, its millyard path, its run id, an error string if the run file could not be read, and its tickets. Per ticket: number, title, url, state, stage, active role from `team.activeRole`, bounces, time in stage, blockers, reason, stop flag, and a lane. Nothing else from the run file crosses this seam. `url` is the issue's web page, built on the server by `ticketUrl()` from the project's `tracker` settings, which must pass the same checks as `mill build`; it is `null` when the config is missing or invalid, or the result is not an http(s) URL. The tracker is never queried for it, and the settings themselves never cross the seam.
 
 **Run history.** Before `mill run draft` wipes the run file, it copies it to `.mill/history/<run id>.sqlite`, inside the same lock as the wipe, unless the run has no tickets. A run replaced with `--replace` before it finished is kept as it was. Only the draft path writes history; the board reads it read-only.
 
@@ -55,11 +56,13 @@ The only way to see what Sawmill is doing is `mill run status` in each millyard'
 
 **Page.** One HTML document held as a string in the package, no framework, no build step, no dependency. One card per project with its name, path, and counts by state. One row per ticket with number, title, a bounce badge, a stop badge, and a detail line that says the same things as `mill run status`. Under it, the lane with a marker whose position is a CSS transition, so a stage change slides. A working marker has a rotating ring; a logjam marker pulses red; a bounce shakes the row once. Under 520 px wide the lane labels become one or two letters and titles truncate with an ellipsis. Dark theme by default.
 
+In both sections a ticket's number and title form one anchor. The page checks the URL again and sets `href` only for http(s); it opens in a new tab with `rel="noopener noreferrer"`, so the board keeps running. With no valid URL the anchor has no `href`: the ticket still shows, but it is not a link and takes no focus. A linked ticket has a visible `:focus-visible` outline.
+
 The cards above sit in the Active Section. Under it, the Archive Section is a `<details>` element, closed by default, so Enter or Space on its header opens and closes it. Open, it shows a project search box (a case-insensitive subsequence match on the project name, so missing letters still match) and one card per archived project listing each run's tickets. Each card has a magnifying glass button that opens a ticket search box matching `#12`, `12`, or part of a title; clicking the glass again, or Escape in the box, closes it and clears it. Escape in the project box clears it, then closes the section. An empty result says so. Search boxes use a 16 px font so a phone does not zoom on focus.
 
 **Phone.** `tailscale serve --bg --https=4444 http://127.0.0.1:4444` on the desktop, then `https://<machine>.<tailnet>.ts.net:4444` on the phone. Tailscale terminates HTTPS and keeps it tailnet-only. `tailscale serve --https=4444 off` removes it. The README documents this; `mill board` does not run it, because serve configuration is persistent machine state the user owns.
 
-**Read-only.** `src/view/` imports `readRun`, `readRunFile`, `listSlots`, and the config reader for the project name. It never imports `transitions.ts`, the tracker, or the runtime. `readRunFile()` opens the database with `readOnly: true`, for the current run and saved runs alike. The board never writes; the draft path is the only writer of `.mill/history`.
+**Read-only.** `src/view/` imports `readRun`, `readRunFile`, `listSlots`, the config reader for the project name and tracker settings, and `ticketUrl()`. It never imports `transitions.ts`, the tracker, or the runtime. `readRunFile()` opens the database with `readOnly: true`, for the current run and saved runs alike. The board never writes; the draft path is the only writer of `.mill/history`.
 
 **Front ends.** The web page is the first. A terminal front end is wanted later and is not ruled out: it would be a second consumer of `src/view/model.ts` (or of `mill board --json`), and nothing in the model is shaped for the browser.
 

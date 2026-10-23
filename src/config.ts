@@ -48,9 +48,10 @@ const object = (fields: Record<string, Rule>): Rule => ({ type: 'object', fields
 const duration: Rule = { type: 'string', check: value => /^[1-9]\d*(s|m|h)$/.test(String(value)), hint: 'expected a positive duration with s, m, or h suffix' };
 const integer = (value: number, minimum: number): Rule => ({ type: 'number', default: value, check: value => Number.isSafeInteger(value) && Number(value) >= minimum, hint: `expected an integer >= ${minimum}` });
 const role = object({ model: string, effort: choice('low', 'medium', 'high', 'max') });
+const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } });
 const projectSchema = object({
   name: { ...string, check: value => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(String(value)), hint: 'use letters, digits, and hyphens, beginning with a letter or digit' },
-  tracker: object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } }),
+  tracker: trackerSchema,
   integration: { ...string, check: value => {
     if (String(value).startsWith('-') || value === 'HEAD') return false;
     try { execFileSync('git', ['check-ref-format', `refs/heads/${value}`], { stdio: 'ignore' }); return true; }
@@ -102,6 +103,13 @@ function validate(value: unknown, rule: Rule, source: string, key: string, issue
     issue('bad value', rule.choices ? `expected ${rule.choices.join(', ')}` : 'value is invalid');
   }
   return scalar;
+}
+
+/** A parsed `tracker` mapping when it passes the project schema, otherwise null. */
+export function validTracker(value: unknown): ProjectConfig['tracker'] | null {
+  const issues: ConfigIssue[] = [];
+  const tracker = validate(value, trackerSchema, '', 'tracker', issues) as ProjectConfig['tracker'] | undefined;
+  return issues.length || !tracker ? null : tracker;
 }
 
 async function readConfig(source: string, rule: Rule, issues: ConfigIssue[]): Promise<unknown> {
