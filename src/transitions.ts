@@ -328,6 +328,23 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
   });
 }
 
+/** Every rerun of a failed test run, passed or not. A pass is also logged as
+ * flaky, keeping which tests failed first. */
+export function logRerunRow(cwd: string, number: number, stage: string, passed: boolean, tests: string[], code: number | null): void {
+  transaction(cwd, db => {
+    requireTicket(db, number);
+    const time = new Date().toISOString();
+    const insert = db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)');
+    insert.run(number, time, JSON.stringify({ rerun: { stage, passed } }));
+    if (passed) insert.run(number, time, JSON.stringify({ flaky: { stage, tests, code } }));
+  });
+}
+
+/** How many failed runs at one stage of a ticket were rerun. */
+export function rerunCount(cwd: string, number: number, stage: string): number {
+  return transaction(cwd, db => (db.prepare("SELECT COUNT(*) AS count FROM log WHERE ticket = ? AND json_extract(event, '$.rerun.stage') = ?").get(number, stage) as { count: number }).count);
+}
+
 /** Every reporter comment starts with this first line; a person's comments never should. */
 export const agentComment = (body: string) => body.startsWith('[sawmill:');
 

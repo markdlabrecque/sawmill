@@ -94,6 +94,26 @@ test('direct review passes prompt, cached ticket, full diff, model and effort an
   assert.match(yard.ticket.comments.at(-1)!.body, /fixture-session/);
 });
 
+test('an agent session does not carry the worker variables', async t => {
+  const names = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; }));
+  const yard = await reviewYard(t);
+  const stream = [init, final(fence({ outcome: 'pass' }))].map(value => JSON.stringify(value)).join('\n');
+  const runtime = await processRuntime(yard, `
+    const fs = require('node:fs');
+    process.stdin.resume();
+    process.stdin.on('end', () => {
+      fs.writeFileSync('env.json', JSON.stringify(Object.keys(process.env).filter(name => name.startsWith('MILL_'))));
+      process.stdout.write(${JSON.stringify(stream)});
+    });`);
+  for (const name of names) process.env[name] = 'leaked-from-worker';
+  const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
+  assert.equal(result.code, 0, result.stdout);
+  const seen = JSON.parse(await readFile(join(yard.worktree, 'env.json'), 'utf8')) as string[];
+  assert.deepEqual(seen.filter(name => names.includes(name)), []);
+});
+
 async function eventsRuntime(yard: Awaited<ReturnType<typeof reviewYard>>, events: unknown[], extra = '') {
   return processRuntime(yard, `process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write(${JSON.stringify(events.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}); ${extra} });`);
 }
