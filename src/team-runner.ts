@@ -308,7 +308,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role === 'test-writers') {
           await git(path, 'merge-base', '--is-ancestor', progress.testBase!, 'HEAD');
           progress.testCommit = await git(path, 'rev-parse', 'HEAD');
-          progress.testCommits = (await git(path, 'rev-list', '--reverse', `${progress.testBase}..HEAD`)).split('\n').filter(Boolean);
+          progress.testCommits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^${progress.testBase}`, `^refs/heads/${project.integration}`)).split('\n').filter(Boolean);
           const files = new Set<string>();
           for (const commit of progress.testCommits) {
             const { stdout } = await execute('git', ['diff', '--name-only', '-z', '--no-renames', `${commit}^`, commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 });
