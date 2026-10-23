@@ -168,13 +168,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit(snapshot, table(snapshot));
         return 0;
       }
-      if (positional[0] === 'run' && positional.length === 1) {
+      if (positional[0] === 'run' && positional[1] === '--foreground') {
+        if (positional.length !== 2) throw new CliError(usage('run'), 2);
         const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd), options.onRunLocked);
         emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
       }
-      if (positional[0] === 'run' && positional[1] === '--background') {
-        if (positional.length !== 2) throw new CliError(usage('run'), 2);
+      // --background is kept as an alias for the default so #43 scripts keep working.
+      if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
+        if (positional.length > 2) throw new CliError(usage('run'), 2);
         const started = await startBackgroundRun(cwd, home);
         emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
           "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));

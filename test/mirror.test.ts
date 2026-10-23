@@ -357,7 +357,7 @@ test('a completed loop can draft another batch and reset its loop metadata', asy
   const tracker = new WriteTracker([ticket(1)]);
   const y = await configured(t, tracker);
   assert.equal((await y.cli('run', 'close', '1')).code, 0);
-  assert.equal((await y.cli('run', '--json')).code, 0);
+  assert.equal((await y.cli('run', '--foreground', '--json')).code, 0);
   const old = JSON.parse((await y.cli('run', 'status', '--json')).stdout);
   assert.ok(old.run.loop);
   tracker.readsAllowed = true;
