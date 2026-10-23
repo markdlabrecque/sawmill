@@ -165,12 +165,25 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill worktree create 12` | Create or reuse a ticket worktree and run setup when needed. |
 | `mill worktree remove 12` | Run teardown and remove a clean worktree, retaining unmerged branches. |
 | `mill worktree gc` | Clean up worktrees for locally done tickets. |
+| `mill view` | Serve a live, read-only page of every run on this machine. |
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
 Commands other than `mill build` also work from inside a ticket worktree: they find the millyard and use its settings and run state. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
 One millyard holds one run. `--replace` on `run draft` discards the saved run, including pending tracker writes. Finish or stop its active teams before replacing it.
+
+### Watching every run
+
+`mill view` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+
+To open it from a phone, share the port on your tailnet once from the desktop:
+
+```sh
+tailscale serve --bg --https=4444 http://127.0.0.1:4444
+```
+
+Then open `https://<machine>.<tailnet>.ts.net:4444` on the phone. Tailscale terminates HTTPS and keeps the page tailnet-only. `tailscale serve --https=4444 off` removes it. `mill view` never changes this setting itself.
 
 ### Questions, outages, and stopping
 
