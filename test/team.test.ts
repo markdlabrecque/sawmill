@@ -870,6 +870,62 @@ test('rebase conflict feedback reaches a separate fix and narrow review after re
   assert.equal(y.git('log', '-1', '--format=%s', row.integration.mergedHead), '#12: Fix integration conflict');
 });
 
+const sharedTestBase = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\n";
+const sharedTestMerged = `${sharedTestBase}assert.equal(typeof require('./answer.cjs'), 'function');\nconsole.log('pass 1');\n`;
+
+/** Script where integration gains its own answer.test.cjs, so rebasing the writer commit conflicts in the protected test file. */
+function conflictingTestScript(y: Awaited<ReturnType<typeof fixture>>, repair: (cwd: string, git: (...args: string[]) => string) => Promise<void>) {
+  let implementations = 0, reviews = 0;
+  y.setScript(async (request, sink) => {
+    const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      await writeFile(join(y.cwd, 'answer.test.cjs'), "assert.equal(typeof require('./answer.cjs'), 'function');\n");
+      y.git('add', '.'); y.git('commit', '-m', 'Another ticket adds its own check'); y.git('push');
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      try { git('rebase', 'integration'); } catch { /* Resolve the real conflict below. */ }
+      await writeFile(join(request.cwd, 'answer.test.cjs'), sharedTestMerged);
+      // Writer subjects start with '#', which git would strip as a comment from the replayed message.
+      git('add', 'answer.test.cjs'); git('-c', 'core.commentChar=;', '-c', 'core.editor=true', 'rebase', '--continue');
+      await repair(request.cwd, git);
+      return { outcome: { outcome: 'done', summary: 'Resolved the conflict in the shared test file.' } };
+    }
+    return y.normal(request, sink);
+  });
+}
+
+test('a conflict in a protected test file during the rebase is repaired and merges without a logjam', async t => {
+  const y = await fixture(t);
+  conflictingTestScript(y, async (cwd, git) => {
+    await writeFile(join(cwd, 'notes.txt'), 'Conflict repaired.\n');
+    git('add', 'notes.txt'); git('commit', '-m', '#12: Fix integration conflict');
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  assert.equal(row.reason, null);
+  assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), sharedTestMerged.trimEnd());
+  assert.equal(y.ticket.state, 'closed');
+});
+
+test('weakening a protected test after a conflict rebase is still caught', async t => {
+  const y = await fixture(t);
+  let weakened = false;
+  conflictingTestScript(y, async (cwd, git) => {
+    await writeFile(join(cwd, 'answer.test.cjs'), "assert.equal(typeof require('./answer.cjs'), 'function');\nconsole.log('pass 1');\n");
+    git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Fix integration conflict');
+    weakened = true;
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.ok(weakened);
+  assert.notEqual(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.notEqual(row.state, 'done');
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+  assert.match(y.inputs.at(-1)!.handoff + JSON.stringify(row), /protected|test-writer.*files.*changed/i);
+});
+
 test('review, local tests and CI failures share one cap and retain the final CI diagnostics', async t => {
   const y = await fixture(t);
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
