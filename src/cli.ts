@@ -79,12 +79,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       emit({ status: 'usage-error', message }, message);
       return 2;
     }
-    if (positional[0] === 'view') {
+    if (positional[0] === 'board') {
       // Not tied to a millyard: it reads every registered run and needs no config.
       const flags = positional.slice(1);
       const port = !flags.length ? 4444 : flags.length === 2 && flags[0] === '--port' && /^\d{1,5}$/.test(flags[1]!) && Number(flags[1]) <= 65535 ? Number(flags[1]) : undefined;
       if (port === undefined) {
-        const message = usage('view');
+        const message = usage('board');
         emit({ status: 'usage-error', message }, message);
         return 2;
       }

@@ -166,7 +166,7 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill worktree create 12` | Create or reuse a ticket worktree and run setup when needed. |
 | `mill worktree remove 12` | Run teardown and remove a clean worktree, retaining unmerged branches. |
 | `mill worktree gc` | Clean up worktrees for locally done tickets. |
-| `mill view` | Serve a live, read-only page of every run on this machine. |
+| `mill board` | Serve a live, read-only page of every run on this machine. |
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
@@ -176,7 +176,7 @@ One millyard holds one run. `--replace` on `run draft` discards the saved run, i
 
 ### Watching every run
 
-`mill view` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. It only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
 
 #### Watch every run from your phone
 
@@ -194,13 +194,13 @@ tailscale serve --https=4444 off
 
 The page is tailnet-only and read-only. It exposes ticket numbers, titles, states, stages, roles, counts, and millyard paths. It does not expose tracker config, tokens, ticket bodies, comments, or logs.
 
-Serve configuration persists across reboots; `mill view` does not, and it never runs `tailscale serve` itself. To keep `mill view` running after you close the terminal, start it as a user service:
+Serve configuration persists across reboots; `mill board` does not, and it never runs `tailscale serve` itself. To keep `mill board` running after you close the terminal, start it as a user service:
 
 ```sh
-systemd-run --user --unit=mill-view mill view
+systemd-run --user --unit=mill-board mill board
 ```
 
-`systemctl --user stop mill-view` stops it.
+`systemctl --user stop mill-board` stops it.
 
 ### Questions, outages, and stopping
 

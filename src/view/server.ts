@@ -29,7 +29,7 @@ export async function serveView(home: string, port: number, options: { stdout: (
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => { server.off('error', reject); resolve(); });
   });
-  options.stdout(`Serving the live view at http://127.0.0.1:${(server.address() as AddressInfo).port} (read-only). Press Ctrl-C to stop.\n`);
+  options.stdout(`Serving the board at http://127.0.0.1:${(server.address() as AddressInfo).port} (read-only). Press Ctrl-C to stop.\n`);
   let polling = false;
   const poll = setInterval(async () => {
     if (polling) return;

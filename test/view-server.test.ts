@@ -73,7 +73,7 @@ test('laneOf puts each state and stage on its lane', () => {
   for (const [ticket, lane] of cases) assert.equal(laneOf(ticket), lane, JSON.stringify(ticket));
 });
 
-test('mill view --json carries a working ticket\'s role and each state\'s lane into the snapshot', async (t) => {
+test('mill board --json carries a working ticket\'s role and each state\'s lane into the snapshot', async (t) => {
   const yard = await drafted(t, '1', '2', '3', '4', '5');
   seed(yard.cwd, `
     UPDATE tickets SET state = 'working', stage = 'tests-written', team = '{"activeRole":{"role":"implementer","beforeHead":"abc","bounces":0}}' WHERE number = 1;
@@ -82,7 +82,7 @@ test('mill view --json carries a working ticket\'s role and each state\'s lane i
     UPDATE tickets SET state = 'done', completion = 'merged', stage = 'pr-opened' WHERE number = 4;
     UPDATE tickets SET state = 'working', stage = 'mystery' WHERE number = 5;`);
   let stdout = '';
-  assert.equal(await runCli(['view', '--json'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; } }), 0);
+  assert.equal(await runCli(['board', '--json'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; } }), 0);
   const rows = (JSON.parse(stdout) as ViewSnapshot).projects[0]!.tickets;
   assert.deepEqual(rows.map(row => [row.number, row.state, row.role, row.lane]), [
     [1, 'working', 'implementer', 'implement'],
@@ -94,7 +94,7 @@ test('mill view --json carries a working ticket\'s role and each state\'s lane i
   assert.equal(rows[2]!.reason, 'question: which format?');
 });
 
-test('mill view serves the page, /view.json and /events read-only, pushes a change, and exits 0 on abort', async (t) => {
+test('mill board serves the page, /view.json and /events read-only, pushes a change, and exits 0 on abort', async (t) => {
   const yard = await drafted(t, '1', '2');
   const file = join(yard.cwd, '.mill/run.sqlite');
   const hash = async () => createHash('sha256').update(await readFile(file)).digest('hex');
@@ -103,7 +103,7 @@ test('mill view serves the page, /view.json and /events read-only, pushes a chan
   let stdout = '';
   const stop = new AbortController();
   t.after(() => stop.abort());
-  const serving = runCli(['view', '--port', '0'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; }, signal: stop.signal });
+  const serving = runCli(['board', '--port', '0'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; }, signal: stop.signal });
   const port = await until(() => /http:\/\/127\.0\.0\.1:(\d+)/.exec(stdout)?.[1], 'the bound port');
   const base = `http://127.0.0.1:${port}`;
 

@@ -100,7 +100,7 @@ export async function moveMillyard(cwd: string, home: string): Promise<MoveResul
   if ((await stat(join(from, '.mill'))).dev !== (await stat(cwd)).dev) return refuse(`${from} and ${cwd} are on different filesystems; move the millyard by hand.`);
   await rename(join(from, '.mill'), join(cwd, '.mill'));
   try { await registerMillyard(home, cwd); }
-  catch (error) { throw new CliError(`Moved the millyard to ${cwd}, but could not list it for the live view: ${(error as Error).message}`); }
+  catch (error) { throw new CliError(`Moved the millyard to ${cwd}, but could not list it for the board: ${(error as Error).message}`); }
   const config = await loadConfig(cwd, home);
   const valid = config.valid ? config : undefined;
   const worktrees = valid?.machine.worktrees;
