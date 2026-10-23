@@ -3,9 +3,11 @@ import { readFile, mkdir, writeFile, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import test, { type TestContext } from 'node:test';
 import { parse } from 'yaml';
 import { runCli } from '../src/cli.js';
+import { listMillyards, registerMillyard } from '../src/registry.js';
 import { millyard } from './helpers.js';
 
 test('build bootstraps house defaults and reports settings that need filling in', async (t) => {
@@ -272,6 +274,66 @@ labels: { running: busy }
     'role_timeout', 'tests.timeout', 'ci', 'merge_method', 'test_url', 'labels.running',
     'concurrency', 'ci_poll_interval', 'worktrees',
   ].sort());
+});
+
+class MoveTracker {
+  async getTicket(number: number) {
+    return { number, title: `Ticket ${number}`, body: 'Implement the feature.', labels: [], state: 'open' as const, comments: [], blockedBy: [] };
+  }
+}
+
+async function movable(t: TestContext) {
+  const yard = await millyard(t, { tracker: new MoveTracker() });
+  await yard.cli('build');
+  const config = (await readFile(yard.projectConfig, 'utf8'))
+    .replace('# name: islandhealth', 'name: example')
+    .replace('# repo: owner/name', 'repo: team/tool')
+    .replace('integration: main', 'integration: integration')
+    .replace('# test_harness: none', 'test_harness: none');
+  await writeFile(yard.projectConfig, config);
+  const other = join(yard.root, 'other');
+  yard.git('worktree', 'add', '--detach', other);
+  const move = async (cwd: string) => {
+    let stdout = '';
+    const code = await runCli(['build', '--move', '--json'], { tracker: new MoveTracker(), cwd, home: yard.home, stdout: text => { stdout += text; } });
+    return { code, stdout };
+  };
+  return { yard, other, move };
+}
+
+test('build --move relocates the millyard to another worktree and the live view follows', async (t) => {
+  const { yard, other, move } = await movable(t);
+  assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
+  const db = new DatabaseSync(join(yard.cwd, '.mill/run.sqlite'));
+  db.exec("UPDATE tickets SET state = 'done', completion = 'merged'");
+  db.close();
+  await registerMillyard(yard.home, yard.cwd);
+  assert.deepEqual(await listMillyards(yard.home), [yard.cwd]);
+  const result = await move(other);
+  assert.equal(result.code, 0, result.stdout);
+  await stat(join(other, '.mill/config.yaml'));
+  await assert.rejects(stat(join(yard.cwd, '.mill')), { code: 'ENOENT' });
+  assert.deepEqual(await listMillyards(yard.home), [other]);
+});
+
+test('build --move refuses when the current directory is already the millyard', async (t) => {
+  const { yard, move } = await movable(t);
+  const result = await move(yard.cwd);
+  assert.equal(result.code, 1);
+  assert.equal(JSON.parse(result.stdout).status, 'refused');
+  assert.ok(result.stdout.includes(yard.cwd));
+  await stat(join(yard.cwd, '.mill/config.yaml'));
+});
+
+test('build --move refuses while a run has unfinished tickets and leaves the millyard in place', async (t) => {
+  const { yard, other, move } = await movable(t);
+  assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
+  const result = await move(other);
+  assert.equal(result.code, 1);
+  assert.equal(JSON.parse(result.stdout).status, 'refused');
+  assert.match(result.stdout, /7/);
+  await stat(join(yard.cwd, '.mill/run.sqlite'));
+  await assert.rejects(stat(join(other, '.mill')), { code: 'ENOENT' });
 });
 
 test('build rejects unsafe project names, malformed repo identities, and invalid integration refs', async (t) => {
