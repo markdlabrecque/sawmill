@@ -149,7 +149,7 @@ The local SQLite run is authoritative. Tracker comments and labels mirror it. St
 
 ## Everyday commands
 
-Run these from the millyard root. Drafting and dispatch require a clean checkout on the configured integration branch. `mill --help` lists every command, and `mill <command> --help` shows its usage; both work without a project config.
+Run these from any worktree of the project, or any folder inside one. Drafting and dispatch require a clean checkout on the configured integration branch. `mill --help` lists every command, and `mill <command> --help` shows its usage; both work without a project config.
 
 | Command | Purpose |
 | --- | --- |
@@ -175,7 +175,7 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
-Commands other than `mill build` also work from inside a ticket worktree: they find the millyard and use its settings and run state. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
+Commands other than `mill build` work from any worktree of the project: the millyard, a ticket worktree, the main checkout, or any other linked worktree. They find the one worktree that holds `.mill/config.yaml` and use its settings and run state. If no worktree holds it, or more than one does, Mill lists the worktrees and stops. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
 One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite`, where the board's Archive Section finds it. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
 

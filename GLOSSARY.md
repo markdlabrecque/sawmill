@@ -39,8 +39,12 @@ _Avoid_: Batch, job, session
 Choosing the tickets for a run and fixing their order from the blocked-by graph.
 _Avoid_: Plan, queue up
 
+**Project**:
+The repository and all of its linked worktrees; Mill runs from any of them.
+_Avoid_: Repo, checkout
+
 **Millyard**:
-The checkout of a project on its integration branch where a run lives; worktrees are cut from it and merges land in it.
+The one worktree of a project that holds `.mill/` and is kept on the integration branch; a run lives there, ticket worktrees are cut from it and merges land in it.
 _Avoid_: Main checkout, repo, base
 
 **Run file**:
@@ -77,7 +81,7 @@ One unit of the machine-wide limit on how many tickets work at once.
 _Avoid_: Worker, lane
 
 **Worktree**:
-The isolated sandbox for one ticket, cut from the integration branch.
+A ticket worktree: the isolated sandbox for one ticket, cut from the integration branch. Other git worktrees of the project are just part of the project.
 _Avoid_: Sandbox, workspace, checkout
 
 **Hook**:
