@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { runCli } from '../src/cli.js';
@@ -114,6 +115,45 @@ test('build installs executable DDEV hooks, preserves tuned hooks, and reports t
   assert.equal(await readFile(setup, 'utf8'), tunedSetup);
   assert.equal(await readFile(teardown, 'utf8'), tunedTeardown);
   assert.equal(await readFile(join(yard.userConfig, 'ddev.teardown.sh'), 'utf8'), tunedTeardown);
+});
+
+test('build creates executable no-op setup and teardown scripts for a non-DDEV project and keeps edits', async (t) => {
+  const yard = await millyard(t);
+  await writeFile(join(yard.cwd, 'Dockerfile'), '');
+  const result = await yard.cli('build');
+  assert.match(result.stdout, /setup\.sh/);
+  assert.match(result.stdout, /teardown\.sh/);
+  for (const name of ['setup.sh', 'teardown.sh']) {
+    const path = join(yard.cwd, '.mill', name);
+    assert.ok((await stat(path)).mode & 0o111, `${name} is executable`);
+    const text = await readFile(path, 'utf8');
+    assert.match(text, /^#!/);
+    assert.match(text, /MILL_WORKTREE/);
+    assert.ok(!text.split('\n').some(line => /^\s*(npm|ddev|docker)\b/.test(line)), `${name} has no active commands`);
+    const run = spawnSync(path, [yard.cwd, '7'], { cwd: yard.cwd, encoding: 'utf8' });
+    assert.equal(run.status, 0);
+    assert.equal(run.stdout + run.stderr, '');
+  }
+  const tuned = '#!/usr/bin/env bash\necho custom\n';
+  await writeFile(join(yard.cwd, '.mill/setup.sh'), tuned);
+  await rm(join(yard.cwd, '.mill/teardown.sh'));
+  await yard.cli('build', '--force');
+  assert.equal(await readFile(join(yard.cwd, '.mill/setup.sh'), 'utf8'), tuned);
+  assert.ok((await stat(join(yard.cwd, '.mill/teardown.sh'))).mode & 0o111);
+});
+
+test('build creates the scripts even when there is no test harness marker', async (t) => {
+  const yard = await millyard(t);
+  await yard.cli('build');
+  await stat(join(yard.cwd, '.mill/setup.sh'));
+  await stat(join(yard.cwd, '.mill/teardown.sh'));
+});
+
+test('README documents the setup and teardown scripts', async () => {
+  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /^#+ Hooks/m);
+  assert.match(readme, /\.mill\/setup\.sh/);
+  assert.match(readme, /\.mill\/teardown\.sh/);
 });
 
 test('non-build commands require both configs and never bootstrap them', async (t) => {

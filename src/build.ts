@@ -31,7 +31,7 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
   await mkdir(user, { recursive: true });
   await seed(new URL('default.yaml', templates), join(user, 'default.yaml'));
   await seed(new URL('config.yaml', templates), join(user, 'config.yaml'));
-  for (const hook of ['ddev.setup.sh', 'ddev.teardown.sh']) await seed(new URL(hook, templates), join(user, hook));
+  for (const hook of ['setup.sh', 'teardown.sh', 'ddev.setup.sh', 'ddev.teardown.sh']) await seed(new URL(hook, templates), join(user, hook));
   await mkdir(join(cwd, '.mill'), { recursive: true });
   let text = await readFile(join(user, 'default.yaml'), 'utf8');
   let harness: 'ddev' | 'docker' | undefined;
@@ -49,13 +49,14 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
   await writeFile(join(cwd, '.mill/config.yaml'), text);
   const notes: string[] = [];
   const config = parseDocument(text);
-  if (!config.errors.length && isMap(config.contents) && config.get('test_harness') === 'ddev') {
-    for (const hook of ['setup.sh', 'teardown.sh']) {
-      const target = join(cwd, '.mill', hook);
-      if (await seed(join(user, `ddev.${hook}`), target)) await chmod(target, 0o755);
-    }
-    if (!await exists(join(cwd, '.mill/db.sql'))) notes.push('.mill/db.sql: optional database dump; add it to import a database with the default DDEV setup hook.');
+  const ddev = !config.errors.length && isMap(config.contents) && config.get('test_harness') === 'ddev';
+  const created: string[] = [];
+  for (const hook of ['setup.sh', 'teardown.sh']) {
+    const target = join(cwd, '.mill', hook);
+    if (await seed(join(user, ddev ? `ddev.${hook}` : hook), target)) { await chmod(target, 0o755); created.push(`.mill/${hook}`); }
   }
+  if (created.length) notes.push(`${created.join(', ')}: created; edit to prepare and clean up each ticket worktree.`);
+  if (ddev && !await exists(join(cwd, '.mill/db.sql'))) notes.push('.mill/db.sql: optional database dump; add it to import a database with the default DDEV setup hook.');
   return { written: true, notes };
 }
 
