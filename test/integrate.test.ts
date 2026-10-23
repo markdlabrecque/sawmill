@@ -186,6 +186,37 @@ test('red tests never push or merge and timeouts kill descendants and report inf
   }
 });
 
+test('a final test run that fails once and passes on the rerun proceeds and is logged as flaky with the test names', async t => {
+  const y = await fixture(t);
+  const command = 'echo x >> ../runs; if [ $(wc -l < ../runs) -ge 2 ]; then exit 0; fi; echo "✖ flaky case one (3ms)"; echo "✖ flaky case two (5ms)"; exit 1';
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: '${command}'`));
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'merged');
+  assert.equal((await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length, 2);
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  try {
+    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[]).map(row => row.event).filter(event => event.includes('flaky') && event.includes('flaky case one'));
+    assert.equal(events.length, 1, 'one flaky event names the failed tests');
+    assert.ok(events[0]!.includes('flaky case two'));
+  } finally { db.close(); }
+});
+
+test('a final test run that fails twice still stops as tests-failed after exactly one rerun and logs nothing as flaky', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: 'echo x >> ../runs; echo "✖ always broken"; exit 3'`));
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'tests-failed');
+  assert.equal((await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length, 2);
+  assert.equal(y.tracker.head('mill/9'), ''); assert.deepEqual(y.tracker.methods, []);
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  try {
+    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[]).filter(row => row.event.includes('flaky'));
+    assert.equal(events.length, 0);
+  } finally { db.close(); }
+});
+
 test('the final test run does not inherit the coordinator worker variables', async t => {
   const names = ['MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
   const saved = names.map(name => process.env[name]);
