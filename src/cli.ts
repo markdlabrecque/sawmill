@@ -93,7 +93,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         stdout(JSON.stringify(await readView(home)) + '\n');
         return 0;
       }
-      await serveView(home, port, { stdout, signal: options.signal });
+      await serveView(home, port, { stdout, signal: options.signal, tracker: options.tracker, sleep: options.sleep });
       return 0;
     }
     if (positional[0] === 'scheduler') {

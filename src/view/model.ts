@@ -25,8 +25,22 @@ export interface ViewTicket {
   reason: string | null;
   stopRequested: boolean;
   lane: Lane;
+  /** The agent's open question while the ticket waits for an answer. */
+  question: string | null;
+  /** What keeps the ticket from moving, or null when nothing does. */
+  blockage: string | null;
+  actions: Record<TicketAction, ViewAction>;
 }
-export interface ViewProject { name: string; millyard: string; runId: string | null; error: string | null; tickets: ViewTicket[] }
+export type TicketAction = 'stop' | 'answer' | 'reset' | 'close';
+/** Whether the run rules allow an action now; `reason` says why not. */
+export interface ViewAction { available: boolean; reason: string | null }
+/** `stopping` is a stopped run whose working tickets have not all reached a stage boundary. */
+export type RunStatus = 'running' | 'stopping' | 'stopped';
+export interface ViewProject {
+  name: string; millyard: string; runId: string | null; error: string | null;
+  runStatus: RunStatus; pausedReason: string | null; runActions: Record<'start' | 'stop', ViewAction>;
+  tickets: ViewTicket[];
+}
 export interface ViewRun { runId: string; created: string | null; error: string | null; tickets: ViewTicket[] }
 /** One project's finished or replaced runs, newest first. */
 export interface ViewArchive { name: string; millyard: string; runs: ViewRun[] }
@@ -72,14 +86,68 @@ function issueUrl(tracker: ProjectConfig['tracker'] | null, number: number): str
   } catch { return null; }
 }
 
-function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null): ViewTicket[] {
+const allow = (reason: string | null): ViewAction => ({ available: reason === null, reason });
+
+/** The run rules for each ticket action, shared by the page and the board's command path. */
+export function ticketActions(ticket: RunTicket, pending: boolean): Record<TicketAction, ViewAction> {
+  const { number, state } = ticket;
+  const done = state === 'done' || Boolean(ticket.completion || ticket.mergeCommit);
+  return {
+    stop: allow(state !== 'working' ? `Only a working ticket can be stopped; #${number} is ${state}.`
+      : ticket.stopRequested ? 'A stop is already requested; the ticket stops at its next stage boundary.' : null),
+    answer: allow(state === 'working' ? (ticket.stopRequested ? 'Wait for the requested stop to reach its stage boundary.' : 'The ticket is working; nothing is waiting for an answer.')
+      : state === 'logjam' || pending ? null : `Only a ticket in logjam can be answered; #${number} is ${state}.`),
+    reset: allow(state === 'working' ? 'Stop the ticket first; a working ticket cannot be reset.'
+      : done ? 'A done ticket cannot be reset; revert it and open a new ticket instead.' : null),
+    close: allow(state === 'working' ? 'Stop the ticket first; a working ticket cannot be closed.' : done ? 'The ticket is already done.' : null),
+  };
+}
+
+const archived: Record<TicketAction, ViewAction> = Object.fromEntries((['stop', 'answer', 'reset', 'close'] as const)
+  .map(action => [action, allow('Archived runs are view-only.')])) as Record<TicketAction, ViewAction>;
+
+/** Long agent output is cut so the snapshot stays small; the run log keeps it whole. */
+const clip = (text: string) => text.length > 600 ? `${text.slice(0, 600)}…` : text;
+
+function blockage(ticket: RunTicket, pending: boolean): string | null {
+  if (ticket.state === 'blocked') return `Waiting for ${ticket.blockers.map(number => `#${number}`).join(', ')} to finish.`;
+  if (ticket.state !== 'logjam') return null;
+  const at = ticket.stage ? ` at ${ticket.stage}` : '';
+  const { question, stop, repair, infrastructureAttempts } = ticket.team;
+  if (ticket.reason === 'question' && question) return clip(`The ${question.role} asked: ${question.question}`);
+  if (ticket.reason === 'stopped') return `Stopped${at} on request, with its work saved. Answer to resume it.`;
+  if (ticket.reason === 'tracker') return `A tracker update failed${pending ? ' and is held for retry' : ''}. Answer to retry it.`;
+  const detail = stop?.error ?? question?.error ?? ticket.worker?.result?.error ?? infrastructureAttempts?.at(-1)?.error ?? repair?.feedback;
+  return clip(`Logjam (${ticket.reason ?? 'unknown'})${at}${detail ? `: ${detail}` : '.'}`);
+}
+
+function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null, current = false): ViewTicket[] {
   return run.tickets.map((ticket): ViewTicket => {
+    const pending = run.pendingWrites.some(write => write.ticket === ticket.number);
     const row = {
       number: ticket.number, title: ticket.title, url: issueUrl(tracker, ticket.number), state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
     };
-    return { ...row, lane: laneOf(row) };
+    return { ...row, lane: laneOf(row), question: ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null,
+      blockage: blockage(ticket, pending), actions: current ? ticketActions(ticket, pending) : archived };
   });
+}
+
+/** A run that never started, or was stopped, is stopped once no ticket is still working. */
+export function runStatus(run: RunSnapshot): RunStatus {
+  if (run.run.activated && !run.run.stopped) return 'running';
+  return run.tickets.some(ticket => ticket.state === 'working') ? 'stopping' : 'stopped';
+}
+
+/** The run rules for Start Run and Stop Run, shared by the page and the board's command path. */
+export function runActions(run: RunSnapshot): Record<'start' | 'stop', ViewAction> {
+  const status = runStatus(run);
+  const stopping = (run.run.stoppedTickets ?? []).some(number => run.tickets.find(ticket => ticket.number === number)?.state === 'working');
+  const unstopped = run.tickets.some(ticket => ticket.state === 'working' && !ticket.stopRequested);
+  return {
+    start: allow(status === 'running' ? 'The run is already running.' : stopping ? 'Wait until the working tickets have stopped at their stage boundaries.' : null),
+    stop: allow(!run.run.activated ? 'The run has not been started.' : status === 'running' || unstopped ? null : 'The run is already stopped.'),
+  };
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -109,11 +177,12 @@ export async function readView(home: string): Promise<ViewSnapshot> {
     const runs: ViewRun[] = [];
     try {
       const run = readRun(millyard);
-      const tickets = viewTickets(run, tracker);
-      if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets });
-      else projects.push({ name, millyard, runId: run.run.id, error: null, tickets });
+      const tickets = viewTickets(run, tracker, true);
+      if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run, tracker) });
+      else projects.push({ name, millyard, runId: run.run.id, error: null, runStatus: runStatus(run), pausedReason: run.run.loop?.pausedReason ?? null, runActions: runActions(run), tickets });
     } catch (error) {
-      projects.push({ name, millyard, runId: null, error: message(error), tickets: [] });
+      const unreadable = allow('The run file cannot be read.');
+      projects.push({ name, millyard, runId: null, error: message(error), runStatus: 'stopped', pausedReason: null, runActions: { start: unreadable, stop: unreadable }, tickets: [] });
     }
     // A run seen as both the current file and a saved copy appears once.
     for (const run of historyRuns(millyard, tracker)) if (!runs.some(seen => seen.runId === run.runId)) runs.push(run);

@@ -140,7 +140,9 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
   status: 'ok';
-  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string; lifecycle?: RunLifecycle };
+  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string;
+    /** Tickets the board's Stop Run asked to stop; its Start Run resumes only these. */
+    stoppedTickets?: number[]; lifecycle?: RunLifecycle };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
@@ -274,7 +276,8 @@ export function readRunFile(file: string): RunSnapshot {
     const lifecycle: RunLifecycle = tickets.length && tickets.every(ticket => ticket.state === 'done') ? 'completed'
       : !run.activated ? 'inactive' : run.stopped ? 'stopped' : loop?.pausedReason ? 'paused' : 'active';
     return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(loop ? { loop } : {}),
-      ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}), lifecycle }, tickets, edges, pendingWrites };
+      ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}),
+      ...(run.stopped_tickets ? { stoppedTickets: JSON.parse(String(run.stopped_tickets)) as number[] } : {}), lifecycle }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 

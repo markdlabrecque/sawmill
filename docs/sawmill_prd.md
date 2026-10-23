@@ -119,7 +119,9 @@ Build bottom-up so each layer is testable by hand before the orchestrator depend
 
 **Decisions on the open questions**
 
-- State: the run file in the millyard is the source of truth for a run. Only the CLI writes it, and it writes the file before the tracker mirror. Agents never write state; that is what made the earlier orchestrators drift.
+- State: the run file in the millyard is the source of truth for a run. Only the CLI's operations write it, and they write the file before the tracker mirror. Agents never write state; that is what made the earlier orchestrators drift.
+- The board (`mill board`) shows every run and, since #93, also controls them: stop, answer and resume, reset, and close a ticket, and start or stop a whole run. Its server calls the same operations and rules as the CLI for a named project, current run and ticket, and refuses a request when the board is out of date; the browser never writes state or edits tracker labels. This replaces the board's original read-only rule. Watching still never writes, and archived runs stay view-only. The board has no sign-in: it is personal and reached over the tailnet.
+- Stop Run stops dispatch at once and asks every working ticket to stop at its next stage boundary, keeping its work. Start Run resumes only the tickets that Stop Run stopped; questions, failures and a ticket's own stop stay as they were.
 - Tracker: read at draft time, write-only during a run (reporter comments, logjam label, close). The loop never polls it. A mirror write that fails three times puts the ticket in logjam with reason tracker and holds the payload; `mill run answer <n>` retries it.
 - Ordering: the blocked-by graph, resolved once at draft time from native links (GitHub) or the body section (GitLab), is the only ordering. Independent tickets run in parallel, each in its own worktree, up to the concurrency limit. File collisions are not predicted; the rebase gate resolves them.
 - Retry cap: three review rounds, then logjam. Infrastructure retries do not count.
@@ -146,7 +148,7 @@ Sawmill is the name of the whole suite; the rest are the terms the plan uses, in
 | Human user | Whoever files tickets, drafts runs and answers logjam; the only person the factory ever waits on |
 | Millyard | The checkout of the repo on its integration branch where `mill run` is invoked; worktrees are cut from it, merges land in it, and it holds the run file |
 | Run | A batch of tickets drafted into a run file and executed by `mill run` until every ticket is done or logjam; one per millyard at a time |
-| Run file | `.mill/run.sqlite` in the millyard: the tickets in a run, their blocked-by edges and order, each one's state (queued, blocked, working, done, logjam), reason, bounces, session ids, and any tracker writes still pending; written only by the CLI |
+| Run file | `.mill/run.sqlite` in the millyard: the tickets in a run, their blocked-by edges and order, each one's state (queued, blocked, working, done, logjam), reason, bounces, session ids, and any tracker writes still pending; written only by the CLI's operations, from a terminal or the board |
 | Bounce | A reviewer sending a change back to the implementer with feedback; each bounce costs one retry |
 | Agent runtime | The pluggable command that runs one role as a process inside the worktree; Claude Code, Pi, or Codex, with a model and effort configured per role |
 | CI gate | When enabled for a project, `mill integrate` waits for the backend pipeline on the exact rebased commit; red is one more implementer round and merge never happens on an unpassed commit |

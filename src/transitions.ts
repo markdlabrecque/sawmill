@@ -27,9 +27,28 @@ export function activateRun(cwd: string): boolean {
   return transaction(cwd, db => {
     const run = db.prepare('SELECT activated, stopped FROM run').get()!;
     if (run.activated && !run.stopped) return false;
-    db.prepare('UPDATE run SET activated = ?, stopped = NULL').run(new Date().toISOString());
+    db.prepare('UPDATE run SET activated = ?, stopped = NULL, stopped_tickets = NULL').run(new Date().toISOString());
     resetLoop(db);
     return true;
+  });
+}
+
+/** The board's Stop Run: no new tickets start, and every working ticket stops at its next
+ * stage boundary with its work saved. The tickets this asked to stop are recorded on the run,
+ * so Start Run resumes those and leaves any ticket with its own stop, question or failure. */
+export function stopRunAtBoundaries(cwd: string, project: ProjectConfig): number[] {
+  checkTracker(cwd, project);
+  return transaction(cwd, db => {
+    const run = db.prepare('SELECT activated, stopped_tickets FROM run').get()!;
+    if (!run.activated) throw new CliError('The run was never started, so there is no run to stop.');
+    const asked = db.prepare("SELECT number FROM tickets WHERE state = 'working' AND stop_requested = 0").all().map(row => Number(row.number));
+    for (const number of asked) {
+      db.prepare('UPDATE tickets SET stop_requested = 1 WHERE number = ?').run(number);
+      update(db, number, {});
+    }
+    const recorded = run.stopped_tickets ? JSON.parse(String(run.stopped_tickets)) as number[] : [];
+    db.prepare('UPDATE run SET stopped = COALESCE(stopped, ?), stopped_tickets = ?').run(new Date().toISOString(), JSON.stringify([...new Set([...recorded, ...asked])]));
+    return asked;
   });
 }
 
@@ -85,7 +104,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'provisioned')) db.exec('ALTER TABLE tickets ADD COLUMN provisioned INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'assignment')) db.exec('ALTER TABLE tickets ADD COLUMN assignment TEXT');
-    for (const column of ['loop_control', 'activated', 'stopped']) {
+    for (const column of ['loop_control', 'activated', 'stopped', 'stopped_tickets']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
     const value = work(db);
