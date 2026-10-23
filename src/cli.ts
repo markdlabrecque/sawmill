@@ -1,8 +1,9 @@
 import { runTeam } from './team-runner.js';
-import { dispatchOnce } from './dispatch.js';
+import { dispatchOnce, dispatchPreflight } from './dispatch.js';
 import { resumeRun, runLoop } from './run-loop.js';
 import { lockHeld } from './run-lock.js';
-import { startBackgroundRun } from './run-background.js';
+import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler } from './scheduler.js';
+import { listMillyards, registerMillyard } from './registry.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
 import type { Runtime } from './runtime.js';
@@ -21,7 +22,7 @@ import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
-import { answerTicket, closeTicket, flushAssignments, requestStop, transition } from './transitions.js';
+import { activateRun, answerTicket, closeTicket, flushAssignments, requestStop, stopRun, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
 import { formatRun, formatTicketLog, readRun, readTicketLog, type MirrorWrite, type RunSnapshot } from './run-store.js';
 import { ticketRef } from './links.js';
@@ -38,8 +39,6 @@ export interface CliOptions {
   stdout?: (text: string) => void;
   tracker?: TicketReader & Partial<IntegrationTracker>;
   sleep?: (milliseconds: number) => Promise<void>;
-  /** Called once a foreground `mill run` holds the loop lock. */
-  onRunLocked?: () => void;
 }
 
 export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: string): TicketWriter {
@@ -97,6 +96,30 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       await serveView(home, port, { stdout, signal: options.signal });
       return 0;
     }
+    if (positional[0] === 'scheduler') {
+      // Machine-wide like board: one scheduler serves every registered millyard.
+      if (positional.length !== 2) {
+        const message = usage(`scheduler ${positional[1]}`);
+        emit({ status: 'usage-error', message }, message);
+        return 2;
+      }
+      if (positional[1] === 'stop') {
+        const before = schedulerStatus(home);
+        const scheduler = await stopScheduler(home);
+        emit({ status: before.available ? 'stopped' : 'not-running', scheduler }, before.available
+          ? `Stopped the scheduler (pid ${before.pid}). Working tickets keep going; mill run starts it again and it adopts them.`
+          : 'The scheduler is not running.');
+        return 0;
+      }
+      const scheduler = schedulerStatus(home);
+      const runs = (await listMillyards(home)).map(millyard => {
+        try { return { millyard, lifecycle: readRun(millyard).run.lifecycle }; }
+        catch (error) { return { millyard, error: error instanceof Error ? error.message : String(error) }; }
+      });
+      emit({ scheduler, runs }, [scheduler.available ? `Scheduler running (pid ${scheduler.pid}) since ${scheduler.started}.` : 'Scheduler not running; mill run starts it.',
+        `Log: ${scheduler.log}`, ...runs.map(run => `${run.millyard}: ${'error' in run ? run.error : run.lifecycle}`)].join('\n'));
+      return 0;
+    }
     const cwd = positional[0] === 'build' ? invokedIn : resolveMillyard(invokedIn);
     if (positional[0] !== 'build') {
       const config = await loadConfig(cwd, home);
@@ -107,6 +130,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       const ref = (number: number) => ticketRef(config.project.tracker, number, links);
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
+      // Status and draft output agree: the run as stored plus whether a scheduler is serving this home.
+      const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home) });
       if (positional[0] === 'team' && positional[1] === 'tail') {
         if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);
         await tailTicket(cwd, Number(positional[2]), { json, follow: positional[3] !== '--no-follow', stdout, signal: options.signal });
@@ -167,24 +192,44 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
-        const snapshot = readRun(cwd);
-        emit(snapshot, table(snapshot));
+        const snapshot = view(readRun(cwd));
+        const { scheduler } = snapshot;
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid})` : 'not running'}.`, table(snapshot)].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
         if (positional.length !== 2) throw new CliError(usage('run'), 2);
-        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd), options.onRunLocked);
-        emit(result, result.status === 'paused' ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
+        const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
+        emit(result, 'reason' in result ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
         return result.status === 'ok' ? 0 : 1;
       }
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
-        // A foreground coordinator waits for the lock, so refuse here rather than leave one waiting.
-        if (lockHeld(cwd, 'loop')) throw new CliError('A mill run coordinator is already running in this millyard.');
-        const started = await startBackgroundRun(cwd, home);
-        emit({ status: 'started', ...started }, [`Started mill run in the background (pid ${started.pid}).`, `Log: ${started.log}`,
-          "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>'."].join('\n'));
+        // An integrating ticket holds the checkout for as long as CI takes; the scheduler preflights once it is free.
+        if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project);
+        const activated = activateRun(cwd);
+        await registerMillyard(home, cwd);
+        const { run } = readRun(cwd);
+        const state = activated ? 'Activated the run.' : `The run is already ${run.lifecycle}${run.loop?.pausedReason && run.lifecycle === 'paused' ? `: ${run.loop.pausedReason}` : '.'}`;
+        let scheduler: Awaited<ReturnType<typeof ensureScheduler>>;
+        try { scheduler = await ensureScheduler(home); }
+        catch (error) {
+          // Activation is durable; the next mill run or scheduler start picks the run up.
+          const message = error instanceof Error ? error.message : String(error);
+          emit({ status: 'scheduler-unavailable', activated, lifecycle: run.lifecycle, message }, `${state}\nThe shared scheduler did not start: ${message}\nThe run stays active; start the scheduler with mill run.`);
+          return 1;
+        }
+        notifyScheduler(home);
+        emit({ status: 'started', activated, lifecycle: run.lifecycle, ...scheduler }, [state,
+          `The shared scheduler (pid ${scheduler.pid}) ${scheduler.launched ? 'started and' : 'already'} runs it alongside every other active run on this machine.`, `Log: ${scheduler.log}`,
+          "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>', or the whole run with 'mill run stop'."].join('\n'));
+        return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'stop' && positional.length === 2) {
+        stopRun(cwd, config.project, usage('run stop'));
+        notifyScheduler(home);
+        emit({ status: 'run-stopped', lifecycle: readRun(cwd).run.lifecycle }, 'Stopped the run: no new tickets start. Working tickets carry on; stop one with mill run stop <n>. Start the run again with mill run.');
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'stop') {
@@ -256,9 +301,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           : await closeTicket(cwd, config.project, writer, Number(words[2]), options);
         const resumed = ok && positional[1] === 'answer' ? await resumeRun(cwd, home, Number(words[2])) : undefined;
         const snapshot = readRun(cwd);
-        emit({ ...snapshot, status: ok ? 'ok' : 'logjam', ...(resumed ? { resumed } : {}) }, [table(snapshot),
-          ...(!resumed ? [] : 'error' in resumed ? [`The run did not restart: ${resumed.error}\nStart it with mill run.`]
-            : [`Restarted mill run in the background (pid ${resumed.pid}).`, `Log: ${resumed.log}`])].join('\n'));
+        // A CLI answer never starts a draft or overrides a run stop; only an explicit start does.
+        const waiting = ok && positional[1] === 'answer' && (snapshot.run.lifecycle === 'inactive' || snapshot.run.lifecycle === 'stopped')
+          ? [`The run is ${snapshot.run.lifecycle}; the ticket waits until you start the run with mill run.`] : [];
+        emit({ ...snapshot, status: ok ? 'ok' : 'logjam', ...(resumed ? { resumed } : {}) }, [table(snapshot), ...waiting,
+          ...(!resumed ? [] : 'error' in resumed ? [`The shared scheduler did not start: ${resumed.error}\nStart it with mill run.`]
+            : [`The shared scheduler (pid ${resumed.pid}) picks the ticket up.`, `Log: ${resumed.log}`])].join('\n'));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {
@@ -273,8 +321,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
         await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer));
         if (writer) await flushAssignments(cwd, config.project, writer, options);
+        // Drafting registers the millyard but leaves the run inactive until mill run.
         const snapshot = readRun(cwd);
-        emit(snapshot, table(snapshot));
+        emit(view(snapshot), [table(snapshot), 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
         return 0;
       }
       const message = unknownCommand(positional);

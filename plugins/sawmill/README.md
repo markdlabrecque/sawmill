@@ -34,8 +34,10 @@ Then request one selection:
 ```
 
 The skill calls `mill run draft --json`, explains validation failures, proposes
-scope changes when needed, and displays `mill run status`. It saves a draft;
-starting the run is a separate action.
+scope changes when needed, and displays `mill run status`. It saves a draft,
+which stays inactive. Starting the run is a separate, explicit action: run
+`mill run` once after inspecting the draft, and the shared scheduler keeps it
+moving from there.
 
 Layout and installation follow the official [manifest reference](https://code.claude.com/docs/en/plugins-reference),
 [marketplace instructions](https://code.claude.com/docs/en/plugin-marketplaces),

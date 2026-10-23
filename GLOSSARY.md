@@ -51,6 +51,18 @@ _Avoid_: Main checkout, repo, base
 The record in the millyard of which tickets are in a run, their order, and each one's state; the source of truth for the run.
 _Avoid_: Database, state file
 
+**Run state**:
+Where a run stands as a whole: inactive, active, paused, stopped, or completed.
+_Avoid_: Run status
+
+**Activation**:
+The explicit start of a run with `mill run`, recorded in the run file. Only an activated run is dispatched by the scheduler. Drafting, replacing a draft, `mill run once` and `mill run answer` never activate a run.
+_Avoid_: Subscribe, enable
+
+**Waiting**:
+An active run with nothing to start right now because its tickets are blocked, in logjam, or out of slots. The scheduler keeps it and resumes it without another command.
+_Avoid_: Idle, ended, finished
+
 **Ticket state**:
 Where a ticket stands in a run: queued, blocked, working, done, or logjam.
 _Avoid_: Status
@@ -73,8 +85,12 @@ The command-line tool that holds every deterministic step and is the only thing 
 _Avoid_: Sawmill CLI, the tool
 
 **Orchestrator**:
-The plain loop inside Mill that dispatches ready tickets and handles team results; not an agent.
-_Avoid_: Scheduler, coordinator, manager agent
+The deterministic logic inside Mill that dispatches ready tickets and handles team results; not an agent. The scheduler runs it for every active run; `mill run --foreground` runs it for one run in a terminal.
+_Avoid_: Coordinator, manager agent
+
+**Scheduler**:
+The one persistent Mill process per user on a machine that runs the orchestrator for every active run. It rereads run files when they change, gives projects fair turns at the shared slots, and holds no run state of its own.
+_Avoid_: Daemon, coordinator, orchestrator loop
 
 **Slot**:
 One unit of the machine-wide limit on how many tickets work at once.
@@ -100,7 +116,7 @@ The copy of run-file changes posted to the tracker for visibility, written after
 _Avoid_: Sync
 
 **Registry**:
-The machine-wide list of millyards that have had a run, used by the board to find them.
+The machine-wide list of millyards that have had a run, used by the board and the scheduler to find them. Being registered does not activate a run.
 
 **Board**:
 The read-only page showing every run on the machine at once, each ticket placed on its lane.

@@ -1,8 +1,8 @@
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
+import { openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, TicketWriter } from './tracker.js';
 
@@ -11,10 +11,35 @@ export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void>
 /** A new invocation intentionally retries queued work. Historical results do not
  * trip its pause; subsequent terminal events are consumed once in log order. */
 export function beginLoop(cwd: string): void {
+  transaction(cwd, resetLoop);
+}
+
+function resetLoop(db: DatabaseSync): void {
+  const cursor = Number(db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM log').get()!.id);
+  db.prepare('UPDATE run SET loop_control = ?').run(JSON.stringify({ cursor, consecutiveInfrastructure: 0 }));
+}
+
+/** An explicit start. Activation and a run stop are durable intent on this run's
+ * row, so a replacement draft starts inactive. Starting an inactive or stopped run
+ * begins fresh loop progress; an active run is left alone, so a repeated start or a
+ * scheduler restart keeps its infrastructure pause. True when this call activated it. */
+export function activateRun(cwd: string): boolean {
+  return transaction(cwd, db => {
+    const run = db.prepare('SELECT activated, stopped FROM run').get()!;
+    if (run.activated && !run.stopped) return false;
+    db.prepare('UPDATE run SET activated = ?, stopped = NULL').run(new Date().toISOString());
+    resetLoop(db);
+    return true;
+  });
+}
+
+/** No new tickets start until an explicit start. Working tickets are left alone. Stopping
+ * a run that was never started is a usage error: the person meant a ticket. */
+export function stopRun(cwd: string, project: ProjectConfig, usage: string): void {
+  checkTracker(cwd, project);
   transaction(cwd, db => {
-    if (!db.prepare('PRAGMA table_info(run)').all().some(column => column.name === 'loop_control')) db.exec('ALTER TABLE run ADD COLUMN loop_control TEXT');
-    const cursor = Number(db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM log').get()!.id);
-    db.prepare('UPDATE run SET loop_control = ?').run(JSON.stringify({ cursor, consecutiveInfrastructure: 0 }));
+    if (!db.prepare('SELECT activated FROM run').get()!.activated) throw new CliError(`The run was never started, so there is no run to stop. ${usage}`, 2);
+    db.prepare('UPDATE run SET stopped = COALESCE(stopped, ?)').run(new Date().toISOString());
   });
 }
 
@@ -28,7 +53,7 @@ export function consumeResults(cwd: string, threshold: number): LoopProgress {
       if (worker?.status !== 'finished' || !worker.result) continue;
       if (worker.result.outcome === 'infrastructure') {
         control.consecutiveInfrastructure++;
-        if (control.consecutiveInfrastructure >= threshold) control.pausedReason = `Paused after ${control.consecutiveInfrastructure} consecutive infrastructure results. Start a fresh mill run to retry queued work.`;
+        if (control.consecutiveInfrastructure >= threshold) control.pausedReason = `Paused after ${control.consecutiveInfrastructure} consecutive infrastructure results. Fix the cause, then retry queued work with mill run stop and mill run.`;
       } else {
         control.consecutiveInfrastructure = 0;
         if (worker.result.outcome === 'passed') delete control.pausedReason;
@@ -50,7 +75,7 @@ function checkTracker(cwd: string, project: ProjectConfig): void {
 
 function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
   readRun(cwd); // Refuse absent runs without creating a database.
-  const db = new DatabaseSync(runPath(cwd));
+  const db = openRun(cwd);
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'completion')) db.exec('ALTER TABLE tickets ADD COLUMN completion TEXT');
@@ -60,6 +85,9 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'provisioned')) db.exec('ALTER TABLE tickets ADD COLUMN provisioned INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'assignment')) db.exec('ALTER TABLE tickets ADD COLUMN assignment TEXT');
+    for (const column of ['loop_control', 'activated', 'stopped']) {
+      if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
+    }
     const value = work(db);
     db.exec('COMMIT');
     return value;

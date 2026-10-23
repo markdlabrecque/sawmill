@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
@@ -139,12 +140,15 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
   status: 'ok';
-  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress };
+  run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string; lifecycle?: RunLifecycle };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
 }
 export interface LoopProgress { cursor: number; consecutiveInfrastructure: number; pausedReason?: string }
+/** Derived from durable intent and always set by readRun. An active run may be waiting on
+ * dependencies, answers or capacity. */
+export type RunLifecycle = 'inactive' | 'active' | 'paused' | 'stopped' | 'completed';
 
 /** Merge acceptance is irreversible; every unfinished cleanup remains retryable. */
 export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'integration'>): boolean {
@@ -219,14 +223,31 @@ export function readRun(cwd: string): RunSnapshot {
   return readRunFile(runPath(cwd));
 }
 
+const noRunMessage = 'No drafted run; use mill run draft <numbers...>.';
+
+/** Opens the run for writing without ever creating it. SQLite's `mode=rw` refuses a missing
+ * file, so a run deleted after it was read, such as a millyard removed under the scheduler,
+ * is reported instead of recreated empty. Only drafting creates a run. */
+export function openRun(cwd: string): DatabaseSync {
+  const url = pathToFileURL(runPath(cwd));
+  url.searchParams.set('mode', 'rw');
+  try { return new DatabaseSync(url); }
+  catch (error) {
+    // Node before 22.15 takes only string paths; it keeps the earlier check-then-open.
+    if ((error as NodeJS.ErrnoException).code === 'ERR_INVALID_ARG_TYPE') return new DatabaseSync(runPath(cwd));
+    if (!existsSync(runPath(cwd))) throw new CliError(noRunMessage);
+    throw error;
+  }
+}
+
 /** Reads any run file, current or archived, without writing it. */
 export function readRunFile(file: string): RunSnapshot {
-  if (!existsSync(file)) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+  if (!existsSync(file)) throw new CliError(noRunMessage);
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN');
     const run = db.prepare('SELECT * FROM run').get();
-    if (!run) throw new CliError('No drafted run; use mill run draft <numbers...>.');
+    if (!run) throw new CliError(noRunMessage);
     const edges: RunEdge[] = db.prepare('SELECT * FROM edges ORDER BY blocked, blocker').all().map(row => ({ blocked: Number(row.blocked), blocker: Number(row.blocker), outsideClosed: Boolean(row.outside_closed) }));
     const tickets: RunTicket[] = db.prepare('SELECT * FROM tickets ORDER BY position').all().map(row => ({
       number: Number(row.number), title: String(row.title), body: String(row.body), labels: JSON.parse(String(row.labels)) as string[],
@@ -248,7 +269,12 @@ export function readRunFile(file: string): RunSnapshot {
       if (ticket.state === 'queued' || ticket.state === 'blocked') ticket.state = ticket.blockers.length ? 'blocked' : 'queued';
     }
     const pendingWrites = db.prepare('SELECT * FROM pending_writes ORDER BY id').all().map(row => ({ id: Number(row.id), ticket: Number(row.ticket), kind: row.kind, payload: JSON.parse(String(row.payload)), attempts: Number(row.attempts) })) as PendingWrite[];
-    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(run.loop_control ? { loop: JSON.parse(String(run.loop_control)) as LoopProgress } : {}) }, tickets, edges, pendingWrites };
+    const loop = run.loop_control ? JSON.parse(String(run.loop_control)) as LoopProgress : undefined;
+    // A run drafted before activation existed has no column and stays inactive until started.
+    const lifecycle: RunLifecycle = tickets.length && tickets.every(ticket => ticket.state === 'done') ? 'completed'
+      : !run.activated ? 'inactive' : run.stopped ? 'stopped' : loop?.pausedReason ? 'paused' : 'active';
+    return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(loop ? { loop } : {}),
+      ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}), lifecycle }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
