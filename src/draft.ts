@@ -1,12 +1,13 @@
 import { checkMillyard } from './millyard.js';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
+import { registerMillyard } from './registry.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
-export async function draft(cwd: string, project: ProjectConfig, selection: RunSelection, tracker: TicketReader, replace = false, assign = false) {
+export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false) {
   await checkMillyard(cwd, project.integration);
   checkDraftable(cwd, replace);
   let tickets: Ticket[];
@@ -52,6 +53,7 @@ export async function draft(cwd: string, project: ProjectConfig, selection: RunS
     ordered.push(...remaining.splice(next, 1));
   }
   saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign);
+  await registerMillyard(home, cwd);
   return readRun(cwd);
 }
 
