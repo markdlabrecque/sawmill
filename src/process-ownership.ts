@@ -1,3 +1,4 @@
+import { ownerVariable } from './direct-child.js';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { readRun, type OwnedProcess } from './run-store.js';
@@ -56,7 +57,8 @@ function owned(token: string, groups: OwnedProcess[]) {
     let marked = false;
     try {
       if (statSync(`/proc/${pid}`).uid !== process.getuid!()) continue;
-      marked = readFileSync(`/proc/${pid}/environ`).toString().split('\0').includes(`MILL_WORKER_TOKEN=${token}`);
+      const environ = readFileSync(`/proc/${pid}/environ`).toString().split('\0');
+      marked = environ.includes(`MILL_WORKER_TOKEN=${token}`) || environ.includes(`${ownerVariable}=${token}`);
     } catch (error) {
       if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) continue;
       // A same-user unreadable process could contain our token. Refuse recovery.

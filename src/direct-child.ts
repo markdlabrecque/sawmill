@@ -21,12 +21,16 @@ interface ChildOptions {
  * coordinator's ticket; tests that build their own millyards must not see them. */
 export const workerVariables = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
 
+/** Marks an agent's descendants which leave its process group, under a name `mill` never adopts. */
+export const ownerVariable = 'SAWMILL_OWNER_TOKEN';
+
 /** Spawn the vendor itself. Settle only after its pipes and process group close. */
 export function directChild(request: RuntimeRequest, sink: RuntimeSink, options: ChildOptions): Promise<{
   code: number | null; signal: NodeJS.Signals | null; stderr: string; failure?: string;
 }> {
   const env = { ...options.env };
   for (const name of workerVariables) delete env[name];
+  if (options.env.MILL_WORKER_TOKEN) env[ownerVariable] = options.env.MILL_WORKER_TOKEN;
   return new Promise(resolve => {
     const child = spawn(options.executable, options.args, { cwd: request.cwd, env,
       detached: true, stdio: ['pipe', 'pipe', 'pipe'] });

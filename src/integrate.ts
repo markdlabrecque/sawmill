@@ -12,7 +12,7 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import { checkMillyard } from './millyard.js';
 import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
-import { transition, type MirrorOptions, type Transition } from './transitions.js';
+import { flakyCount, logFlakyRow, transition, type MirrorOptions, type Transition } from './transitions.js';
 import { MergeRefusedError } from './tracker.js';
 import type { IntegrationTracker, Pipeline } from './tracker.js';
 import { withRunLock } from './run-lock.js';
@@ -54,6 +54,15 @@ export async function tests(cwd: string, project: ProjectConfig, home?: string, 
     try { if (child.pid) childStarted?.(child.pid); }
     catch (error) { if (child.pid) process.kill(-child.pid, 'SIGKILL'); reject(error); }
   });
+}
+
+/** Beyond this many flaky passes at one stage, a ticket's test failures count. */
+const flakyRerunCap = 2;
+
+/** Names of failed tests in node:test spec or TAP output, once each. */
+function failedTests(output: string): string[] {
+  const names = [...output.matchAll(/^\s*(?:✖|not ok \d+ -) (.+?)(?: \([\d.]+m?s\))?\s*$/gm)].map(match => match[1]!).filter(name => name !== 'failing tests:');
+  return [...new Set(names)];
 }
 
 /** Commits on local integration that are missing from origin can never be
@@ -152,8 +161,16 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       await advance('tests');
       await requireApproval();
       boundary();
-      const tested = await tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      const run = () => tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      let tested = await run();
       boundary();
+      // A failure is rerun once before it counts. A pass on the rerun is logged, not hidden.
+      if (!tested.timedOut && tested.code !== 0 && flakyCount(cwd, number, 'tests') < flakyRerunCap) {
+        const first = tested;
+        tested = await run();
+        boundary();
+        if (!tested.timedOut && tested.code === 0) logFlakyRow(cwd, number, 'tests', failedTests(first.output), first.code);
+      }
       if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
       if (tested.code !== 0) {
         await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
