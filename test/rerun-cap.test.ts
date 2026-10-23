@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -39,7 +39,9 @@ test('a ticket reruns failed final test runs at most twice; the third failure co
     runtime: { async run(_request, sink) { sink.session('review-session'); return { outcome: { outcome: 'pass' } }; } },
     stdout: value => { reviewOutput += value; },
   }), 0, reviewOutput);
-  const runs = async () => (await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length;
+  // The review runs the suite once before the reviewer; count only integration runs.
+  await rm(join(y.root, 'runs'), { force: true });
+  const runs =async () => (await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length;
   for (const expected of [2, 4, 5]) {
     const result = await y.cli('integrate', '9', '--json');
     assert.equal(result.code, 1, result.stdout);
