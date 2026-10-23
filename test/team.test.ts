@@ -2288,7 +2288,9 @@ test('a long test run does not change what Mill hands over: the failures stay in
 test('a test command that is not found (exit 127) is an environment problem, not a valid red', async t => {
   const y = await fixture(t);
   await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 0\n');
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: mill-no-such-test-runner'));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: node answer.test.cjs', 'command: mill-no-such-test-runner')
+    .replace('  # preflight: test -x node_modules/.bin/tsc', "  preflight: 'true'"));
   const result = await y.cli('team', 'run', '12', '--json');
   assert.notEqual(result.code, 0, result.stdout);
   assert.deepEqual(y.inputs.map(r => r.role), ['test-writers']);
