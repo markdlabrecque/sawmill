@@ -1,9 +1,9 @@
 // The seam between run files and any front end. Read-only: never import transitions, the tracker, or a runtime here.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parse } from 'yaml';
 import { listMillyards } from '../registry.js';
-import { readRun, runPath, type RunTicket } from '../run-store.js';
+import { historyPath, readRun, readRunFile, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
 
 export const lanes = ['queued', 'launch', 'worktree', 'tests', 'implement', 'review', 'rebase', 'PR', 'CI', 'merged'] as const;
@@ -23,7 +23,11 @@ export interface ViewTicket {
   lane: Lane;
 }
 export interface ViewProject { name: string; millyard: string; runId: string | null; error: string | null; tickets: ViewTicket[] }
-export interface ViewSnapshot { time: string; projects: ViewProject[] }
+export interface ViewRun { runId: string; created: string | null; error: string | null; tickets: ViewTicket[] }
+/** One project's finished or replaced runs, newest first. */
+export interface ViewArchive { name: string; millyard: string; runs: ViewRun[] }
+/** `projects` is the Active Section: current, unfinished runs. `archive` is the Archive Section. */
+export interface ViewSnapshot { time: string; projects: ViewProject[]; archive: ViewArchive[] }
 
 const stageLanes: Record<string, Lane> = {
   'team-launch': 'launch', 'worktree-created': 'worktree', 'test-writers': 'tests', 'tests-written': 'tests',
@@ -53,22 +57,53 @@ function projectName(millyard: string): string {
   } catch { return basename(millyard); }
 }
 
-export async function readView(home: string): Promise<ViewSnapshot> {
-  const projects = (await discoverMillyards(home)).map((millyard): ViewProject => {
-    const name = projectName(millyard);
+function viewTickets(run: RunSnapshot): ViewTicket[] {
+  return run.tickets.map((ticket): ViewTicket => {
+    const row = {
+      number: ticket.number, title: ticket.title, state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
+      bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
+    };
+    return { ...row, lane: laneOf(row) };
+  });
+}
+
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** A run is complete when it has tickets and every one is done. */
+const complete = (tickets: ViewTicket[]) => tickets.length > 0 && tickets.every(ticket => ticket.state === 'done');
+
+/** Saved runs from `.mill/history`, read-only; an unreadable file keeps its error rather than vanishing. */
+function historyRuns(millyard: string): ViewRun[] {
+  let files: string[];
+  try { files = readdirSync(historyPath(millyard)).filter(file => file.endsWith('.sqlite')); } catch { return []; }
+  return files.map((file): ViewRun => {
     try {
-      const run = readRun(millyard);
-      const tickets = run.tickets.map((ticket): ViewTicket => {
-        const row = {
-          number: ticket.number, title: ticket.title, state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
-          bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
-        };
-        return { ...row, lane: laneOf(row) };
-      });
-      return { name, millyard, runId: run.run.id, error: null, tickets };
+      const run = readRunFile(join(historyPath(millyard), file));
+      return { runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run) };
     } catch (error) {
-      return { name, millyard, runId: null, error: error instanceof Error ? error.message : String(error), tickets: [] };
+      return { runId: file.slice(0, -'.sqlite'.length), created: null, error: message(error), tickets: [] };
     }
   });
-  return { time: new Date().toISOString(), projects };
+}
+
+export async function readView(home: string): Promise<ViewSnapshot> {
+  const projects: ViewProject[] = [];
+  const archive: ViewArchive[] = [];
+  for (const millyard of await discoverMillyards(home)) {
+    const name = projectName(millyard);
+    const runs: ViewRun[] = [];
+    try {
+      const run = readRun(millyard);
+      const tickets = viewTickets(run);
+      if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets });
+      else projects.push({ name, millyard, runId: run.run.id, error: null, tickets });
+    } catch (error) {
+      projects.push({ name, millyard, runId: null, error: message(error), tickets: [] });
+    }
+    // A run seen as both the current file and a saved copy appears once.
+    for (const run of historyRuns(millyard)) if (!runs.some(seen => seen.runId === run.runId)) runs.push(run);
+    runs.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
+    if (runs.length) archive.push({ name, millyard, runs });
+  }
+  return { time: new Date().toISOString(), projects, archive };
 }

@@ -4,7 +4,7 @@ import { readView, type ViewSnapshot } from './model.js';
 import { page } from './page.js';
 
 /** Time in stage is counted by the browser, so it alone never triggers a push. */
-const fingerprint = (snapshot: ViewSnapshot) => JSON.stringify(snapshot.projects, (key, value) => key === 'timeInStageSeconds' ? undefined : value);
+const fingerprint = (snapshot: ViewSnapshot) => JSON.stringify([snapshot.projects, snapshot.archive], (key, value) => key === 'timeInStageSeconds' ? undefined : value);
 
 /** Serves until the signal aborts. Every route is a GET over the latest snapshot; nothing here can change a run. */
 export async function serveView(home: string, port: number, options: { stdout: (text: string) => void; signal?: AbortSignal }): Promise<void> {
