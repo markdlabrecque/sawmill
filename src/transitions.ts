@@ -345,7 +345,9 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     if (options.implementer && !notReproduced) throw new CliError(`--implementer applies only to a not-reproduced ticket; #${number} is not one.`, 2);
     const writes: MirrorWrite[] = text === undefined ? [] : [{ kind: 'comment', payload: { body: text } }];
     writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
-    update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : {}, writes);
+    // A person answering a retry-cap ticket grants it one more round; the repair stays for the implementer.
+    const retryCap = ticket.state === 'logjam' && ticket.reason === 'retry-cap';
+    update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : retryCap ? { bounces: 2 } : {}, writes);
   });
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {
