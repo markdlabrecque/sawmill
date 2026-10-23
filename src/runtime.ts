@@ -6,6 +6,8 @@ export type Outcome =
   | { outcome: 'no-change'; summary: string }
   | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[] }
   | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[] }
+  /** Reviewer only: a protected test is wrong. The CLI routes it to the test-writers, scoped to `files`. */
+  | { outcome: 'test-correction'; files: string[]; mistake: string; preserves: string; summary?: string }
   | { outcome: 'question'; question: string }
   | { outcome: 'infrastructure'; error: string };
 export interface UserCase { case: string; result: 'completed' | 'broken'; step?: string }
@@ -72,6 +74,9 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
     case 'no-change': if (role !== 'implementer' || !nonempty(v.summary)) return bad(); break;
     case 'pass': case 'bounce':
       if (role !== 'reviewer' || (v.outcome === 'bounce' && !nonempty(v.feedback))) return bad();
+      break;
+    case 'test-correction':
+      if (role !== 'reviewer' || !Array.isArray(v.files) || !v.files.length || !v.files.every(nonempty) || !nonempty(v.mistake) || !nonempty(v.preserves)) return bad();
       break;
     case 'question': if (!nonempty(v.question)) return bad(); break;
     case 'infrastructure': if (!nonempty(v.error)) return bad(); break;

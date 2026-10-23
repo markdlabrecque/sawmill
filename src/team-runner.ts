@@ -17,7 +17,7 @@ import { checkMillyard } from './millyard.js';
 import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
-import { readRun, type InfrastructureAttempt, type TeamProgress } from './run-store.js';
+import { readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
 import { infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
@@ -30,7 +30,10 @@ const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
 const redCheckCap = 2;
+const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+const changedFiles = async (cwd: string, from: string, to: string, ...files: string[]) =>
+  (await execute('git', ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', from, to, '--', ...files], { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.split('\0').filter(Boolean);
 export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
 export interface TeamResult {
   outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped';
@@ -305,11 +308,67 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff };
         return `\n\n${latest.handoff}`;
       };
+      /** A reviewer's scoped test correction goes to the test-writers, at most `correctionCap` times. */
+      const requestCorrection = async (outcome: Extract<Outcome, { outcome: 'test-correction' }>, head: string, round?: number): Promise<TeamResult | undefined> => {
+        delete progress.activeRole;
+        const request = `Files: ${outcome.files.join(', ')}\nMistake: ${outcome.mistake}\nPreserves: ${outcome.preserves}`;
+        const unprotected = outcome.files.filter(file => !progress.testFiles?.includes(file));
+        const attempts = (progress.correction?.attempts ?? 0) + 1;
+        if (unprotected.length || attempts > correctionCap) {
+          return question(path, 'reviewer', { outcome: 'question', question: unprotected.length
+            ? `The reviewer asked the test-writers to correct files they did not write: ${unprotected.join(', ')}. Only protected test files can be corrected this way. A person must decide.\n\n${request}`
+            : `The reviewer asked for another test correction after ${correctionCap} attempts. The protected tests are unchanged. A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.\n\n${request}` });
+        }
+        progress.correction = { ...progress.correction, files: outcome.files, mistake: outcome.mistake, preserves: outcome.preserves,
+          baseline: progress.correction?.baseline ?? progress.testCommit!, requestedHead: head, attempts };
+        delete progress.correction.from;
+        resume = progress.next = 'test-writers';
+        await save({ report: { stage: 'test-correction', details: `Reviewer requested test correction ${attempts}/${correctionCap} at ${head}; protected baseline ${progress.correction.baseline}.\n\n${request}`, reachedStage: 'reviewer', round } });
+        checkStop(cwd, number);
+        guard();
+      };
+      /** Each attempt starts from the protected tests: a rejected attempt is reverted in a new commit, never rewritten. */
+      const startCorrection = async (correction: TestCorrection) => {
+        const rejected = await changedFiles(path, progress.testCommit!, 'HEAD', ...correction.files);
+        if (rejected.length) {
+          await git(path, '--literal-pathspecs', 'restore', `--source=${progress.testCommit}`, '--staged', '--worktree', '--', ...rejected);
+          await git(path, 'commit', '-m', `#${number}: Revert rejected test correction`);
+          (correction.commits ??= []).push(await git(path, 'rev-parse', 'HEAD'));
+        }
+        delete correction.head; delete correction.tests;
+        correction.from = await git(path, 'rev-parse', 'HEAD');
+      };
+      /** The CLI, not the role's claim, holds a correction to its approved files and to appended commits. */
+      const checkCorrection = async (correction: TestCorrection) => {
+        if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Test correction left uncommitted files; work retained.');
+        try { await git(path, 'merge-base', '--is-ancestor', correction.from!, 'HEAD'); }
+        catch { throw new Error('Test correction rewrote prior history; work retained.'); }
+        const changed = await changedFiles(path, correction.from!, 'HEAD');
+        const outside = changed.filter(file => !correction.files.includes(file));
+        if (outside.length) throw new Error(`Test correction changed files outside the approved tests: ${outside.join(', ')}; work retained.`);
+        if (!changed.length) throw new Error('Test correction committed no change to the approved tests; work retained.');
+        correction.commits = [...correction.commits ?? [], ...(await git(path, 'rev-list', '--reverse', `${correction.from}..HEAD`)).split('\n').filter(Boolean)];
+        correction.head = await git(path, 'rev-parse', 'HEAD');
+        correction.tests = (await latestRun('reviewer')).trim();
+      };
+      const correctionHandoff = async (role: Role): Promise<string> => {
+        const correction = progress.correction;
+        if (!correction) return '';
+        const request = `Files: ${correction.files.join(', ')}\nMistake: ${correction.mistake}\nPreserves: ${correction.preserves}`;
+        if (role === 'test-writers') {
+          return `\n\nTest correction ${correction.attempts}/${correctionCap}: the reviewer found a mistake in your protected tests. Change only the files named here, commit, and change no implementation code or other test.\n${request}\n\n` +
+            `Implementation diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.requestedHead, '--')}`;
+        }
+        if (role !== 'reviewer' || !correction.head) return '';
+        return `\n\nTest correction to verify (${correction.attempts}/${correctionCap}): check that it fixes only the requested mistake, keeps every requirement covered, and that the implementation still meets the ticket. ` +
+          `A green run alone does not make weaker tests acceptable. Pass accepts it as the new protected baseline.\n${request}\n\n${correction.tests ?? ''}\n\n` +
+          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...correction.files)}`;
+      };
       if (resuming === 'integrate') {
         if (await changedTests(path, progress)) {
           const capped = await bounce(tampered, 'protected-tests');
           if (capped) return capped;
-        } else if (!reviewApprovesHead(progress, current().integration, await git(path, 'rev-parse', 'HEAD'))) {
+        } else if (progress.correction || !reviewApprovesHead(progress, current().integration, await git(path, 'rev-parse', 'HEAD'))) {
           invalidateReview(progress);
           resume = progress.next = resuming = 'reviewer';
           await save({});
@@ -335,6 +394,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (typeof sent === 'object') return sent;
           if (sent) { role = 'test-writers'; continue; }
         }
+        const correcting = role === 'test-writers' ? progress.correction : undefined;
+        if (correcting && !correcting.from) await startCorrection(correcting);
         stage = role;
         await save({ state: 'working', stage });
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
@@ -343,7 +404,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
           ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
-        const testRun = await latestRun(role);
+        const testRun = await latestRun(role) + await correctionHandoff(role);
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});
@@ -376,9 +437,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (await git(path, 'rev-parse', 'HEAD') !== beforeRole || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('A no-change repair must leave HEAD and the worktree untouched; work retained.');
           return await stop(result.outcome);
         }
-        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
+        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== 'test-correction' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
         if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
-        if (role === 'test-writers') {
+        if (correcting) await checkCorrection(correcting);
+        else if (role === 'test-writers') {
           await git(path, 'merge-base', '--is-ancestor', progress.testBase!, 'HEAD');
           progress.testCommit = await git(path, 'rev-parse', 'HEAD');
           progress.testCommits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^${progress.testBase}`, `^refs/heads/${project.integration}`)).split('\n').filter(Boolean);
@@ -428,6 +490,20 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         delete progress.question;
         delete progress.stop;
+        if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.correction?.head) {
+          // Only a fresh passing review moves the protected baseline. The writer commits stay for rebase checks.
+          const accepted = progress.correction;
+          progress.testCommit = accepted.head;
+          progress.testCommits = [...progress.testCommits ?? [], ...accepted.commits ?? []];
+          delete progress.correction;
+          await save({ report: { stage: 'test-correction', details: `Fresh review at ${beforeRole} accepted test correction ${accepted.attempts}/${correctionCap}: protected baseline moved from ${accepted.baseline} to ${accepted.head}.\n\n` +
+            `Files: ${accepted.files.join(', ')}\nMistake: ${accepted.mistake}\nPreserves: ${accepted.preserves}\n\n${accepted.tests ?? ''}`, reachedStage: role, round: result.round } });
+        }
+        if (result.outcome.outcome === 'test-correction') {
+          const stopped = await requestCorrection(result.outcome, beforeRole, result.round);
+          if (stopped) return stopped;
+          role = 'test-writers'; continue;
+        }
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.userTesting) {
           delete progress.activeRole;
           resume = progress.next = 'integrate';
@@ -442,8 +518,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         const completed = role === 'test-writers' ? 'tests-written' : role === 'implementer' ? 'implemented' : 'review-pass';
         delete progress.activeRole;
-        resume = progress.next = role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
-        await save({ stage: completed, report: { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
+        resume = progress.next = correcting ? 'reviewer' : role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
+        await save({ stage: completed, report: correcting
+          ? { stage: 'test-correction', details: `Test correction ${correcting.attempts}/${correctionCap} committed at ${correcting.head}. A fresh review must accept it before it replaces the protected baseline ${correcting.baseline}.\n\n${correcting.tests}`, reachedStage: role, round: result.round }
+          : { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
         checkStop(cwd, number);
         // Mirroring yields to external I/O. Recheck evidence before dispatching again.
         if (await changedTests(path, progress)) {
@@ -457,7 +535,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           resume = 'reviewer';
           throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
         }
-        if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
+        if (role !== 'reviewer') { role = role === 'test-writers' && !correcting ? 'implementer' : 'reviewer'; continue; }
         const integratedResult = await runIntegration();
         if (integratedResult) return integratedResult;
         role = 'implementer';
@@ -497,12 +575,13 @@ async function fixedSinceBounce(path: string, base: string): Promise<boolean> {
   return Number(await git(path, 'rev-list', '--count', `${base}..HEAD`)) > 0;
 }
 
-/** Compare the writer baseline with HEAD, the index, and the working tree. */
+/** Compare the writer baseline, or a committed correction awaiting review, with HEAD, the index, and the working tree. */
 async function changedTests(path: string, progress: TeamProgress): Promise<boolean> {
   const files = progress.testFiles ?? [];
-  if (!files.length || !progress.testCommit) return false;
+  const base = progress.correction?.head ?? progress.testCommit;
+  if (!files.length || !base) return false;
   for (const target of [['HEAD'], ['--cached'], []]) {
-    const diff = await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--name-only', progress.testCommit, ...target, '--', ...files);
+    const diff = await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--name-only', base, ...target, '--', ...files);
     if (diff) return true;
   }
   return false;

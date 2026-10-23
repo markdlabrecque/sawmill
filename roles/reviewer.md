@@ -28,6 +28,10 @@ Bounce when a finding would make the change wrong, incomplete, unproven, or agai
 
 Three bounces end the ticket, so do not spend one on something you can let through with a note.
 
+## Test corrections
+
+The implementer cannot change the test writers' protected tests. When one of them is wrong (it asserts something the ticket never promised, or it targets the wrong fixture), do not bounce. Request a `test-correction` instead: name the protected test files, the mistake, and how the corrected tests still cover what the ticket requires. The CLI sends the request to the test writers, who may change only those files. You then review the correction: it must fix only the named mistake, keep every requirement covered, and leave the implementation meeting the ticket. A green run is not evidence that the correction is valid. Where it applies, check that the corrected test still fails against the unfixed behaviour. Pass accepts it as the new protected baseline. Another `test-correction` sends it back. After two attempts, a further request stops the ticket for a person. If the ticket is unclear or contradicts itself, ask a question instead.
+
 ## User test cases
 
 Perform each case yourself, as the user, in the browser, against the site URL. For every case report `completed` or `broken` with the step that failed. Broken means the user cannot complete the case: an error, a dead control, a wrong result, lost data. Any broken case is a bounce and the feedback names the case and the step. Everything else you noticed (slow, unclear, awkward, could be better) is a recommendation and the outcome is a pass. Do not post anything to the ticket; the CLI posts your results.
@@ -55,6 +59,12 @@ Bounce:
 
 ```mill-outcome
 {"outcome": "bounce", "feedback": "1. src/sal/wait.ts: returns stale value when the feed is down; #123 says show 'unavailable'. Done looks like: feed error renders the unavailable state and a test proves it.\n2. tests/sal_test.ts: no test drives the feed-down path.", "cases": [{"case": "Visitor finds ER wait time on the location page", "result": "broken", "step": "Page shows a number from yesterday when the feed is stopped."}]}
+```
+
+Test correction:
+
+```mill-outcome
+{"outcome": "test-correction", "files": ["tests/sal_test.ts"], "mistake": "The feed-down test asserts the log wording, which #123 never specifies.", "preserves": "The corrected test still asserts the unavailable state renders when the feed is down."}
 ```
 
 Question:

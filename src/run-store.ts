@@ -47,11 +47,33 @@ export interface TeamProgress {
   /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
   checkpointHead?: string;
   repair?: RepairContext;
+  /** A reviewer-requested correction of protected tests, pending until a fresh review passes it. */
+  correction?: TestCorrection;
   /** A question ends the invocation; an answer re-enters this role on its saved branch. */
   question?: { role: Role; question: string; wipHead?: string; preserved: boolean; error?: string };
   infrastructureAttempts?: InfrastructureAttempt[];
   /** Accumulated user-case results across repair reviews. */
   userTesting?: import('./user-testing.js').UserTesting;
+}
+/** The original writer commits stay in `testCommits`; `testCommit` moves only when a review accepts `head`. */
+export interface TestCorrection {
+  /** The reviewer's request: the only paths the test-writers may change. */
+  files: string[];
+  mistake: string;
+  preserves: string;
+  /** Protected baseline and reviewed HEAD when the first request was made. */
+  baseline: string;
+  requestedHead: string;
+  /** Correction attempts, separate from implementation-review bounces. */
+  attempts: number;
+  /** HEAD when the current attempt started, after any rejected attempt was reverted. */
+  from?: string;
+  /** Correction and revert commits, in order, that join `testCommits` on acceptance. */
+  commits?: string[];
+  /** Committed correction awaiting review; later roles may not change it. */
+  head?: string;
+  /** Mill's test run of `head`. */
+  tests?: string;
 }
 /** Infrastructure invocation history, independent of the repair bounce budget. */
 export interface InfrastructureAttempt {

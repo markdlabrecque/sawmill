@@ -321,6 +321,8 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     delete team.repair;
     delete team.question;
     delete team.activeRole;
+    // A person's approval supersedes any pending reviewer-requested correction.
+    delete team.correction;
     team.testCommit = commit;
     team.next = 'reviewer';
     // The bounces were spent on the tests the person has now approved.

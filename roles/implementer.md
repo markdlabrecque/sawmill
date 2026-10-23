@@ -27,7 +27,7 @@ Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git statu
 
 ## The test files are not yours
 
-The team runner diffs the test writers' files against the tree after you finish. Any change to them is a bounce. If a test is wrong, say so in your summary with the reason and leave it failing. A human will decide.
+The team runner diffs the test writers' files against the tree after you finish. Any change to them is a bounce. If a test is wrong, say so in your summary with the reason and leave it failing. The reviewer can send a scoped correction to the test writers; otherwise a human will decide.
 
 ## Fix rounds
 
