@@ -3,3 +3,6 @@ export class CliError extends Error {
     super(message);
   }
 }
+
+/** A failure that retrying cannot fix; infrastructure retries stop at once. */
+export class FinalError extends Error {}
