@@ -132,7 +132,8 @@ export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'inte
 export type MirrorWrite =
   | { kind: 'comment'; payload: { body: string } }
   | { kind: 'add-label' | 'remove-label'; payload: { label: string } }
-  | { kind: 'close' | 'assign'; payload: Record<string, never> };
+  | { kind: 'close' | 'assign'; payload: Record<string, never> }
+  | { kind: 'delete-comment'; payload: { id: number | string } };
 export type PendingWrite = MirrorWrite & { id: number; ticket: number; attempts: number };
 
 export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');

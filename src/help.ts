@@ -15,6 +15,7 @@ export const commands: Command[] = [
   { name: 'run stop', usage: 'mill run stop <n> [--json]', summary: 'Ask a working ticket to stop once its active stage finishes safely.' },
   { name: 'run close', usage: 'mill run close <n> [--json]', summary: 'Close a ticket in the run.' },
   { name: 'run answer', usage: 'mill run answer <n> [text] [--implementer] [--json]', summary: 'Answer a logjammed ticket and requeue it; --implementer retries a not-reproduced repair.' },
+  { name: 'run reset', usage: 'mill run reset <n> [--json]', summary: 'Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it.' },
   { name: 'team tail', usage: 'mill team tail <n> [--no-follow] [--json]', summary: "Follow the ticket's newest role log; --no-follow prints it and returns." },
   { name: 'team review', usage: 'mill team review <n> [--json]', summary: 'Review an existing ticket worktree, including handwritten work.' },
   { name: 'team run', usage: 'mill team run <n> [--json]', summary: 'Run or resume one drafted ticket through the team workflow.' },

@@ -197,6 +197,9 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
           case 'remove-label': await tracker.removeLabel(number, write.payload.label); break;
           case 'close': await tracker.closeTicket(number); break;
           case 'assign': assigned = await assignSelf(tracker, number); break;
+          case 'delete-comment':
+            if (!tracker.deleteComment) throw new Error('Tracker write adapter cannot delete comments.');
+            await tracker.deleteComment(write.payload.id, number); break;
         }
       } catch (error) {
         if (attempt < 3) { await sleep(100 * 2 ** attempt); continue; }
@@ -301,6 +304,47 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     update(db, number, { state: cleanupPending(ticket) ? 'queued' : ticket.completion || ticket.merge_commit ? 'done' : 'queued', reason: null });
   });
   return true;
+}
+
+/** Every reporter comment starts with this first line; a person's comments never should. */
+export const agentComment = (body: string) => body.startsWith('[sawmill:');
+
+/** Reset refusals, checked before anything is touched. */
+export function checkResettable(cwd: string, project: ProjectConfig, number: number): RunTicket {
+  checkTracker(cwd, project);
+  const ticket = readRun(cwd).tickets.find(ticket => ticket.number === number);
+  if (!ticket) throw new CliError(`Ticket #${number} is not in the run.`);
+  if (ticket.state === 'working') throw new CliError(`Ticket #${number} is working; stop it first with mill run stop ${number}, then reset it.`);
+  if (ticket.state === 'done' || ticket.completion || ticket.mergeCommit) throw new CliError(`Ticket #${number} is done and cannot be reset; revert it and open a new ticket instead.`);
+  return ticket;
+}
+
+/** Drop the old attempt's unsent writes, then queue deletes of its agent comments
+ * and removal of the logjam label. A failed delete is held and retried like any write. */
+export async function clearTicketTracker(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, comments: (number | string)[], options: MirrorOptions = {}) {
+  checkTracker(cwd, project);
+  transaction(cwd, db => {
+    requireTicket(db, number);
+    db.prepare("DELETE FROM pending_writes WHERE ticket = ? AND kind NOT IN ('assign', 'delete-comment')").run(number);
+    const held = new Set(db.prepare("SELECT payload FROM pending_writes WHERE ticket = ? AND kind = 'delete-comment'").all(number)
+      .map(row => String(JSON.parse(String(row.payload)).id)));
+    const writes: MirrorWrite[] = comments.filter(id => !held.has(String(id))).map(id => ({ kind: 'delete-comment', payload: { id } }));
+    writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
+    update(db, number, {}, writes);
+  });
+  return flushPending(cwd, project, tracker, number, options);
+}
+
+/** The last reset step: the row becomes a freshly drafted ticket, keeping number, title, position and edges. */
+export function resetRow(cwd: string, project: ProjectConfig, number: number): void {
+  checkTracker(cwd, project);
+  transaction(cwd, db => {
+    const ticket = requireTicket(db, number);
+    if (ticket.state === 'working') throw new CliError(`Ticket #${number} started working during the reset; stop it with mill run stop ${number} and reset again.`);
+    const comments = (JSON.parse(String(ticket.comments)) as { body: string }[]).filter(comment => !agentComment(comment.body));
+    update(db, number, { state: 'queued', reason: null, stage: null, bounces: 0, sessionIds: {}, worktree: null, provisioned: false, branch: null, integration: {}, team: {} });
+    db.prepare('UPDATE tickets SET comments = ?, worker = NULL, stage_started = NULL, stop_requested = 0 WHERE number = ?').run(JSON.stringify(comments), number);
+  });
 }
 
 /** Local-only request. Do not contend with the active role lock or touch its process. */

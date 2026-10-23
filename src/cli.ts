@@ -9,6 +9,7 @@ import { GitHubIntegration } from './github-integration.js';
 import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
+import { resetTicket } from './reset.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -188,6 +189,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         requestStop(cwd, config.project, number);
         emit({ status: 'stop-requested', ticket: number }, `Stop requested for ${ref(number)}; the active stage will finish safely.`);
         return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'reset') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run reset'), 2);
+        const result = await resetTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { home, sleep: options.sleep });
+        emit(result, result.status === 'ok'
+          ? [`Reset ${ref(result.ticket)}; it is queued and the next run starts it fresh.`, `Agent comments deleted: ${result.comments}`,
+            `Worktree removed: ${result.worktree ?? '(none)'}`, `Branches deleted: ${result.branches.join(', ') || '(none)'}`].join('\n')
+          : `Tracker logjam for ${ref(result.ticket)}; pending writes retained. Run mill run reset ${result.ticket} again to retry.`);
+        return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError(usage('run once'), 2);

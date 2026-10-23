@@ -158,6 +158,7 @@ Run these from the millyard root. Drafting and dispatch require a clean checkout
 | `mill run` | Start the run detached, print its log path, and return. |
 | `mill run --foreground` | Dispatch and wait until the run finishes, has no runnable work, or pauses. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. |
+| `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
 | `mill team review 12` | Review an existing ticket worktree, including handwritten work. |
 | `mill team tail 12` | Follow the ticket's newest role log. |
@@ -226,7 +227,11 @@ Request a stop at the next stage boundary:
 mill run stop 12
 ```
 
-The active stage finishes naturally. Wait for the stopped logjam before answering to resume. To mark a ticket complete by hand and close its tracker issue without merging:
+The active stage finishes naturally. Wait for the stopped logjam before answering to resume.
+
+When a ticket has gone wrong and resuming would only repeat it, `mill run reset 12` starts it over. It deletes the comments the run posted on the issue (those whose first line starts with `[sawmill:`; a comment you wrote that starts that way is deleted too), removes the logjam label, runs teardown and force-removes the worktree with any WIP, deletes the `mill/12` branch locally and on `origin`, and deletes `.mill/logs/12/`. The ticket goes back to `queued` with no saved progress, and the next `mill run` starts it from the test writers. Reset refuses a `working` ticket (stop it with `mill run stop 12` first) and a `done` one. If a tracker write fails part-way, the ticket keeps its old progress; run the reset again.
+
+To mark a ticket complete by hand and close its tracker issue without merging:
 
 ```sh
 mill run close 12

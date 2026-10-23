@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { ProjectConfig } from './config.js';
 import { MergeRefusedError } from './tracker.js';
-import type { AssignResult, ChangeRequest, Pipeline, Ticket, Tracker } from './tracker.js';
+import type { AssignResult, ChangeRequest, IssueComment, Pipeline, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
@@ -130,6 +130,20 @@ export class GitLabTracker implements Tracker {
   }
 
   async addComment(number: number, body: string): Promise<void> { await this.request('POST', `/issues/${number}/notes`, { body }); }
+  async listComments(number: number): Promise<IssueComment[]> {
+    return (await this.list(`/issues/${number}/notes?sort=asc&order_by=created_at`)).map(value => {
+      const note = record(value);
+      if (!positive(note.id) || typeof note.body !== 'string') throw new Error('GitLab returned an invalid issue note.');
+      return { id: note.id, body: note.body };
+    });
+  }
+  async deleteComment(id: number | string, number: number): Promise<void> {
+    try { await this.request('DELETE', `/issues/${number}/notes/${encodeURIComponent(String(id))}`); }
+    catch (error) {
+      if (error instanceof GitLabApiError && error.status === 404) return;
+      throw error;
+    }
+  }
   async addLabel(number: number, label: string): Promise<void> {
     this.checkLabel(label);
     // GitLab's add_labels creates absent labels. Check definitions, never issue state.

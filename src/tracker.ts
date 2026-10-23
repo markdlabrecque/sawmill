@@ -4,6 +4,12 @@ export interface TicketComment {
   createdAt?: string;
 }
 
+/** A comment as the tracker identifies it, so it can be deleted. */
+export interface IssueComment {
+  id: number | string;
+  body: string;
+}
+
 export interface Ticket {
   number: number;
   title: string;
@@ -47,6 +53,10 @@ export interface TicketWriter {
   closeTicket(number: number): Promise<void>;
   /** Assign the user the tracker CLI is logged in as; idempotent. */
   assignSelf?(number: number): Promise<AssignResult>;
+  /** Every comment on the ticket, oldest first; used by reset to find agent comments. */
+  listComments?(number: number): Promise<IssueComment[]>;
+  /** Idempotent: a comment that is already gone counts as deleted. */
+  deleteComment?(id: number | string, number: number): Promise<void>;
 }
 
 /** A definite server refusal, distinct from transport/authentication failures. */

@@ -165,6 +165,34 @@ export async function removeWorktree(cwd: string, project: ProjectConfig, number
   return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing?.path ?? null, branch, removed: Boolean(existing), branchDeleted };
 }
 
+/** Reset throws the attempt away: teardown, force-remove the worktree with its WIP,
+ * and delete the ticket branch locally and on origin. The integration branch is never touched. */
+export async function discardWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {
+  cwd = resolve(cwd);
+  const branch = `mill/${number}`;
+  if (branch === project.integration) throw new CliError('The integration branch cannot also be the ticket branch.', 2);
+  const existing = (await worktrees(cwd)).find(tree => tree.branch === `refs/heads/${branch}`);
+  if (existing) {
+    if (!existsSync(existing.path)) await git(cwd, 'worktree', 'prune');
+    else {
+      if (await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
+      if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before reset.`);
+      await hook(cwd, project, number, existing.path, 'teardown', options);
+      await git(cwd, 'worktree', 'remove', '--force', existing.path);
+    }
+  }
+  const branches: string[] = [];
+  if (await hasBranch(cwd, branch)) {
+    await git(cwd, 'branch', '-D', branch);
+    branches.push(branch);
+  }
+  if (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)) {
+    await execute('git', ['push', 'origin', '--delete', branch], { cwd, encoding: 'utf8', timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    branches.push(`origin/${branch}`);
+  }
+  return { path: existing?.path ?? null, branches };
+}
+
 export async function gcWorktrees(cwd: string, project: ProjectConfig, options: WorktreeOptions = {}) {
   const tickets = existsSync(runPath(cwd)) ? readRun(cwd).tickets.filter(ticket => ticket.state === 'done') : [];
   const removed: Awaited<ReturnType<typeof removeWorktree>>[] = [];
