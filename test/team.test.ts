@@ -597,8 +597,42 @@ test('protected-test repairs preserve every writer checkpoint and still receive 
   }
 });
 
-test('repair must append one separate commit, preserving prior implementation history', async t => {
-  for (const mode of ['no-commit', 'amend', 'multiple']) {
+test('a repair with separate implementation and regression-test commits reaches review with the whole range and feedback', async t => {
+  const y = await fixture(t);
+  let reviews = 0, implementations = 0, baseHead = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') {
+      if (++reviews === 1) {
+        baseHead = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+        return { outcome: { outcome: 'bounce', feedback: 'Document the synchronous return value.' } };
+      }
+      assert.match(request.handoff, /Document the synchronous return value/);
+      const diff = request.handoff.split('Fix diff:\n')[1]!;
+      assert.ok(diff, request.handoff);
+      assert.match(diff, /diff --git a\/API.md/);
+      assert.match(diff, /diff --git a\/notes.md/);
+      return { outcome: { outcome: 'pass', summary: 'Both commits reviewed.' } };
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      await writeFile(join(request.cwd, 'API.md'), 'answer returns 42 synchronously.\n');
+      y.git('-C', request.cwd, 'add', 'API.md'); y.git('-C', request.cwd, 'commit', '-m', '#12: Document return value');
+      await writeFile(join(request.cwd, 'notes.md'), 'Separate checkpoint commit.\n');
+      y.git('-C', request.cwd, 'add', 'notes.md'); y.git('-C', request.cwd, 'commit', '-m', '#12: Add notes');
+      return { outcome: { outcome: 'done', summary: 'Two commits.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'passed');
+  assert.equal(y.git('rev-list', '--count', `${baseHead}..${(await y.status()).tickets[0].integration.mergedHead}`), '2');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 1); assert.equal(row.state, 'done');
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+});
+
+test('repair must append new work to prior implementation history', async t => {
+  for (const mode of ['no-commit', 'amend']) {
     const y = await fixture(t);
     let implementations = 0;
     y.setScript(async (request, sink) => {
@@ -608,10 +642,6 @@ test('repair must append one separate commit, preserving prior implementation hi
           await writeFile(join(request.cwd, 'API.md'), 'Answer is synchronous.\n');
           y.git('-C', request.cwd, 'add', '.');
           y.git('-C', request.cwd, 'commit', ...(mode === 'amend' ? ['--amend'] : []), '-m', 'Fix documentation');
-          if (mode === 'multiple') {
-            await writeFile(join(request.cwd, 'API.md'), 'Answer is 42.\n');
-            y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Another fix');
-          }
         }
         return { outcome: { outcome: 'done', summary: 'Claimed fixed.' } };
       }
@@ -620,7 +650,8 @@ test('repair must append one separate commit, preserving prior implementation hi
     const result = await y.cli('team', 'run', '12', '--json');
     assert.equal(result.code, 1, `${mode}: ${result.stdout}`);
     assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
-    assert.match(result.stdout, /separate.*commit/i);
+    assert.match(result.stdout, mode === 'no-commit' ? /no new (commit|work)/i : /ancest|rewr/i);
+    assert.doesNotMatch(result.stdout, /one separate/i);
     assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 1);
     assert.equal((await y.status()).tickets[0].bounces, 1);
   }

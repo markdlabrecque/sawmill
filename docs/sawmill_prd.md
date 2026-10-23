@@ -86,8 +86,8 @@ Worktrees are plain git worktrees that only Sawmill creates and removes, so the 
 Review rounds stay cheap by scoping each re-review to the fix, with the post-rebase test gate as the safety net.
 
 - First review: reviewer gets the ticket plus the full diff.
-- Bounce: reviewer feedback goes to the implementer; each fix is its own commit.
-- Re-review: reviewer sees only that fix commit's diff plus its own original feedback, and checks whether the feedback was addressed.
+- Bounce: reviewer feedback goes to the implementer; each fix is a range of one or more new commits appended after the bounce, checkpoint commits allowed, prior history never rewritten.
+- Re-review: reviewer sees only the repair's diff since the bounce, across all its commits, plus its own original feedback, and checks whether the feedback was addressed.
 - User testing: if the ticket has a "User test cases" section, the reviewer performs each case as the user in a browser (the `chrome-devtools-axi` CLI) against the worktree's running site. A case the user cannot complete (error, dead control, wrong result, lost data) is a bounce naming the case and step. Everything else is a pass, with recommendations posted by the CLI as a user-testing comment on the ticket. A re-review after such a bounce re-runs the failed cases.
 - Retry cap: after the cap is hit, the ticket is labelled logjam and the team stops.
 - Rebase: before merge, rebase onto integration and re-run the full test suite.
