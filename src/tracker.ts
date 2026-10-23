@@ -37,11 +37,16 @@ export interface Pipeline {
   diagnostics?: string;
 }
 
+/** `held` means someone else is already assigned; Sawmill never takes a ticket from them. */
+export type AssignResult = { status: 'assigned' } | { status: 'held'; by: string };
+
 export interface TicketWriter {
   addLabel(number: number, label: string): Promise<void>;
   removeLabel(number: number, label: string): Promise<void>;
   addComment(number: number, body: string): Promise<void>;
   closeTicket(number: number): Promise<void>;
+  /** Assign the user the tracker CLI is logged in as; idempotent. */
+  assignSelf?(number: number): Promise<AssignResult>;
 }
 
 /** A definite server refusal, distinct from transport/authentication failures. */

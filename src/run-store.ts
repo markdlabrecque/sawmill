@@ -128,7 +128,7 @@ export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'inte
 export type MirrorWrite =
   | { kind: 'comment'; payload: { body: string } }
   | { kind: 'add-label' | 'remove-label'; payload: { label: string } }
-  | { kind: 'close'; payload: Record<string, never> };
+  | { kind: 'close' | 'assign'; payload: Record<string, never> };
 export type PendingWrite = MirrorWrite & { id: number; ticket: number; attempts: number };
 
 export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');
@@ -143,7 +143,8 @@ export function checkDraftable(cwd: string, replace: boolean): void {
   if (!replace && snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam')) throw new CliError(activeRunMessage);
 }
 
-export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }): void {
+/** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
+export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -170,6 +171,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
     for (const edge of edges) insertEdge.run(edge.blocked, edge.blocker, Number(edge.outsideClosed));
+    const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
+    if (assign) for (const ticket of tickets) insertWrite.run(ticket.number);
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }

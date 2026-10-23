@@ -4,7 +4,7 @@ import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { readRun, runPath, mergeCleanupPending, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
-import type { TicketWriter } from './tracker.js';
+import type { AssignResult, TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
 
@@ -194,6 +194,7 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
           case 'add-label': await tracker.addLabel(number, write.payload.label); break;
           case 'remove-label': await tracker.removeLabel(number, write.payload.label); break;
           case 'close': await tracker.closeTicket(number); break;
+          case 'assign': await assignSelf(tracker, number); break;
         }
       } catch (error) {
         if (attempt < 3) { await sleep(100 * 2 ** attempt); continue; }
@@ -217,6 +218,48 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
       break;
     }
   }
+}
+
+function assignSelf(tracker: TicketWriter, number: number): Promise<AssignResult> {
+  if (!tracker.assignSelf) throw new Error('Tracker write adapter cannot assign tickets.');
+  return tracker.assignSelf(number);
+}
+
+/** A definite client error will not succeed on retry; auth, timeout and rate limits may. */
+function refused(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+}
+
+/** Draft-time assignment with the same retries as flushPending. A failure stays
+ * queued for mill run answer instead of turning a fresh draft into a logjam; a
+ * definite refusal is reported and dropped so it cannot hold the ticket back. */
+export async function flushAssignments(cwd: string, project: ProjectConfig, tracker: TicketWriter, options: MirrorOptions = {}): Promise<string[]> {
+  checkTracker(cwd, project);
+  const sleep = options.sleep ?? (async ms => { await setTimeout(ms); });
+  const notes: string[] = [];
+  for (const write of readRun(cwd).pendingWrites.filter(write => write.kind === 'assign')) {
+    for (let attempt = 0; ; attempt++) {
+      transaction(cwd, db => { db.prepare('UPDATE pending_writes SET attempts = attempts + 1 WHERE id = ?').run(write.id); });
+      let result: AssignResult;
+      try { result = await assignSelf(tracker, write.ticket); }
+      catch (error) {
+        if (attempt < 3 && !refused(error)) { await sleep(100 * 2 ** attempt); continue; }
+        const message = error instanceof Error ? error.message : String(error);
+        transaction(cwd, db => {
+          db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(write.ticket, new Date().toISOString(), JSON.stringify({ mirrorError: message, writeId: write.id }));
+          if (refused(error)) db.prepare('DELETE FROM pending_writes WHERE id = ?').run(write.id);
+        });
+        notes.push(refused(error) ? `#${write.ticket}: the tracker refused the assignment (${message}); left unassigned.`
+          : `#${write.ticket}: not assigned yet (${message}); retry with mill run answer ${write.ticket}.`);
+        break;
+      }
+      if (result.status === 'held') notes.push(`#${write.ticket}: already assigned to ${result.by}; left with them.`);
+      transaction(cwd, db => { db.prepare('DELETE FROM pending_writes WHERE id = ?').run(write.id); });
+      break;
+    }
+  }
+  return notes;
 }
 
 export async function closeTicket(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, options: MirrorOptions = {}) {

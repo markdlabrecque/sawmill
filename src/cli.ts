@@ -18,7 +18,7 @@ import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
 import type { ReportStage } from './reporter.js';
-import { answerTicket, closeTicket, requestStop, transition } from './transitions.js';
+import { answerTicket, closeTicket, flushAssignments, requestStop, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
 import { formatRun, readRun, type MirrorWrite, type RunSnapshot } from './run-store.js';
 import { ticketRef } from './links.js';
@@ -219,8 +219,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
-        const snapshot = await draft(cwd, config.project, parsed.selection, tracker, parsed.replace);
-        emit(snapshot, table(snapshot));
+        // Injected trackers without assignSelf draft without assignment.
+        const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
+        await draft(cwd, config.project, parsed.selection, tracker, parsed.replace, Boolean(writer));
+        const notes = writer ? await flushAssignments(cwd, config.project, writer, options) : [];
+        const snapshot = readRun(cwd);
+        emit(snapshot, [table(snapshot), ...notes].join('\n'));
         return 0;
       }
       const message = unknownCommand(positional);
