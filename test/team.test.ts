@@ -325,11 +325,15 @@ test('three review bounces persist the last failure and report retry-cap in text
   assert.ok(y.ticket.labels.includes('logjam'));
   assert.match((await y.cli('run', 'status')).stdout, /logjam.*retry-cap/);
   assert.equal((await y.cli('run', 'answer', '12', 'Try again')).code, 0);
-  const capped = await y.cli('team', 'run', '12', '--json');
-  assert.equal(JSON.parse(capped.stdout).outcome, 'retry-cap');
-  assert.equal(JSON.parse(capped.stdout).error, 'Missing scenario 3.');
-  assert.equal(y.inputs.length, 7);
-  assert.equal((await y.status()).tickets[0].bounces, 3);
+  // Answering gives the ticket one more round, not an instant second stop.
+  assert.equal((await y.status()).tickets[0].state, 'queued');
+  const again = await y.cli('team', 'run', '12', '--json');
+  assert.equal(reviews, 4);
+  assert.ok(y.inputs.length > 7);
+  assert.equal(JSON.parse(again.stdout).outcome, 'retry-cap');
+  assert.equal(JSON.parse(again.stdout).error, 'Missing scenario 4.');
+  const stopped = (await y.status()).tickets[0];
+  assert.equal(stopped.bounces, 3); assert.equal(stopped.state, 'logjam'); assert.equal(stopped.reason, 'retry-cap');
 });
 
 test('a tracker outage cannot stop a step, since steps write nothing; only the merged comment is held', async t => {

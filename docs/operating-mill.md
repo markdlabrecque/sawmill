@@ -46,6 +46,7 @@ To work on a ticket by hand, stop it first with `mill run stop <n>`, then wait f
 1. Read the reason in `mill run status` and the latest report, in full, with `mill run log <n>`. A stuck ticket gets only the `logjam` label, not a comment.
 2. Answer with `mill run answer <n> "<text>"`. Say what to do and why. A bare "go" gives the agent nothing new, so it often stops in the same place.
 3. For an outage you fixed, such as setup or the network, answer without text: `mill run answer <n>`.
+   A `retry-cap` answer buys one more round: the implementer gets the reviewer's last feedback and your answer, and one more bounce stops the ticket again (#114).
 4. In an active run, the scheduler picks up the answered ticket, starting the scheduler if it was not running. An answer does not start an inactive draft, and `mill run answer` leaves a stopped run stopped: start it with `mill run`. Only a board answer also starts a stopped run (#93). An answer never clears a pause.
 
 ## Which stops are real
