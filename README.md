@@ -282,6 +282,16 @@ cd "$MILL_WORKTREE"
 npm ci
 ```
 
+### Workspace preflight
+
+Before any role starts on a new ticket worktree, Mill checks the workspace once:
+
+1. It fetches the integration branch and refuses the ticket when local integration is behind or has diverged from `origin/<integration>`. Mill never rebases it for you.
+2. After `.mill/setup.sh`, if `package.json` and `package-lock.json` exist but `node_modules` does not, it runs `npm ci` once.
+3. It checks that the test command can start: its first word must resolve in the worktree, and a project with `package.json` must have `node_modules`. Set `tests.preflight` in `.mill/config.yaml` to a shell command to run instead of this check.
+
+A failed check puts the ticket in `logjam` with reason `environment` and one tracker comment naming the cause and the fix command; it is never retried. Fix it, then `mill run answer <ticket>`. A passing check posts nothing. When the project is Sawmill itself and the running `mill` is older than `origin/<integration>`, `mill worktree create` prints a warning but carries on.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.

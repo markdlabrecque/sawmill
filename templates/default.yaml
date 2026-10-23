@@ -50,9 +50,15 @@ role_timeout: 60m
 # The project's test command, run in the worktree by the implementer and by
 # mill integrate before merge. timeout is an infrastructure failure, never a
 # test failure and never a reviewer finding.
+#
+# preflight is optional: a shell command run in each new worktree after
+# setup.sh, before any role. Non-zero puts the ticket in logjam. Without it,
+# Mill checks that the test command's first word resolves and, when
+# package.json exists, that node_modules does.
 tests:
   command: npm test
   timeout: 30m
+  # preflight: test -x node_modules/.bin/tsc
 
 # wait: after the rebase gate, push the branch and wait for the tracker's
 # pipeline on that exact commit before merging; red is one more implementer
