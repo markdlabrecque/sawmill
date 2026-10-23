@@ -175,7 +175,7 @@ printf '%s\\n' "$PWD" "$#" "$1" "$2" "$MILL_WORKTREE" "$MILL_TICKET" "$MILL_PROJ
     assert.equal(row.reason, 'environment');
     assert.equal(row.bounces, 0);
     assert.equal(row.worktree, null);
-    assert.match((await yard.cli('run', 'log', '7')).stdout, /\[infrastructure\] -> logjam \(environment\)\n[^]*setup-stdout/);
+    assert.match((await yard.cli('run', 'log', '7')).stdout, /\[infrastructure\] -> logjam \(environment\) tracker: add-label\n[^]*setup-stdout/);
   };
   const result = await yard.cli('worktree', 'create', '7', '--json');
   assert.equal(result.code, 1, result.stdout);

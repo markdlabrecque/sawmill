@@ -90,7 +90,7 @@ test('stop persists during an active role and saves remote WIP before any next r
   assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
   assert.ok(y.labels.has('logjam'));
   assert.deepEqual(y.comments, []);
-  assert.match((await y.cli('run', 'log', '19')).stdout, /\[stopped\] -> logjam \(stopped\)\n[^]*WIP pushed:[^]*Stage reached: test-writers/);
+  assert.match((await y.cli('run', 'log', '19')).stdout, /\[stopped\] -> logjam \(stopped\) tracker: add-label\n[^]*WIP pushed:[^]*Stage reached: test-writers/);
   assert.match((await y.cli('run', 'status')).stdout, /logjam.*stopped/);
 });
 
@@ -305,10 +305,10 @@ process.stdin.on('data', x => prompt += x); process.stdin.on('end', async () => 
 test('stop during the rebase stage prevents tests, PR and merge and answer resumes integration only', async t => {
   const y = await fixture(t);
   // The rebase report is log-only, so the stop arrives from a pre-rebase hook, once.
-  const hooks = join(y.root, 'hooks'), stopped = join(y.root, 'stop-output');
+  const hooks = join(y.root, 'hooks'), stopOutput = join(y.root, 'stop-output');
   const bin = fileURLToPath(new URL('../src/bin.js', import.meta.url));
   await import('node:fs/promises').then(fs => fs.mkdir(hooks));
-  await writeFile(join(hooks, 'pre-rebase'), `#!/bin/sh\n[ -e "${stopped}" ] && exit 0\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\nHOME="${y.home}" XDG_CONFIG_HOME="${y.home}/.config" "${process.execPath}" "${bin}" run stop 19 > "${stopped}"\n`);
+  await writeFile(join(hooks, 'pre-rebase'), `#!/bin/sh\n[ -e "${stopOutput}" ] && exit 0\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\nHOME="${y.home}" XDG_CONFIG_HOME="${y.home}/.config" "${process.execPath}" "${bin}" run stop 19 > "${stopOutput}"\n`);
   await chmod(join(hooks, 'pre-rebase'), 0o755);
   y.git('config', 'core.hooksPath', hooks);
   // Integration moves on during review, so the ticket branch has something to rebase onto.
@@ -320,7 +320,7 @@ test('stop during the rebase stage prevents tests, PR and merge and answer resum
     return y.normal(request, sink);
   });
   const result = await y.cli('team', 'run', '19', '--json');
-  assert.match(await readFile(stopped, 'utf8'), /Stop requested/);
+  assert.match(await readFile(stopOutput, 'utf8'), /Stop requested/);
   assert.equal(JSON.parse(result.stdout).outcome, 'stopped', result.stdout);
   assert.equal(y.merges(), 0);
   const stopped = (await y.status()).tickets[0]!;

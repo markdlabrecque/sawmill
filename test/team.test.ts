@@ -321,7 +321,7 @@ test('three review bounces persist the last failure and report retry-cap in text
   assert.equal(row.team.repair.feedback, 'Missing scenario 3.');
   assert.equal(row.team.outputs.reviewer.outcome.feedback, 'Missing scenario 3.');
   assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:')));
-  assert.match((await y.cli('run', 'log', '12')).stdout, /\[retry-cap\] -> logjam \(retry-cap\)\n  Missing scenario 3\./);
+  assert.match((await y.cli('run', 'log', '12')).stdout, /\[retry-cap\] -> logjam \(retry-cap\) tracker: add-label\n  Missing scenario 3\./);
   assert.ok(y.ticket.labels.includes('logjam'));
   assert.match((await y.cli('run', 'status')).stdout, /logjam.*retry-cap/);
   assert.equal((await y.cli('run', 'answer', '12', 'Try again')).code, 0);
