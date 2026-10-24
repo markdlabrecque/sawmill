@@ -21,9 +21,15 @@ Request: $ARGUMENTS
    verification `policy`, `environment`, `results` and `findings` (review
    bounces, test corrections, flakes, environment failures, infrastructure
    retries, tests-not-red, repair bounces, human actions). Figures nobody
-   supplied read `unknown`: report them as unknown, never as zero. Use
-   `mill record report --json` for the same scope's counts. If `mill` or the
-   export is missing, say so and stop.
+   supplied read `unknown`: report them as unknown, never as zero. If `mill` or
+   the export is missing, say so and stop. When the request names a saved
+   export file instead, as the [evaluation cases](evals/README.md) do, read
+   that file and do not run the export.
+
+   Compute every count for the scope yourself from the attempts you kept, and
+   say how many attempts each count covers. `mill record report` takes no
+   scope: it counts every retained attempt. Use it only as an all-history
+   comparison and label it so; never present its figures as the batch's.
 
 3. Open transcripts only where a record leaves a question open. Role streams live
    in `.mill/logs/<ticket>/<role>-<round>.jsonl`; the run's `sessionIds` name the
@@ -74,8 +80,9 @@ For each candidate improvement:
    work (for example `gh issue list --state all --search '<terms>'` or the
    GitLab equivalent for the configured repository). Link an owning ticket
    instead of proposing a duplicate.
-3. Check the learning ledger (below) for an earlier conclusion on the same
-   point, and whether its follow-up has been measured.
+3. Check the learning ledger (below), or the ledger file the request names,
+   for an earlier conclusion on the same point, and whether its follow-up has
+   been measured.
 
 ## Report
 

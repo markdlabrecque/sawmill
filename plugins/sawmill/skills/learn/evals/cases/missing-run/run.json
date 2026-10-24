@@ -1,0 +1,8 @@
+{
+  "run": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c50",
+  "tickets": [
+    { "number": 50, "state": "done", "mergeCommit": "c2f7e05" },
+    { "number": 51, "state": "done", "mergeCommit": "4d0b9e3" },
+    { "number": 52, "state": "done", "mergeCommit": "8b4f1a2" }
+  ]
+}
