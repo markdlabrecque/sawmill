@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
@@ -7,6 +7,8 @@ import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { Ticket } from '../src/tracker.js';
 import { jevModel, type typeSafeChoices } from '../src/typesafe.js';
 import { millyard } from './helpers.js';
+import type { RoutingAttempt } from '../src/attempt-record.js';
+import { CodexRuntime } from '../src/codex-runtime.js';
 
 // #170's later decisions supersede shadow mode and named-profile selection.
 // Exercise the real CLI/role boundary and record export. The only new test seam
@@ -130,7 +132,7 @@ async function fixture(t: TestContext, family: 'gpt' | 'claude' = 'gpt') {
   const exported = async () => {
     const result = await cli('record', 'export', '--json');
     assert.equal(result.code, 0, result.stdout);
-    return JSON.parse(result.stdout) as { attempts: Attempt[] };
+    return JSON.parse(result.stdout) as { attempts: RoutingAttempt[] };
   };
   const events = async () => {
     const attempt = (await exported()).attempts.at(-1)!;
@@ -176,7 +178,7 @@ for (const family of ['gpt', 'claude'] as const) {
       assert.equal(event.recommendation?.model, 'low'); assert.equal(event.recommendation?.effort, 'low'); assert.ok(event.recommendation?.probabilities);
       assert.equal(event.policyVersion, 'fixture-v1'); assert.deepEqual(event.resolved, y.low); assert.equal(event.disposition, 'applied');
       assert.deepEqual(event.execution.requested, y.low); assert.deepEqual(event.execution.actual, y.low);
-      assert.equal(event.execution.mismatch, false); assert.ok(event.execution.outcome); assert.ok(event.execution.durationMs >= 0);
+      assert.equal(event.execution.mismatch, false); assert.ok(event.execution.outcome); assert.ok(event.execution.durationMs !== null && event.execution.durationMs >= 0);
       assert.ok(unknown(event.execution.usage)); assert.ok(unknown(event.execution.cost));
     }
     assert.ok(!JSON.stringify(attempt).includes(SECRET));
@@ -215,6 +217,8 @@ for (const mapping of [
   { model: 'anthropic/claude-sonnet-4-6', effort: 'low' },
   { model: 'unapproved-provider/invented-model', effort: 'low' },
   { model: 'openai/gpt-6.1', effort: 'turbo' },
+  { model: 'openai/gpt-invented-170', effort: 'low' },
+  { model: 'openai/gpt-6.1', effort: 'max' },
 ]) {
   test(`invalid or cross-family mapping ${mapping.model}/${mapping.effort} cannot reach a runtime`, async t => {
     const y = await fixture(t);
@@ -275,6 +279,112 @@ test('infrastructure retry retains selection and exposes actual execution mismat
   assert.equal(events[1]!.execution.mismatch, true);
   assert.equal(y.judgments.length, 2);
   assert.equal((await y.exported()).attempts.at(-1)!.findings.infrastructureRetries, 1);
+});
+
+test('a rejection after a transient failure durably falls back across retries and resume', async t => {
+  const y = await fixture(t);
+  let invocation = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role !== 'implementer') return y.normal(request, sink);
+    invocation++;
+    if (invocation === 1) return { outcome: { outcome: 'infrastructure', error: 'Temporary transport loss' } };
+    if (invocation === 2) return { outcome: { outcome: 'infrastructure', error: 'Selected model is not available' }, selectionRejected: true };
+    if (invocation === 3) return { outcome: { outcome: 'question', question: 'Confirm baseline retry?' } };
+    return y.normal(request, sink);
+  });
+  await y.cli('team', 'run', '12', '--json');
+  const before = structuredClone(await y.events());
+  const chain = before.filter(e => e.role === 'implementer');
+  assert.equal(chain.length, 3);
+  assert.deepEqual(chain.map(e => e.execution.requested), [LOW, LOW, BASE]);
+  assert.equal(chain[0]!.execution.selectionRejected, undefined);
+  assert.equal(chain[1]!.execution.selectionRejected, true);
+  assert.equal(chain[2]!.fallbackReason, 'runtime-rejected-model-or-effort');
+  assert.deepEqual(chain[2]!.resolved, LOW, 'keep the rejected recommendation visible');
+  const calls = y.judgments.length;
+  await writeFile(y.machinePath, y.policy('changed-policy', { model: BASE.model, effort: 'medium' }));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replaceAll('effort: high', 'effort: max'));
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  await y.cli('team', 'run', '12', '--json');
+  const after = await y.events();
+  assert.deepEqual(after.slice(0, before.length), before);
+  const resumed = after.at(-1)!;
+  assert.equal(resumed.role, 'implementer');
+  assert.equal(resumed.reusedFrom, chain[0]!.id);
+  assert.equal(resumed.policyVersion, 'fixture-v1');
+  assert.deepEqual(resumed.baseline, chain[0]!.baseline);
+  assert.deepEqual(resumed.execution.requested, BASE);
+  assert.equal(resumed.fallbackReason, 'runtime-rejected-model-or-effort');
+  assert.equal(y.judgments.length, calls);
+  assert.deepEqual(y.inputs.filter(r => r.role === 'implementer').map(r => ({ model: r.model, effort: r.effort })), [LOW, LOW, BASE, BASE]);
+});
+
+test('adapter measurements from failed and retried coding invocations link to selection exports', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('runtime: pi', 'runtime: codex').replaceAll('openai/', ''));
+  await writeFile(y.machinePath, y.policy('codex-policy', { model: 'gpt-6.1', effort: 'low' }));
+  const executable = join(y.root, 'measured-codex');
+  await writeFile(executable, `#!${process.execPath}\nprocess.stdin.resume(); process.stdin.on('end', () => {
+    const fs = require('node:fs'); const marker = ${JSON.stringify(join(y.root, 'usage-retried'))}; const failed = !fs.existsSync(marker); fs.writeFileSync(marker, 'yes');
+    const events = [{ type: 'thread.started', thread_id: 'measured-codex' }, { type: 'turn.started' },
+      { type: 'item.completed', item: { id: 'final', type: 'agent_message', text: '\`\`\`mill-outcome\\n{"outcome":"done","summary":"Measured role"}\\n\`\`\`' } },
+      { type: 'turn.completed', usage: { input_tokens: failed ? 11 : 17, output_tokens: failed ? 3 : 5 } }];
+    process.stdout.write(events.map(e => JSON.stringify(e)).join('\\n')); if (failed) process.exitCode = 1;
+  });\n`);
+  await chmod(executable, 0o755);
+  const adapter = new CodexRuntime({ executable });
+  y.setScript(async (request, sink) => {
+    if (request.role !== 'implementer') return y.normal(request, sink);
+    const measured = await adapter.run(request, sink);
+    if (measured.outcome.outcome === 'done') await y.normal(request, sink);
+    return measured;
+  });
+  await y.cli('team', 'run', '12', '--json');
+  const attempt = (await y.exported()).attempts.at(-1)!;
+  const selections = attempt.selections.filter(e => e.role === 'implementer');
+  const invocations = attempt.invocations.filter(e => e.role === 'implementer');
+  assert.equal(selections.length, 2); assert.equal(invocations.length, 2);
+  assert.equal(selections[0]!.disposition, 'applied');
+  assert.equal(selections[1]!.reusedFrom, selections[0]!.id);
+  assert.deepEqual(invocations.map(i => i.selectionId), selections.map(s => s.id));
+  assert.deepEqual(invocations.map(i => i.execution.usage), [{ inputTokens: 11, outputTokens: 3 }, { inputTokens: 17, outputTokens: 5 }]);
+  assert.deepEqual(selections.map(s => s.execution), invocations.map(i => i.execution));
+  assert.deepEqual(invocations.map(i => (i.execution.outcome as { outcome: string }).outcome), ['infrastructure', 'done']);
+  assert.ok(invocations.every(i => i.execution.durationMs! >= 0 && i.execution.cost === null));
+  assert.equal(attempt.findings.infrastructureRetries, 1);
+  assert.equal(y.judgments.length, 2);
+  assert.equal(selections[1]!.jev.called, false); assert.equal(selections[1]!.jev.usage, null);
+});
+
+test('evidence excludes tracked symlink aliases and ignored tracked files at transport and export', async t => {
+  const y = await fixture(t);
+  assert.equal((await y.cli('worktree', 'create', '12')).code, 0);
+  const worktree = join(y.root, '12');
+  const privateMarker = 'PRIVATE_IGNORED_TARGET_170';
+  const logMarker = 'PRIVATE_MILL_LOG_170';
+  const trackedMarker = 'PRIVATE_IGNORED_TRACKED_170';
+  const publicMarker = 'ORDINARY_RELEVANT_CODE_170';
+  await mkdir(join(worktree, '.mill/logs'), { recursive: true });
+  await writeFile(join(worktree, '.gitignore'), 'private.txt\nignored.cjs\n');
+  await writeFile(join(worktree, 'private.txt'), privateMarker);
+  await writeFile(join(worktree, '.mill/logs/probe.txt'), logMarker);
+  await writeFile(join(worktree, 'ignored.cjs'), trackedMarker);
+  await symlink('private.txt', join(worktree, 'alias-private.cjs'));
+  await symlink('.mill/logs/probe.txt', join(worktree, 'alias-log.cjs'));
+  await writeFile(join(worktree, 'answer.cjs'), `// ${publicMarker}\nmodule.exports = () => 0;\n`);
+  y.git('-C', worktree, 'add', '.gitignore', 'answer.cjs', 'alias-private.cjs', 'alias-log.cjs');
+  y.git('-C', worktree, 'add', '-f', 'ignored.cjs');
+  y.git('-C', worktree, 'commit', '-m', 'Seed evidence boundary fixtures');
+  await y.cli('team', 'run', '12', '--json');
+  assert.ok(y.judgments.length > 0);
+  const sent = JSON.stringify(y.judgments);
+  const exported = JSON.stringify(await y.exported());
+  for (const marker of [privateMarker, logMarker, trackedMarker]) {
+    assert.ok(!sent.includes(marker), `transport leaked ${marker}`);
+    assert.ok(!exported.includes(marker), `export leaked ${marker}`);
+  }
+  assert.ok(sent.includes(publicMarker));
+  assert.ok(exported.includes(publicMarker));
 });
 
 test('missing TypeSafe credentials reject execution startup instead of silently bypassing the startup rule', async t => {
