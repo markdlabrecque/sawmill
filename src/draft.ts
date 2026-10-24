@@ -8,8 +8,10 @@ import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
-/** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch. */
-export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false, checkPolicy?: CheckPolicy) {
+/** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch.
+ * `checkPolicy` settles the merge policy once the selection is valid; it throws to refuse the draft. */
+export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false,
+  checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined) {
   await checkMillyard(cwd, project.integration);
   checkDraftable(cwd, replace);
   let tickets: Ticket[];
@@ -68,7 +70,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
     ordered.push(...remaining.splice(next, 1));
   }
-  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, checkPolicy);
+  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, await checkPolicy());
   await registerMillyard(home, cwd);
   return readRun(cwd);
 }

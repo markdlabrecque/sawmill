@@ -21,7 +21,7 @@ import { waiveItem } from './waive.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import type { TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
+import type { CheckPolicy, HostPolicy, TicketReader, TicketWriter, IntegrationTracker } from './tracker.js';
 import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
@@ -371,16 +371,21 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         // Merge policy is settled before any delivery work: an unsupported mode or no required-check set refuses the draft.
         // Injected trackers without hostPolicy draft without a host read.
         const policyReader = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? tracker as GitLabTracker : new GitHubIntegration(config.project.tracker, cwd));
-        const host = policyReader.hostPolicy ? await policyReader.hostPolicy(config.project.integration) : undefined;
-        const resolved = host ? resolveCheckPolicy(config.project, host) : undefined;
-        if (resolved?.problems.length) throw new CliError(resolved.problems.join('\n'), 2);
+        const settled: { host?: HostPolicy; policy?: CheckPolicy } = {};
+        const settle = async () => {
+          if (!policyReader.hostPolicy) return undefined;
+          const host = settled.host = await policyReader.hostPolicy(config.project.integration);
+          const resolved = resolveCheckPolicy(config.project, host);
+          if (resolved.problems.length) throw new CliError(resolved.problems.join('\n'), 2);
+          return settled.policy = resolved.policy;
+        };
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, resolved?.policy);
+        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
         if (writer) await flushAssignments(cwd, config.project, writer, options);
         // Drafting registers the millyard but leaves the run inactive until mill run.
         const snapshot = readRun(cwd);
-        const policy = resolved?.policy ? [describeCheckPolicy(resolved.policy)] : host?.gaps.length ? [`Merge settings not verified: ${host.gaps.join('; ')}`] : [];
+        const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
         emit(view(snapshot), [table(snapshot), ...policy, 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
         return 0;
       }
