@@ -162,7 +162,8 @@ process.stdin.on('end', async () => {
   await writeFile(join(y.cwd, '.mill/setup.sh'), 'echo "$MILL_TICKET" >> "$FIXTURE_DIR/hooks"\n(cd "$MILL_MILLYARD" && node "$MILL_FIXTURE_BIN" run status --json) > "$FIXTURE_DIR/hook-$MILL_TICKET.json"\n');
   const env: NodeJS.ProcessEnv = { ...y.env, PATH: `${executables}:${process.env.PATH}`, FIXTURE_DIR: y.root, FIXTURE_YARD: y.cwd, MILL_FIXTURE_BIN: bin, FIXTURE_SUCCESS: success ? 'yes' : 'no' };
   const status = async () => JSON.parse((await y.cli('run', 'status', '--json')).stdout) as RunSnapshot;
-  const starts = async () => (await readFile(join(y.root, 'starts.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  // Another process may still be appending the last record; its newline commits it for readers.
+  const starts = async () => (await readFile(join(y.root, 'starts.jsonl'), 'utf8').catch(() => '')).split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line));
   const command = (args: string[], home = y.home) => execute(process.execPath, [bin, ...args], { cwd: y.cwd, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, timeout: 20000 });
   const once = async (home = y.home, json = true) => {
     const result = await command(['run', 'once', ...(json ? ['--json'] : [])], home);
