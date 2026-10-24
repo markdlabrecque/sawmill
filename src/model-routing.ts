@@ -30,7 +30,7 @@ export interface ModelSelection {
   baseline: ConcreteSelection & { runtime: ProjectConfig['runtime']; family: string };
   jev: { model: string; questionVersion: string; latencyMs: number; usage: TypeSafeResult['usage'] | null; cost: null };
   recommendation: { model: string; effort: string; probabilities: Record<string, Record<string, number>>; confidence: Record<string, number> } | null;
-  policyVersion: string; resolved: ConcreteSelection | null;
+  policyVersion: string; policy: { minConfidence: number | null; tierDefinitionVersion: string }; resolved: ConcreteSelection | null;
   disposition: 'applied' | 'baseline' | 'reused'; fallbackReason?: string; reusedFrom?: string;
   execution: ExecutionMeasurement;
 }
@@ -52,7 +52,8 @@ function validMapping(selection: ConcreteSelection, family: string, runtime: Pro
   if (!['low', 'medium', 'high', 'max'].includes(selection.effort) || familyOf(selection.model, runtime) !== family) return false;
   if (family === 'gpt') return /^(?:openai\/)?gpt-[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(selection.model);
   const model = selection.model.replace(/^anthropic\//, '');
-  return ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-8'].includes(model);
+  return ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
+    'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1'].includes(model);
 }
 
 function clean(text: string): string {
@@ -113,10 +114,12 @@ export async function selectModel(input: {
     invocation: input.invocation, timestamp: new Date().toISOString(),
     evidenceId: '', evidence: [], baseline,
     jev: { model: policy?.model ?? jevModel, questionVersion: policy?.question_version ?? 'coding-tiers-v1', latencyMs: 0, usage: null, cost: null },
-    recommendation: null, policyVersion: policy?.policy_version ?? 'unconfigured', resolved: null, disposition: 'baseline',
+    recommendation: null, policyVersion: policy?.policy_version ?? 'unconfigured',
+    policy: { minConfidence: policy?.min_confidence ?? null, tierDefinitionVersion: 'coding-tiers-v1' }, resolved: null, disposition: 'baseline',
     execution: { requested: { ...project.roles[role] }, actual: null, mismatch: false, outcome: null, durationMs: null, usage: null, cost: null },
   };
   if (saved) {
+    if (saved.baseline.runtime !== project.runtime) throw new Error('Saved model selection belongs to another runtime; refusing to silently change runtime on resume.');
     const reused = { ...structuredClone(saved), id: event.id, invocation: event.invocation, timestamp: event.timestamp,
       disposition: 'reused' as const, reusedFrom: saved.reusedFrom ?? saved.id,
       execution: { ...event.execution, requested: { ...saved.execution.requested } } };
@@ -180,13 +183,23 @@ export async function selectModel(input: {
   }
 }
 
+function safeOutcome(value: unknown): unknown {
+  if (typeof value === 'string') return clean(value).slice(0, 2000);
+  if (Array.isArray(value)) return value.slice(0, 50).map(safeOutcome);
+  if (value && typeof value === 'object') {
+    const fields = ['outcome', 'summary', 'question', 'error', 'feedback', 'files', 'mistake', 'preserves', 'recommendations', 'cases', 'case', 'result', 'step', 'persona', 'artifacts', 'acceptance', 'id', 'evidence', 'check', 'revision', 'reason'];
+    return Object.fromEntries(Object.entries(value).filter(([key]) => fields.includes(key)).map(([key, item]) => [key, safeOutcome(item)]));
+  }
+  return value;
+}
+
 export function executionMeasurement(requested: ConcreteSelection, result: RuntimeResult): ExecutionMeasurement {
   const actual = result.effectiveModel !== undefined || result.effectiveEffort !== undefined
     ? { model: result.effectiveModel === undefined ? null : clean(result.effectiveModel).slice(0, 200), effort: result.effectiveEffort === undefined ? null : clean(result.effectiveEffort).slice(0, 80) } : null;
   const usage = result.usage;
   return { requested: { ...requested }, actual,
     mismatch: Boolean(actual && ((actual.model !== null && actual.model !== requested.model) || (actual.effort !== null && actual.effort !== requested.effort))),
-    outcome: JSON.parse(clean(JSON.stringify(result.outcome))), durationMs: result.durationMs ?? null,
+    outcome: safeOutcome(result.outcome), durationMs: result.durationMs ?? null,
     usage: usage && tokenCount(usage.inputTokens) && tokenCount(usage.outputTokens) ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : null,
     cost: typeof result.cost === 'number' && Number.isFinite(result.cost) && result.cost >= 0 ? result.cost : null };
 }
