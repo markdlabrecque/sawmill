@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { milliseconds, phaseDeadline, type ProjectConfig } from './config.js';
 import { PhaseTimeout, waitPhase } from './phases.js';
 import { requiredCheckNames } from './verification.js';
+import { configuredCheckPolicy, describeCheckPolicy } from './check-policy.js';
 import { CliError, FinalError } from './errors.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
@@ -140,6 +141,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
   await checkMillyard(cwd, project.integration);
   if (!ticket.mergeCommit && (await git(ticket.worktree!, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree!, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree!, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
   if (!ticket.mergeCommit && await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new CliError('Ticket worktree is dirty.');
+  // The policy fixed at draft, so a check that appears later or a changed config cannot loosen the gate mid-run.
+  const checkPolicy = project.ci === 'wait' ? snapshot.run.checkPolicy ?? configuredCheckPolicy(project) : undefined;
+  const policySummary = checkPolicy ? `\n${describeCheckPolicy(checkPolicy)}` : '';
   let progress: IntegrationProgress = { ...ticket.integration };
   let mergeCommit = ticket.mergeCommit;
   let stage = ticket.stage ?? 'rebase';
@@ -329,13 +333,13 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.pushedHead = head;
       await advance('pr-opened');
       const issueUrl = ticketUrl(project.tracker, number);
-      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}\nHead: ${head}` });
+      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}${policySummary}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       if (progress.changeRequest.headCommit !== head || await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
       const readPipeline = async () => {
         guard();
         boundary();
-        progress.pipeline = await tracker.getPipeline!(head, progress.changeRequest);
+        progress.pipeline = await tracker.getPipeline!(head, progress.changeRequest, checkPolicy);
         if (!progress.pipeline || progress.pipeline.headCommit !== head) throw new Error('Pipeline head differs from the tested, pushed commit.');
         if (!['pending', 'passed', 'failed', 'none'].includes(progress.pipeline.state)) throw new Error('Tracker returned an invalid pipeline state.');
         await save();
@@ -431,7 +435,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.localRemoved = true;
       await save();
     }
-    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}\nTested head: ${progress.testedHead}${browserSummary(progress)}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url,
+    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}${policySummary}\nTested head: ${progress.testedHead}${browserSummary(progress)}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url,
       ...(progress.operation ? { operation: `${project.tracker.repo}#${number} run ${snapshot.run.id} ${progress.operation.id}` } : {}) } });
     return result('merged');
   } catch (error) {

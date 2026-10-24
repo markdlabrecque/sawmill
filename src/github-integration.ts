@@ -4,14 +4,55 @@ import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { MergeRefusedError } from './tracker.js';
-import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipeline, ReconciledChangeRequest } from './tracker.js';
+import type { ChangeRequest, CheckPolicy, CiJob, HostPolicy, IntegrationTracker, JobLog, LogLimits, Pipeline, ReconciledChangeRequest } from './tracker.js';
 
 /** PR discovery is separate from ticket reads; runs never refresh issue data beyond the first-start state check. */
 export class GitHubIntegration extends GitHubWriter implements IntegrationTracker {
-  constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd(), private readonly policy?: ProjectConfig['ci_checks']) { super(trackerConfig, directory); }
+  constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd()) { super(trackerConfig, directory); }
 
   private async request(method: string, suffix: string, body?: object): Promise<unknown> {
     return githubRequest(this.trackerConfig, this.directory, method, `repos/${this.trackerConfig.repo}/${suffix}`, body);
+  }
+
+  /** Required checks from rulesets and branch protection, and any merge queue. A failed or partial read is a gap, not an empty policy. */
+  async hostPolicy(branch: string): Promise<HostPolicy> {
+    const required = new Set<string>(), unsupported: string[] = [], gaps: string[] = [];
+    let complete = true;
+    const read = async (what: string, run: () => Promise<unknown>) => {
+      try { return await run(); }
+      catch (error) {
+        gaps.push(`${what}: ${error instanceof GitHubApiError && [401, 403, 404].includes(error.status ?? 0) ? `not readable with this token (HTTP ${error.status})` : error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      }
+    };
+    const name = encodeURIComponent(branch);
+    const rules = await read(`rulesets for ${branch}`, () => this.request('GET', `rules/branches/${name}?per_page=100`));
+    if (!Array.isArray(rules) || rules.length >= 100) {
+      complete = false;
+      if (rules !== undefined) gaps.push(`rulesets for ${branch}: GitHub returned an invalid or truncated rule list`);
+    } else for (const rule of rules as BranchRule[]) {
+      if (rule?.type === 'merge_queue') unsupported.push(`a ruleset requires a merge queue on ${branch}`);
+      if (rule?.type === 'required_status_checks') for (const check of rule.parameters?.required_status_checks ?? []) if (typeof check?.context === 'string') required.add(check.context);
+    }
+    const summary = await read(`branch protection for ${branch}`, () => this.request('GET', `branches/${name}`)) as BranchSummary | null | undefined;
+    if (!summary || typeof summary.protected !== 'boolean') {
+      complete = false;
+      if (summary !== undefined) gaps.push(`branch protection for ${branch}: GitHub returned an invalid branch`);
+    } else if (summary.protected) {
+      const checks = summary.protection?.required_status_checks;
+      if (!checks) { complete = false; gaps.push(`branch protection for ${branch}: protected, but its required status checks are not visible to this token`); }
+      else if (checks.enforcement_level !== 'off') for (const context of [...checks.contexts ?? [], ...(checks.checks ?? []).map(check => check?.context)]) if (typeof context === 'string') required.add(context);
+    }
+    const [owner, repo] = this.trackerConfig.repo.split('/');
+    const queue = await read(`merge queue for ${branch}`, () => githubRequest(this.trackerConfig, this.directory, 'POST', 'graphql', {
+      query: 'query($owner: String!, $name: String!, $branch: String!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) { id } } }',
+      variables: { owner, name: repo, branch },
+    })) as { data?: { repository?: { mergeQueue?: unknown } | null }; errors?: unknown } | null | undefined;
+    if (queue !== undefined) {
+      if (!queue?.data?.repository || queue.errors) gaps.push(`merge queue for ${branch}: GitHub did not report it`);
+      else if (queue.data.repository.mergeQueue) unsupported.push(`a merge queue is enabled on ${branch}`);
+    }
+    return { ...(complete ? { required: [...required] } : {}), unsupported: [...new Set(unsupported)], gaps };
   }
 
   async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest> {
@@ -43,7 +84,7 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     return { ...request, state: 'merged', ...(typeof pr.merge_commit_sha === 'string' ? { mergeCommit: pr.merge_commit_sha } : {}) };
   }
 
-  async getPipeline(commit: string): Promise<Pipeline> {
+  async getPipeline(commit: string, _changeRequest?: ChangeRequest, policy?: CheckPolicy): Promise<Pipeline> {
     if (!/^[a-f\d]{40,64}$/i.test(commit)) throw new Error('CI requires an exact commit SHA.');
     let combinedState: string | undefined;
     const pages = async <T>(suffix: string, key: 'check_runs' | 'statuses'): Promise<T[]> => {
@@ -79,9 +120,9 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     const expectedStatus = statuses.some(row => ['failure', 'error'].includes(row.state)) ? 'failure' : !statuses.length || statuses.some(row => row.state === 'pending') ? 'pending' : 'success';
     if (combinedState !== expectedStatus) throw new Error('GitHub returned inconsistent commit statuses.');
     // Every observation gates except declared advisory ones; each required name must also have reported, so another green check cannot stand in for it.
-    const advisory = new Set(this.policy?.advisory ?? []);
+    const advisory = new Set(policy?.advisory ?? []);
     const gating = observations.filter(row => !advisory.has(row.name));
-    const absent: typeof observations = (this.policy?.required ?? []).filter(name => !gating.some(row => row.name === name)).map(name => ({ name, state: 'pending' as const, detail: `${name}: required check has not reported` }));
+    const absent: typeof observations = (policy?.required ?? []).filter(name => !gating.some(row => row.name === name)).map(name => ({ name, state: 'pending' as const, detail: `${name}: required check has not reported` }));
     const failed = gating.filter(row => row.state === 'failed');
     const pending = [...gating.filter(row => row.state === 'pending'), ...absent];
     const state = failed.length ? 'failed' : pending.length ? 'pending' : gating.length ? 'passed' : 'none';
@@ -157,6 +198,11 @@ interface CheckRun {
   html_url?: string;
   details_url?: string;
   output?: { title?: string; summary?: string; text?: string } | null;
+}
+interface BranchRule { type?: unknown; parameters?: { required_status_checks?: { context?: unknown }[] } }
+interface BranchSummary {
+  protected?: unknown;
+  protection?: { required_status_checks?: { enforcement_level?: unknown; contexts?: unknown[]; checks?: { context?: unknown }[] } };
 }
 interface ActionsJob { id?: unknown; run_id?: unknown; run_attempt?: unknown; head_sha?: unknown; workflow_name?: unknown }
 interface ActionsRun { id?: unknown; run_attempt?: unknown; head_sha?: unknown }

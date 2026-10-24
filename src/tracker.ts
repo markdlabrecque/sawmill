@@ -86,13 +86,35 @@ export interface TicketWriter {
   ticketState?(number: number): Promise<Ticket['state']>;
 }
 
+/** What the host enforces before a merge into one branch. A gap is a setting Mill could not read; it is shown, never treated as verified. */
+export interface HostPolicy {
+  /** Check names the host requires; absent when any of them could not be read. */
+  required?: string[];
+  /** Merge modes the exact-source-head gate cannot deliver through, such as a merge queue. */
+  unsupported: string[];
+  gaps: string[];
+}
+
+/** The hosted checks a merge waits for, fixed at draft and shown with the change request. */
+export interface CheckPolicy {
+  /** Names that must each report and pass on the exact head. */
+  required: string[];
+  /** Names whose failure never blocks. */
+  advisory: string[];
+  /** Where the names came from, in words. */
+  source: string;
+  gaps?: string[];
+}
+
 /** A definite server refusal, distinct from transport/authentication failures. */
 export class MergeRefusedError extends Error {}
 
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
 export interface IntegrationTracker extends TicketWriter {
   /** Required for ci:wait; ci:none adapters need not provide CI reads. */
-  getPipeline?(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline>;
+  getPipeline?(commit: string, changeRequest?: ChangeRequest, policy?: CheckPolicy): Promise<Pipeline>;
+  /** Read once at draft, before any delivery work. */
+  hostPolicy?(branch: string): Promise<HostPolicy>;
   /** Download one verified failed job's log through the tracker's own authentication. */
   getJobLog?(job: CiJob, limits: LogLimits): Promise<JobLog>;
   /** One final PR/MR read before merging; never an issue read or a polling loop. */
@@ -107,6 +129,6 @@ export interface IntegrationTracker extends TicketWriter {
 export interface Tracker extends TicketReader, IntegrationTracker {
   listByLabel(label: string): Promise<Ticket[]>;
   listChildren(number: number): Promise<Ticket[]>;
-  getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline>;
+  getPipeline(commit: string, changeRequest?: ChangeRequest, policy?: CheckPolicy): Promise<Pipeline>;
   getChangeRequest(id: number | string): Promise<ChangeRequest>;
 }

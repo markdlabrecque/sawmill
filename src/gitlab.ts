@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
 import { MergeRefusedError } from './tracker.js';
-import type { AssignResult, ChangeRequest, CiJob, IssueComment, JobLog, LogLimits, Pipeline, ReconciledChangeRequest, Ticket, Tracker } from './tracker.js';
+import type { AssignResult, ChangeRequest, CiJob, HostPolicy, IssueComment, JobLog, LogLimits, Pipeline, ReconciledChangeRequest, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
@@ -222,6 +222,19 @@ export class GitLabTracker implements Tracker {
     if (mr.state !== 'merged') throw new Error(`GitLab reported MR state ${String(mr.state)}, which does not settle the merge yet.`);
     const commit = mr.merge_commit_sha ?? mr.squash_commit_sha;
     return { ...result, state: 'merged', ...(sha(commit) ? { mergeCommit: commit } : {}) };
+  }
+
+  /** Merged-results pipelines and merge trains test a synthetic SHA, never the exact source head. GitLab's own pipeline rules stay the required set. */
+  async hostPolicy(_branch: string): Promise<HostPolicy> {
+    let project: RecordValue;
+    try { project = record((await this.request('GET', '')).value); }
+    catch (error) { return { required: [], unsupported: [], gaps: [`merge settings of ${this.config.repo}: ${error instanceof GitLabApiError && [401, 403, 404].includes(error.status ?? 0) ? `not readable with this token (HTTP ${error.status})` : error instanceof Error ? error.message : String(error)}`] }; }
+    const unsupported: string[] = [], gaps: string[] = [];
+    for (const [key, mode] of [['merge_pipelines_enabled', 'merged results pipelines'], ['merge_trains_enabled', 'merge trains']] as const) {
+      if (project[key] === true) unsupported.push(`${mode} are enabled for ${this.config.repo}`);
+      else if (project[key] !== false) gaps.push(`${mode}: not visible to this token (needs Maintainer access, or the tier lacks them)`);
+    }
+    return { required: [], unsupported, gaps };
   }
 
   async getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline> {

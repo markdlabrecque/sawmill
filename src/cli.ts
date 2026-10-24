@@ -26,6 +26,7 @@ import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
+import { describeCheckPolicy, resolveCheckPolicy } from './check-policy.js';
 import type { ReportStage } from './reporter.js';
 import { activateRun, answerTicket, closeTicket, flushAssignments, requestStop, stopRun, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
@@ -175,7 +176,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'team' && positional[1] === 'run') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team run'), 2);
-        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd, config.project.ci_checks) : new GitLabTracker(config.project.tracker, cwd));
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await runTeam(cwd, config.project, config.machine, Number(positional[2]), tracker as IntegrationTracker, { ...options, home });
@@ -184,7 +185,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       if (positional[0] === 'integrate') {
         if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError(usage('integrate'), 2);
-        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd, config.project.ci_checks) : new GitLabTracker(config.project.tracker, cwd));
+        const tracker = options.tracker ?? (config.project.tracker.backend === 'github' ? new GitHubIntegration(config.project.tracker, cwd) : new GitLabTracker(config.project.tracker, cwd));
         if (!tracker?.findOrOpenChangeRequest || !tracker.mergeChangeRequest || !tracker.deleteRemoteBranch) throw new CliError('Tracker integration adapter is not available.', 2);
         ticketWriter(options, config.project, cwd);
         const result = await integrate(cwd, config.project, Number(positional[1]), tracker as IntegrationTracker, { home, sleep: options.sleep, ciPollInterval: config.machine.ci_poll_interval, runtime: options.runtime });
@@ -367,13 +368,20 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
+        // Merge policy is settled before any delivery work: an unsupported mode or no required-check set refuses the draft.
+        // Injected trackers without hostPolicy draft without a host read.
+        const policyReader = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? tracker as GitLabTracker : new GitHubIntegration(config.project.tracker, cwd));
+        const host = policyReader.hostPolicy ? await policyReader.hostPolicy(config.project.integration) : undefined;
+        const resolved = host ? resolveCheckPolicy(config.project, host) : undefined;
+        if (resolved?.problems.length) throw new CliError(resolved.problems.join('\n'), 2);
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed);
+        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, resolved?.policy);
         if (writer) await flushAssignments(cwd, config.project, writer, options);
         // Drafting registers the millyard but leaves the run inactive until mill run.
         const snapshot = readRun(cwd);
-        emit(view(snapshot), [table(snapshot), 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
+        const policy = resolved?.policy ? [describeCheckPolicy(resolved.policy)] : host?.gaps.length ? [`Merge settings not verified: ${host.gaps.join('; ')}`] : [];
+        emit(view(snapshot), [table(snapshot), ...policy, 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
         return 0;
       }
       const message = unknownCommand(positional);
