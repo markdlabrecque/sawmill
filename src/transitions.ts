@@ -267,9 +267,11 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
       try {
         switch (write.kind) {
           case 'comment': {
-            // An earlier attempt may have landed with its response lost; a marked report already on the ticket is not posted again.
+            // A replayed marked report may have landed before its response was lost; one already on the ticket is
+            // not posted again. A failed lookup posts it, as before, rather than holding a completed ticket.
             const { marker } = write.payload;
-            if (marker && (attempt > 0 || write.attempts > 0) && tracker.listComments && (await tracker.listComments(number)).some(comment => comment.body.includes(marker))) break;
+            if (marker && write.attempts > 0 && tracker.listComments &&
+                await tracker.listComments(number).then(comments => comments.some(comment => comment.body.includes(marker)), () => false)) break;
             await tracker.addComment(number, write.payload.body); break;
           }
           case 'add-label': await tracker.addLabel(number, write.payload.label); break;
@@ -281,7 +283,9 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
             await tracker.deleteComment(write.payload.id, number); break;
         }
       } catch (error) {
-        if (attempt < 3) { await sleep(100 * 2 ** attempt); continue; }
+        // A blind retry of a marked report could post it twice; it is held for a replay that looks for it first.
+        const marked = write.kind === 'comment' && Boolean(write.payload.marker);
+        if (attempt < 3 && !marked) { await sleep(100 * 2 ** attempt); continue; }
         transaction(cwd, db => {
           const label = { label: project.labels.logjam };
           const held = db.prepare("SELECT id FROM pending_writes WHERE ticket = ? AND kind = 'add-label' AND payload = ?").get(number, JSON.stringify(label));
