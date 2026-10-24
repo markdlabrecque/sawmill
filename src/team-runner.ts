@@ -572,9 +572,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           // Rebase rewrites SHAs. Require each protected patch, in order, then compare
           // the tests against the rebased copies, not the old ones.
           await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
-          await remapRebasedWriters(path, progress, project.integration);
+          progress.repair!.baseCommit = await remapRebasedWriters(path, progress, project.integration);
           progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
         }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');
@@ -670,8 +669,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
 
 /** Rebase rewrites SHAs, and a conflict can fold new base lines into a protected file. Find each
  * protected commit's rebased copy, by subject and in order, and make it the new baseline. A copy
- * whose patch changed must differ only by lines the new base brought. */
-async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<void> {
+ * whose patch changed must differ only by lines the new base brought. Return the review base before
+ * the first non-protected commit, so resolutions folded into implementation commits get reviewed too. */
+async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<string> {
   const patchId = async (commit: string) => {
     const patch = (await execute('git', ['show', '--format=', '--binary', commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 })).stdout;
     return new Promise<string>((resolve, reject) => {
@@ -700,6 +700,9 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   }
   progress.testCommits = writers.map(commit => copies.get(commit)!);
   if (progress.testCommit) progress.testCommit = copies.get(progress.testCommit)!;
+  const protectedCopies = new Set(copies.values());
+  const firstImplementation = commits.find(commit => !protectedCopies.has(commit));
+  return firstImplementation ? git(path, 'rev-parse', `${firstImplementation}^`) : git(path, 'merge-base', integration, 'HEAD');
 }
 
 /** True when, counting each occurrence, every protected file in `copy` keeps the lines of the base
