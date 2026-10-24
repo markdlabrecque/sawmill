@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseDocument } from 'yaml';
-import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests, type RequiredChecks } from './verification.js';
+import { nameFlag, requiredCheckNames, simpleCommand, testScope, type Checks, type FocusedTests, type RequiredCheckName, type RequiredChecks } from './verification.js';
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 export type Role = 'test-writers' | 'implementer' | 'reviewer';
@@ -30,6 +30,8 @@ export interface ProjectConfig {
   test_harness: 'ddev' | 'docker' | 'none';
   test_url?: string;
   labels: { logjam: string };
+  /** Project-declared release obligations the handoff reports; Mill never performs them. */
+  release?: { steps: ReleaseStep[] };
   /** Filled with defaults when loaded; absent only on configs built in code. */
   phase_timeouts?: Record<Phase, string>;
 }
@@ -42,7 +44,24 @@ export interface MachineConfig {
   update_drain_timeout?: string;
 }
 
-export const phaseDeadline = (project: ProjectConfig, phase: Phase) => project.phase_timeouts?.[phase] ?? phaseDefaults[phase];
+export const releaseKinds = ['migration', 'configuration', 'assets', 'external-effect', 'manual'] as const;
+/** reversible: undone with the code; separate: recoverable only by a separate backup or restore; irreversible: a forward fix at best. */
+export const recoveryClasses = ['reversible', 'separate', 'irreversible'] as const;
+export interface ReleaseStep {
+  id: string;
+  kind: typeof releaseKinds[number];
+  text: string;
+  /** Globs; the step applies only when the delivered change touches a matching file. Absent: always applies. */
+  paths?: string[];
+  /** A required check whose pass on the delivered head verifies the step. */
+  check?: RequiredCheckName;
+  recovery: typeof recoveryClasses[number];
+  recovery_note?: string;
+  /** Shown only because the project declared it; Mill never invents one. */
+  rollback?: string;
+}
+
+export const phaseDeadline =(project: ProjectConfig, phase: Phase) => project.phase_timeouts?.[phase] ?? phaseDefaults[phase];
 export const milliseconds = (duration: string) => Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
 export interface ConfigIssue {
   source: string;
@@ -61,6 +80,8 @@ interface Rule {
   hint?: string;
   /** An object rule that also accepts the literal string none as an explicit opt-out. */
   none?: boolean;
+  /** A list rule whose entries are each checked against this rule, rather than being strings. */
+  items?: Rule;
 }
 const string: Rule = { type: 'string' };
 const choice = (...choices: string[]): Rule => ({ type: 'string', choices });
@@ -90,8 +111,19 @@ const projectSchema = object({
   checks: { ...object({ build: { ...literal, optional: true }, lint: { ...literal, optional: true }, typecheck: { ...literal, optional: true } }), optional: true },
   required_checks: { ...object({
     clean: { ...string, optional: true }, build: { ...string, optional: true }, lint: { ...string, optional: true }, typecheck: { ...string, optional: true },
+    artifact: { ...string, optional: true },
     timeout: { ...duration, default: '30m' },
   }), optional: true },
+  release: { ...object({ steps: { type: 'list', hint: 'expected a list of release steps', items: object({
+    id: { ...string, check: value => /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(value)), hint: 'use letters, digits, dots, underscores and hyphens' },
+    kind: choice(...releaseKinds),
+    text: string,
+    paths: { type: 'list', optional: true, hint: 'expected a non-empty list of distinct path globs' },
+    check: { ...choice(...requiredCheckNames), optional: true },
+    recovery: choice(...recoveryClasses),
+    recovery_note: { ...string, optional: true },
+    rollback: { ...string, optional: true },
+  }) } }), optional: true },
   ci: choice('wait', 'none'),
   ci_checks: { ...object({ required: names, advisory: { ...names, optional: true } }), optional: true },
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
@@ -131,6 +163,10 @@ function validate(value: unknown, rule: Rule, source: string, key: string, issue
       if (!Object.hasOwn(rule.fields ?? {}, field)) issues.push({ source, key: key ? `${key}.${field}` : field, problem: 'unknown key', message: 'unknown key' });
     }
     return result;
+  }
+  if (rule.type === 'list' && rule.items) {
+    if (!Array.isArray(value)) { issue('bad type', 'expected a list'); return undefined; }
+    return value.map((item, index) => validate(item, rule.items!, source, `${key}.${index}`, issues));
   }
   if (rule.type === 'list') {
     if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) { issue('bad type', 'expected a list of strings'); return undefined; }
@@ -190,6 +226,13 @@ export async function loadConfig(cwd: string, home: string): Promise<Configurati
       : project!.ci !== 'wait' ? 'only applies with ci: wait'
       : ciChecks.advisory?.some(name => ciChecks.required.includes(name)) ? 'a check cannot be both required and advisory' : '';
     if (problem) issues.push({ source: projectPath, key: 'ci_checks', problem: 'bad value', message: `bad value; ${problem}` });
+  }
+  const steps = project?.release?.steps;
+  if (steps && !issues.some(issue => issue.source === projectPath && issue.key.startsWith('release'))) {
+    steps.forEach((step, index) => {
+      const key = `release.steps.${index}`;
+      if (steps.findIndex(other => other.id === step.id) !== index) issues.push({ source: projectPath, key: `${key}.id`, problem: 'bad value', message: `bad value; step ${step.id} is declared twice` });
+    });
   }
   if (issues.length || !project || !machine) return { valid: false, issues };
   return { valid: true, project, machine, issues };
