@@ -1,4 +1,5 @@
 import { acceptanceFor, type AcceptanceWaiver } from './acceptance.js';
+import { recordHumanAction, recordSafely, syncAttempts } from './attempt-record.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
@@ -39,7 +40,7 @@ export function activateRun(cwd: string): boolean {
  * so Start Run resumes those and leaves any ticket with its own stop, question or failure. */
 export function stopRunAtBoundaries(cwd: string, project: ProjectConfig): number[] {
   checkTracker(cwd, project);
-  return transaction(cwd, db => {
+  const asked = transaction(cwd, db => {
     const run = db.prepare('SELECT activated, stopped_tickets FROM run').get()!;
     if (!run.activated) throw new CliError('The run was never started, so there is no run to stop.');
     const asked = db.prepare("SELECT number FROM tickets WHERE state = 'working' AND stop_requested = 0").all().map(row => Number(row.number));
@@ -51,6 +52,8 @@ export function stopRunAtBoundaries(cwd: string, project: ProjectConfig): number
     db.prepare('UPDATE run SET stopped = COALESCE(stopped, ?), stopped_tickets = ?').run(new Date().toISOString(), JSON.stringify([...new Set([...recorded, ...asked])]));
     return asked;
   });
+  for (const number of asked) recordSafely(() => recordHumanAction(cwd, number));
+  return asked;
 }
 
 /** No new tickets start until an explicit start. Working tickets are left alone. Stopping
@@ -114,6 +117,8 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     }
     const value = work(db);
     db.exec('COMMIT');
+    const changed = stateChanges.get(db);
+    if (changed) recordSafely(() => syncAttempts(cwd, changed));
     return value;
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }
@@ -154,8 +159,15 @@ function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
   }
 }
 
+/** Tickets whose state a transaction changed; their attempt records follow once it commits. */
+const stateChanges = new WeakMap<DatabaseSync, Set<number>>();
+
 function update(db: DatabaseSync, number: number, change: Transition, writes: MirrorWrite[] = []) {
   requireTicket(db, number);
+  if (change.state !== undefined) {
+    if (!stateChanges.has(db)) stateChanges.set(db, new Set());
+    stateChanges.get(db)!.add(number);
+  }
   const columns = { state: 'state', reason: 'reason', stage: 'stage', bounces: 'bounces', sessionIds: 'session_ids', worktree: 'worktree', provisioned: 'provisioned', branch: 'branch', mergeCommit: 'merge_commit', completion: 'completion', integration: 'integration', team: 'team', worker: 'worker' } as const;
   for (const key of Object.keys(columns) as (keyof typeof columns)[]) {
     if (change[key] !== undefined) db.prepare(`UPDATE tickets SET ${columns[key]} = ? WHERE number = ?`).run(key === 'sessionIds' || key === 'integration' || key === 'team' || key === 'worker' ? JSON.stringify(change[key]) : key === 'provisioned' ? Number(change[key]) : change[key] as string | number | null, number);
@@ -366,6 +378,7 @@ export async function closeTicket(cwd: string, project: ProjectConfig, tracker: 
     if (ticket.state === 'logjam') writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
     update(db, number, { state: 'done', reason: null, completion: 'manual' }, writes);
   });
+  recordSafely(() => recordHumanAction(cwd, number));
   return flushPending(cwd, project, tracker, number, options);
 }
 
@@ -384,6 +397,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     const retryCap = ticket.state === 'logjam' && ticket.reason === 'retry-cap';
     update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : retryCap ? { bounces: 2 } : {}, writes);
   });
+  recordSafely(() => recordHumanAction(cwd, number));
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
@@ -397,7 +411,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
  * logjam; answering it resumes at review. The log keeps who approved which commit, and when. */
 export function approveTestsRow(cwd: string, project: ProjectConfig, number: number, commit: string, by: string, commits: string[] = []) {
   checkTracker(cwd, project);
-  return transaction(cwd, db => {
+  const approved = transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     if (ticket.state !== 'logjam') throw new CliError(`Ticket #${number} is not in logjam; only a stuck ticket's tests can be approved.`);
     const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
@@ -418,13 +432,15 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, time, JSON.stringify({ testsApproved: { by, commit, previous } }));
     return { commit, previous, by, time };
   });
+  recordSafely(() => recordHumanAction(cwd, number));
+  return approved;
 }
 
 /** A person waives one acceptance item of the saved checklist snapshot. A later waiver of the
  * same item replaces it; the log keeps every one, with who made it and why. */
 export function waiveRow(cwd: string, project: ProjectConfig, number: number, item: string, reason: string, by: string): AcceptanceWaiver {
   checkTracker(cwd, project);
-  return transaction(cwd, db => {
+  const waived = transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     if (ticket.state === 'done' || ticket.completion) throw new CliError(`Ticket #${number} is done; there is nothing left to waive.`);
     const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
@@ -438,6 +454,8 @@ export function waiveRow(cwd: string, project: ProjectConfig, number: number, it
     db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, waiver.time, JSON.stringify({ waived: waiver }));
     return waiver;
   });
+  recordSafely(() => recordHumanAction(cwd, number));
+  return waived;
 }
 
 /** Every rerun of a failed test run, passed or not. A pass is also logged as
@@ -516,4 +534,5 @@ export function requestStop(cwd: string, project: ProjectConfig, number: number)
     db.prepare('UPDATE tickets SET stop_requested = 1 WHERE number = ?').run(number);
     update(db, number, {});
   });
+  recordSafely(() => recordHumanAction(cwd, number));
 }
