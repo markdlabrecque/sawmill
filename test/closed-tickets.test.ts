@@ -80,7 +80,7 @@ test('run once skips a ticket closed since drafting: no role, no PR, recorded as
   assert.deepEqual(first.started, []);
   const { snapshot, text } = await skipped(y)();
   assert.match(text, /already closed/i);
-  assert.equal(snapshot.tickets[0]!.worker, undefined);
+  assert.equal(snapshot.tickets[0]!.worker, null);
   assert.notEqual(snapshot.tickets[0]!.state, 'queued');
   assert.deepEqual((await y.once()).started.map((row: { ticket: number }) => row.ticket), [2]);
   await until(y.starts, rows => rows.length === 1);
@@ -94,8 +94,8 @@ test('the shared scheduler skips a ticket closed since drafting and starts its d
   const y = await fixture(t, [1, 2]);
   await closeRemotely(y, 1);
   assert.equal((await y.command(['run'])).stdout.length > 0, true);
-  const seen = await until(y.status, s => s.tickets[1]?.worker !== undefined);
-  assert.equal(seen.tickets[0]!.worker, undefined);
+  const seen = await until(y.status, s => s.tickets[1]?.worker != null);
+  assert.equal(seen.tickets[0]!.worker, null);
   assert.match((await skipped(y)()).text, /already closed/i);
   assert.deepEqual((await until(y.starts, rows => rows.length >= 1)).map(row => row.number), [2]);
 });
@@ -104,9 +104,9 @@ test('run --foreground skips a ticket closed since drafting', async (t) => {
   const y = await fixture(t, [1, 2]);
   await closeRemotely(y, 1);
   const loop = y.command(['run', '--foreground']).catch(() => undefined);
-  await until(y.status, s => s.tickets[1]?.worker !== undefined);
+  await until(y.status, s => s.tickets[1]?.worker != null);
   assert.match((await skipped(y)()).text, /already closed/i);
-  assert.equal((await y.status()).tickets[0]!.worker, undefined);
+  assert.equal((await y.status()).tickets[0]!.worker, null);
   await y.command(['run', 'stop']);
   await y.release();
   await loop;
@@ -143,7 +143,7 @@ test('a failed state lookup keeps the ticket queued and reports an infrastructur
   assert.deepEqual(await y.starts(), []);
   const row = (await y.status()).tickets[0]!;
   assert.equal(row.state, 'queued');
-  assert.equal(row.worker, undefined);
+  assert.equal(row.worker, null);
   await rm(join(y.root, 'lookup-fail'));
   assert.deepEqual((await y.once()).started.map((started: { ticket: number }) => started.ticket), [1]);
 });

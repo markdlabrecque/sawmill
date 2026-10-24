@@ -419,7 +419,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
   y.git('add', '.'); y.git('commit', '-m', 'Seed implementation'); y.git('push');
   await writeFile(join(y.cwd, '.mill/setup.sh'), 'printf "%s" "$MILL_TICKET" > "$MILL_MILLYARD/.mill/hook-ran"\n');
   assert.equal((await y.cli('run', 'draft', '7')).code, 0);
-  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, pipelines: [pipeline(1, 'success')] });
+  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, allowStateReads: true, pipelines: [pipeline(1, 'success')] });
   const roles: string[] = []; let red = false, stdout = '';
   const code = await runCli(['team', 'run', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {}, runtime: {
     async run(request, sink) {
@@ -447,6 +447,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
   assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
   const remote = JSON.parse(await readFile(y.statePath, 'utf8'));
   assert.equal(remote.issues[0].state, 'closed'); assert.equal(remote.mergeCount, 1);
+  assert.deepEqual(remote.stateReads, [7], 'exactly one first-start state read of the issue');
   assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/7'), '');
   for (const role of roles) assert.ok(remote.notes[7].at(-1).body.includes(`${role}-gitlab-fixture`));
 });

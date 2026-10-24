@@ -123,10 +123,13 @@ if (route === '/issues' && method === 'GET') {
 }
 if (route === '/labels' && method === 'GET') list(state.availableLabels.map(name => ({ name })));
 if (issueMatch && method === 'GET') {
-  if (state.forbidIssueReads) fail(500, 'Issue read after draft');
+  // The first-start state check is one bare GET /issues/N; notes and listings stay forbidden.
+  const stateRead = state.allowStateReads && !issueMatch[2];
+  if (state.forbidIssueReads && !stateRead) fail(500, 'Issue read after draft');
   const issue = state.issues.find(issue => issue.iid === Number(issueMatch[1]));
   if (!issue) fail(404, 'Issue not found');
   if (issueMatch[2]) list(state.notes[issue.iid] || []);
+  if (stateRead) { (state.stateReads ||= []).push(issue.iid); fs.writeFileSync(statePath, JSON.stringify(state)); }
   reply({ assignees: [], ...issue });
 }
 fail(500, 'Unscripted request: ' + method + ' ' + route);
