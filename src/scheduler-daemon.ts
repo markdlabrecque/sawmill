@@ -14,7 +14,7 @@ import { readRun } from './run-store.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { claimScheduler, dispatchHeld, readScheduler, releaseScheduler, schedulerPath } from './scheduler.js';
 import { describeUnresolved, listSlots, processStart, slotsPath, unresolvedSlots } from './slots.js';
-import { consumeResults } from './transitions.js';
+import { consumeResults, reconcilePick } from './transitions.js';
 
 // Internal process entry point started by ensureScheduler; `mill scheduler stop` ends it.
 const [home] = process.argv.slice(2);
@@ -93,6 +93,10 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
   if (Date.now() < (problems.get(cwd)?.retry ?? 0)) return undefined;
   try {
     const before = readRun(cwd);
+    if (before.run.pendingPick !== undefined) {
+      const note = reconcilePick(cwd, before.run.id);
+      if (note) say(`${cwd}: ${note}`);
+    }
     if (before.run.lifecycle === 'inactive') return undefined;
     // A keyless daemon may remain available for administration, but cannot recover,
     // activate or admit work. Report once, without spending any ticket retry budget.
@@ -122,6 +126,7 @@ async function admit({ cwd, project, machine }: Candidate): Promise<boolean> {
       () => !consumeResults(cwd, machine.pause_threshold).pausedReason && readRun(cwd).run.lifecycle === 'active', { limit: 1, wait: false }));
     for (const row of result.started) say(`${cwd}: started #${row.ticket} (worker pid ${row.worker.pid}).`);
     for (const row of result.failures) say(`${cwd}: #${row.ticket} did not start: ${row.error}`);
+    for (const note of result.notes) say(`${cwd}: ${note}`);
     resolved(cwd, 'admit');
     return result.started.length + result.failures.length > 0;
   } catch (error) { report(cwd, 'admit', error); return false; }

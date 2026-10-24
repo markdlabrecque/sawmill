@@ -197,6 +197,8 @@ export interface RunSnapshot {
   run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string;
     /** Tickets the board's Stop Run asked to stop; its Start Run resumes only these. */
     stoppedTickets?: number[]; lifecycle?: RunLifecycle;
+    /** One ready ticket preferred at this run's next dispatch opportunity. */
+    pendingPick?: number;
     /** Drafted with --include-closed: dispatch starts a closed ticket instead of skipping it. */
     includeClosed?: true;
     /** Closed tickets the selector matched and the draft left out. */
@@ -240,7 +242,7 @@ export function checkDraftable(cwd: string, replace: boolean): void {
 
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
-  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy): void {
+  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy): number | undefined {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -267,7 +269,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
-    const old = db.prepare('SELECT id FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get();
+    const old = db.prepare('SELECT * FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get();
     if (old) {
       mkdirSync(historyPath(cwd), { recursive: true });
       copyFileSync(runPath(cwd), join(historyPath(cwd), `${String(old.id)}.sqlite`));
@@ -297,6 +299,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
     if (assign) for (const ticket of tickets) insertWrite.run(ticket.number);
     db.exec('COMMIT');
+    return old?.pending_pick ? Number(old.pending_pick) : undefined;
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }
     throw error;
@@ -368,7 +371,8 @@ export function readRunFile(file: string): RunSnapshot {
       ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}),
       ...(run.stopped_tickets ? { stoppedTickets: JSON.parse(String(run.stopped_tickets)) as number[] } : {}), lifecycle,
       ...(run.include_closed ? { includeClosed: true as const } : {}), ...(run.skipped_closed ? { skippedClosed: JSON.parse(String(run.skipped_closed)) as number[] } : {}),
-      ...(run.check_policy ? { checkPolicy: JSON.parse(String(run.check_policy)) as CheckPolicy } : {}) }, tickets, edges, pendingWrites };
+      ...(run.check_policy ? { checkPolicy: JSON.parse(String(run.check_policy)) as CheckPolicy } : {}),
+      ...(run.pending_pick ? { pendingPick: Number(run.pending_pick) } : {}) }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
@@ -397,7 +401,7 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     const link = linked[row]![index];
     return link === undefined ? padded : link + padded.slice(cell.length);
   };
-  return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
+  return [snapshot.run.loop?.pausedReason, snapshot.run.pendingPick ? `Pending pick: ${ref(snapshot.run.pendingPick)}.` : undefined, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
     ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref)),
     // The undeclared default stays implicit; a ticket's own plan is shown before work starts.
     ...snapshot.tickets.map(({ number, proofPlan: plan }) => plan && plan.reason !== defaultProofPlan.reason ? `${ref(number)}: proof plan ${plan.path}: ${plan.reason}` : undefined),
@@ -431,6 +435,7 @@ export function formatTicketLog(entries: LogEntry[]): string {
   return entries.map(({ time, event }) => {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
     if (event.stateLookupError !== undefined) return `${time} state check failed: ${String(event.stateLookupError)}`;
+    if (typeof event.pick === 'string') return `${time} ${event.pick}`;
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
     if (event.waived) { const { item, reason, by, snapshot } = event.waived as import('./acceptance.js').AcceptanceWaiver; return `${time} ${item} waived by ${by} for checklist ${snapshot}: ${reason}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }

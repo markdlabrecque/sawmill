@@ -112,7 +112,7 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'assignment')) db.exec('ALTER TABLE tickets ADD COLUMN assignment TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'wait')) db.exec('ALTER TABLE tickets ADD COLUMN wait TEXT');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'phases')) db.exec('ALTER TABLE tickets ADD COLUMN phases TEXT');
-    for (const column of ['loop_control', 'activated', 'stopped', 'stopped_tickets']) {
+    for (const column of ['loop_control', 'activated', 'stopped', 'stopped_tickets', 'pending_pick']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
     const value = work(db);
@@ -177,18 +177,77 @@ function update(db: DatabaseSync, number: number, change: Transition, writes: Mi
   if (change.stage !== undefined) db.prepare('UPDATE tickets SET stage_started = ? WHERE number = ?').run(now, number);
   for (const write of writes) enqueue(db, number, write);
   db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, now, JSON.stringify({ change, writes }));
+  // Lifecycle changes (including a blocker's state) invalidate a preference immediately.
+  clearIneligiblePick(db);
+}
+
+/** The same readiness checks govern picks and worker claims, under the run's write lock. */
+function readyToClaim(db: DatabaseSync, number: number): boolean {
+  const row = db.prepare('SELECT * FROM tickets WHERE number = ?').get(number);
+  if (!row) return false;
+  const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
+  return ['queued', 'blocked'].includes(String(row.state)) && (!row.completion || cleanupPending(row)) &&
+    (!owner || owner.status === 'finished') &&
+    !db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number) &&
+    !db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
+      WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number);
+}
+
+function pendingPick(db: DatabaseSync): number | undefined {
+  const value = db.prepare('SELECT pending_pick FROM run').get()?.pending_pick;
+  return value ? Number(value) : undefined;
+}
+
+function logPick(db: DatabaseSync, number: number, message: string): void {
+  db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, new Date().toISOString(), JSON.stringify({ pick: message }));
+}
+
+/** Replaces one preference atomically, without activating the run or changing its stored order. */
+export function pickTicket(cwd: string, project: ProjectConfig, number?: number): { previous?: number; pendingPick?: number } {
+  checkTracker(cwd, project);
+  return transaction(cwd, db => {
+    const previous = pendingPick(db);
+    if (number !== undefined) {
+      const row = requireTicket(db, number);
+      if (!readyToClaim(db, number) || row.completion) throw new CliError(`Cannot pick #${number}: it is not a ready queued ticket (state: ${row.state}).`);
+    }
+    db.prepare('UPDATE run SET pending_pick = ?').run(number ?? null);
+    if (number !== undefined) logPick(db, number, `Picked #${number}${previous ? ` instead of #${previous}` : ''}.`);
+    else if (previous !== undefined) logPick(db, previous, `Cleared pending pick #${previous}.`);
+    return { previous, pendingPick: number };
+  });
+}
+
+function clearIneligiblePick(db: DatabaseSync): string | undefined {
+  const number = pendingPick(db);
+  if (number === undefined) return undefined;
+  const row = db.prepare('SELECT completion FROM tickets WHERE number = ?').get(number);
+  if (row && !row.completion && readyToClaim(db, number)) return undefined;
+  const message = `Cleared pending pick #${number}: it is no longer eligible.`;
+  db.prepare('UPDATE run SET pending_pick = NULL').run();
+  // Membership is fixed within a run; tolerate a missing row without violating the log's foreign key.
+  if (row) logPick(db, number, message);
+  return message;
+}
+
+/** Validate even when capacity is exhausted or there are no ready tickets left. */
+export function reconcilePick(cwd: string, runId: string): string | undefined {
+  return transaction(cwd, db => db.prepare('SELECT id FROM run').get()?.id === runId ? clearIneligiblePick(db) : undefined);
 }
 
 /** Compare-and-claim under SQLite's write lock. Tracker I/O is never part of the claim. */
 export function claimWorker(cwd: string, number: number, worker: WorkerOwnership): boolean {
   return transaction(cwd, db => {
     if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
-    const row = requireTicket(db, number);
-    const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
-    if (!['queued', 'blocked'].includes(String(row.state)) || (row.completion && !cleanupPending(row)) || (owner && owner.status !== 'finished')) return false;
-    if (db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number)) return false;
-    if (db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
-      WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
+    if (!readyToClaim(db, number)) return false;
+    clearIneligiblePick(db);
+    const picked = pendingPick(db);
+    // A concurrent pick must also take precedence over a dispatcher's older snapshot.
+    if (picked !== undefined && picked !== number) return false;
+    if (picked === number) {
+      db.prepare('UPDATE run SET pending_pick = NULL').run();
+      logPick(db, number, `Consumed pending pick #${number} on worker claim.`);
+    }
     update(db, number, { state: 'working', reason: null, stage: 'team-launch', worker });
     return true;
   });
