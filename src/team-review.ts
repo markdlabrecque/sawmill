@@ -18,6 +18,7 @@ import { readRun, type TeamProgress } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { infrastructure, type Runtime } from './runtime.js';
+import { preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, type BrowserReview } from './user-testing.js';
 import { verificationFrom, verificationInstructions } from './verification.js';
 
@@ -79,6 +80,10 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
         (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim() !== status) throw new Error('Tests changed the ticket worktree or HEAD.');
       latest = `\n\n${(await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout)).handoff}`;
     }
+    const site = await prepareSite(cwd, project, number, ticket.worktree, options);
+    if (site.status !== 'ok') throw new Error(site.message);
+    progress.site = preparedSite(site);
+    latest += siteHandoff(progress.site);
     diff = progress.reviewedHead && progress.repair
       ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
       : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;

@@ -24,7 +24,7 @@ import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } f
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
-import { createWorktree, preparedSite, prepareSite } from './worktrees.js';
+import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { verificationFrom, verificationInstructions } from './verification.js';
 import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
@@ -428,8 +428,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         // Plain text, so the saved CI log paths are readable as written rather than JSON-escaped.
         const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
-        const site = role === 'reviewer' && progress.site ? `\n\nPrepared site: ${progress.site.url ?? '(no URL reported)'} at ${progress.site.commit}, environment ${progress.site.environment}, ` +
-          `prepare script ${progress.site.script ?? '(none)'}, ready: ${progress.site.ready ?? 'not reported'}.` : '';
+        const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
         const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site;
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };

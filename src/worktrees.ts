@@ -167,6 +167,12 @@ export function preparedSite({ commit, script, environment, stateDir, url, ready
   return { commit, script, environment, stateDir, url, ready };
 }
 
+/** The reviewer's line about the site it checks. */
+export function siteHandoff(site: PreparedSite): string {
+  return `\n\nPrepared site: ${site.url ?? '(no URL reported)'} at ${site.commit}, environment ${site.environment}, ` +
+    `prepare script ${site.script ?? '(none)'}, ready: ${site.ready ?? 'not reported'}.`;
+}
+
 /**
  * Runs .mill/prepare.sh to bring the ticket's site into agreement with the worktree's current commit.
  * Setup seeds once; prepare must be idempotent and never reseed. Its last stdout line is {"url", "ready"}.
