@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
+import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, TicketWriter } from './tracker.js';
 
@@ -68,14 +68,16 @@ export function consumeResults(cwd: string, threshold: number): LoopProgress {
     const previous = JSON.stringify(control);
     for (const row of db.prepare('SELECT id,event FROM log WHERE id > ? ORDER BY id').all(control.cursor)) {
       control.cursor = Number(row.id);
-      const worker = JSON.parse(String(row.event)).change?.worker as WorkerOwnership | undefined;
-      if (worker?.status !== 'finished' || !worker.result) continue;
-      if (worker.result.outcome === 'infrastructure') {
+      const event = JSON.parse(String(row.event));
+      const worker = event.change?.worker as WorkerOwnership | undefined;
+      const lookupFailed = event.stateLookupError !== undefined;
+      if (!lookupFailed && (worker?.status !== 'finished' || !worker.result)) continue;
+      if (lookupFailed || worker!.result!.outcome === 'infrastructure') {
         control.consecutiveInfrastructure++;
         if (control.consecutiveInfrastructure >= threshold) control.pausedReason = `Paused after ${control.consecutiveInfrastructure} consecutive infrastructure results. Fix the cause, then retry queued work with mill run stop and mill run.`;
       } else {
         control.consecutiveInfrastructure = 0;
-        if (worker.result.outcome === 'passed') delete control.pausedReason;
+        if (worker!.result!.outcome === 'passed') delete control.pausedReason;
       }
     }
     if (JSON.stringify(control) !== previous) db.prepare('UPDATE run SET loop_control = ?').run(JSON.stringify(control));
@@ -162,7 +164,7 @@ function update(db: DatabaseSync, number: number, change: Transition, writes: Mi
   db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, now, JSON.stringify({ change, writes }));
 }
 
-/** Compare-and-claim under SQLite's write lock. Tracker I/O is never part of dispatch. */
+/** Compare-and-claim under SQLite's write lock. Tracker I/O is never part of the claim. */
 export function claimWorker(cwd: string, number: number, worker: WorkerOwnership): boolean {
   return transaction(cwd, db => {
     if (db.prepare('SELECT id FROM run').get()?.id !== worker.runId) return false;
@@ -174,6 +176,26 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
       WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number)) return false;
     update(db, number, { state: 'working', reason: null, stage: 'team-launch', worker });
     return true;
+  });
+}
+
+/** A ticket closed on the tracker since drafting never starts. It is done without a tracker
+ * write, so its dependants can proceed. False when the ticket has started meanwhile. */
+export function skipClosedTicket(cwd: string, number: number): boolean {
+  return transaction(cwd, db => {
+    const row = requireTicket(db, number);
+    const owner = row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership | null : null;
+    if (!['queued', 'blocked'].includes(String(row.state)) || row.stage !== null || row.completion || (owner && owner.status !== 'finished')) return false;
+    db.prepare("UPDATE tickets SET tracker_state = 'closed' WHERE number = ?").run(number);
+    update(db, number, { state: 'done', reason: alreadyClosed, completion: 'manual' });
+    return true;
+  });
+}
+
+/** The ticket stays queued; the loop counts the failure toward its infrastructure pause. */
+export function logStateLookupFailure(cwd: string, number: number, error: string): void {
+  transaction(cwd, db => {
+    db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, new Date().toISOString(), JSON.stringify({ stateLookupError: error }));
   });
 }
 

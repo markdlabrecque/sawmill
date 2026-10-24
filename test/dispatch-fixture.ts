@@ -44,6 +44,14 @@ const cp = require('node:child_process');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FIXTURE_DIR + '/tracker.jsonl', JSON.stringify(args) + '\\n');
 const method = args[args.indexOf('--method') + 1], url = args[1];
+// A single-issue read is the first-start state recheck: closed-N marks it closed, lookup-fail breaks the tracker.
+const lookup = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)$/) : null;
+if (lookup) {
+  if (fs.existsSync(process.env.FIXTURE_DIR + '/lookup-fail')) { console.error('Fixture tracker outage'); process.exit(75); }
+  console.log(JSON.stringify({ number: Number(lookup[1]), title: 'Ticket ' + lookup[1], body: 'Same shared file for every ticket.', labels: [],
+    state: fs.existsSync(process.env.FIXTURE_DIR + '/closed-' + lookup[1]) ? 'closed' : 'open' }));
+  process.exit(0);
+}
 if (!args.includes('--method') || (method === 'GET' && !url.includes('/pulls?'))) process.exit(71);
 let input = '';
 process.stdin.on('data', x => input += x);

@@ -142,7 +142,11 @@ export interface RunSnapshot {
   status: 'ok';
   run: { id: string; created: string; baseBranch: string; source: RunSelection; tracker: ProjectConfig['tracker']; loop?: LoopProgress; activated?: string; stopped?: string;
     /** Tickets the board's Stop Run asked to stop; its Start Run resumes only these. */
-    stoppedTickets?: number[]; lifecycle?: RunLifecycle };
+    stoppedTickets?: number[]; lifecycle?: RunLifecycle;
+    /** Drafted with --include-closed: dispatch starts a closed ticket instead of skipping it. */
+    includeClosed?: true;
+    /** Closed tickets the selector matched and the draft left out. */
+    skippedClosed?: number[] };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
@@ -179,7 +183,8 @@ export function checkDraftable(cwd: string, replace: boolean): void {
 }
 
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
-export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false): void {
+export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
+  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -197,6 +202,9 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
       CREATE TABLE IF NOT EXISTS pending_writes (id INTEGER PRIMARY KEY, ticket INTEGER NOT NULL REFERENCES tickets(number), kind TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, ticket INTEGER REFERENCES tickets(number), time TEXT NOT NULL, event TEXT NOT NULL);
       `);
+    for (const column of ['include_closed', 'skipped_closed']) {
+      if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
+    }
     if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
@@ -207,7 +215,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     }
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker));
+    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
+      closed.includeClosed ? 'yes' : null, closed.skippedClosed?.length ? JSON.stringify(closed.skippedClosed) : null);
     const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
@@ -277,7 +286,8 @@ export function readRunFile(file: string): RunSnapshot {
       : !run.activated ? 'inactive' : run.stopped ? 'stopped' : loop?.pausedReason ? 'paused' : 'active';
     return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(loop ? { loop } : {}),
       ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}),
-      ...(run.stopped_tickets ? { stoppedTickets: JSON.parse(String(run.stopped_tickets)) as number[] } : {}), lifecycle }, tickets, edges, pendingWrites };
+      ...(run.stopped_tickets ? { stoppedTickets: JSON.parse(String(run.stopped_tickets)) as number[] } : {}), lifecycle,
+      ...(run.include_closed ? { includeClosed: true as const } : {}), ...(run.skipped_closed ? { skippedClosed: JSON.parse(String(run.skipped_closed)) as number[] } : {}) }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
@@ -288,7 +298,7 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
   const rows = snapshot.tickets.map(ticket => {
     let detail = '';
     let linkedDetail: string | undefined;
-    if (ticket.state === 'done') detail = ticket.mergeCommit ?? '';
+    if (ticket.state === 'done') detail = ticket.reason === alreadyClosed ? 'skipped: already closed before it started' : ticket.mergeCommit ?? '';
     if (ticket.state === 'blocked') { detail = ticket.blockers.map(number => `#${number}`).join(', '); linkedDetail = ticket.blockers.map(ref).join(', '); }
     if (ticket.state === 'logjam') detail = ticket.reason ?? '';
     if (ticket.state === 'working') detail = `${ticket.stage ?? 'unknown'}; round ${ticket.bounces + 1}; bounces ${ticket.bounces}; ${ticket.timeInStageSeconds ?? 0}s in stage${ticket.stopRequested ? '; stop requested' : ''}`;
@@ -303,8 +313,12 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     return link === undefined ? padded : link + padded.slice(cell.length);
   };
   return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
-    ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref))].filter(Boolean).join('\n');
+    ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref)),
+    snapshot.run.skippedClosed?.length ? `Skipped closed tickets: ${snapshot.run.skippedClosed.map(ref).join(', ')}.` : undefined].filter(Boolean).join('\n');
 }
+
+/** The reason on a ticket that was closed on the tracker before its first start, so it never ran. */
+export const alreadyClosed = 'already-closed';
 
 export interface LogEntry { id: number; time: string; event: Record<string, unknown> }
 
@@ -328,6 +342,7 @@ export function formatTicketLog(entries: LogEntry[]): string {
   let sessions: RunTicket['sessionIds'] = {};
   return entries.map(({ time, event }) => {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
+    if (event.stateLookupError !== undefined) return `${time} state check failed: ${String(event.stateLookupError)}`;
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }
     if (event.flaky) { const { stage, tests } = event.flaky as { stage: string; tests: string[] }; return `${time} [${stage}] flaky: ${tests.join(', ') || '(unnamed)'}`; }

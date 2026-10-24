@@ -17,7 +17,8 @@ import { checkMillyard } from './millyard.js';
 import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
-import { readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
+import { checkFirstStart } from './first-start.js';
+import { alreadyClosed, readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
 import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
@@ -36,7 +37,7 @@ const changedFiles = async (cwd: string, from: string, to: string, ...files: str
   (await execute('git', ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', from, to, '--', ...files], { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.split('\0').filter(Boolean);
 export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
 export interface TeamResult {
-  outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped';
+  outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped' | 'skipped';
   ticket: number;
   stage: string;
   reason?: string;
@@ -61,6 +62,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (ticket.completion === 'manual' || ticket.blockers.length) throw new CliError('Team requires an unfinished, unblocked ticket.');
     if (!ticket.completion) requireBrowserCapability(project, ticket);
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
+    const first = await checkFirstStart(cwd, number, () => tracker);
+    if (first.status === 'skipped') return { outcome: 'skipped', ticket: number, stage: 'first-start', reason: alreadyClosed, error: `#${number} was already closed on the tracker; it was skipped before any role started.` };
+    if (first.status === 'lookup-failed') return { outcome: 'infrastructure', ticket: number, stage: 'first-start', error: first.error };
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = ticket.stage ?? 'worktree-create';

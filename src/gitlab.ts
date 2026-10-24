@@ -161,6 +161,11 @@ export class GitLabTracker implements Tracker {
     if (!label.trim() || label.includes(',')) throw new Error('GitLab label names must be nonblank and cannot contain commas.');
   }
   async closeTicket(number: number): Promise<void> { await this.request('PUT', `/issues/${number}`, { state_event: 'close' }); }
+  async ticketState(number: number): Promise<Ticket['state']> {
+    const issue = record((await this.request('GET', `/issues/${number}`)).value);
+    if (this.issueNumber(issue) !== number || !['opened', 'closed'].includes(String(issue.state))) throw new Error(`GitLab returned an invalid issue #${number}.`);
+    return issue.state === 'closed' ? 'closed' : 'open';
+  }
 
   private userId?: number;
   async assignSelf(number: number): Promise<AssignResult> {

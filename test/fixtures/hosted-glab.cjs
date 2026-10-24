@@ -8,6 +8,12 @@ const args = process.argv.slice(2);
 const method = args[args.indexOf('--method') + 1];
 const url = new URL('https://fixture.invalid/' + args[1]);
 fs.appendFileSync(process.env.HOSTED_LOG, JSON.stringify({ method, endpoint: args[1] }) + '\n');
+// The first-start state read comes before the ticket branch exists, so answer it before resolving the branch.
+if (method === 'GET' && url.pathname === '/projects/team%2Ftool/issues/12') {
+  process.stdout.write('HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n');
+  process.stdout.write(JSON.stringify({ iid: 12, state: 'opened', web_url: 'https://gitlab.com/team/tool/-/issues/12' }), () => process.exit(0));
+  return;
+}
 const head = cp.execFileSync('git', ['rev-parse', 'mill/12'], { cwd: process.env.HOSTED_CWD, encoding: 'utf8' }).trim();
 const data = JSON.parse(fs.readFileSync(process.env.HOSTED_SCENARIO, 'utf8').replaceAll('HEAD_SHA', head));
 // A reply exits only after its output is flushed, so later fall-through code must not fail or exit first.

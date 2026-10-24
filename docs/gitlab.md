@@ -13,7 +13,10 @@ incomplete totals. Pagination is bounded at 10,000 pages.
 
 ## Draft membership
 
-Explicit issue numbers and `--label` include open and closed issues. Draft caches
+`--label` and `--spec` leave closed issues out and report them as skipped.
+Explicitly naming a closed issue is refused unless `--include-closed` is given.
+Before a ticket's first start, Sawmill reads that one issue's state again and skips
+it if it was closed since drafting. Draft caches
 the complete paginated notes thread, including note authors and timestamps.
 GitLab dependencies use the existing `Blocked by: #N` line or `## Blocked by`
 section in the issue description.
@@ -38,7 +41,7 @@ The transport uses the documented [issues](https://docs.gitlab.com/api/issues/),
 ## Mirror and integration
 
 Comments, label changes and close operations use the existing durable mirror
-queue. Recovery never refreshes issue state. Before adding a label, the adapter
+queue. Recovery never refreshes issue state; only a ticket's first start reads it. Before adding a label, the adapter
 checks [label definitions](https://docs.gitlab.com/api/labels/), including group
 labels, because GitLab's issue update would otherwise create a missing label.
 Create the labels before a run. A concurrent deletion between this check and the

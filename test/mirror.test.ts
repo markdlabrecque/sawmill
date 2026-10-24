@@ -361,6 +361,8 @@ test('a completed loop can draft another batch and reset its loop metadata', asy
   const old = JSON.parse((await y.cli('run', 'status', '--json')).stdout);
   assert.ok(old.run.loop);
   tracker.readsAllowed = true;
+  // Closing #1 closed its issue; reopen it so the next batch can draft it again.
+  tracker.ticket(1).state = 'open';
   const drafted = await y.cli('run', 'draft', '1', '--json');
   assert.equal(drafted.code, 0, drafted.stdout);
   const next = JSON.parse(drafted.stdout);

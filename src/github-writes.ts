@@ -20,6 +20,11 @@ export class GitHubWriter implements TicketWriter {
   }
   addComment(number: number, body: string) { return this.write(number, 'POST', '/comments', { body }); }
   closeTicket(number: number) { return this.write(number, 'PATCH', '', { state: 'closed' }); }
+  async ticketState(number: number): Promise<'open' | 'closed'> {
+    const issue = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/issues/${number}`, undefined, { timeoutMs: this.timeoutMs }) as { number?: unknown; state?: unknown } | null;
+    if (issue?.number !== number || (issue.state !== 'open' && issue.state !== 'closed')) throw new Error(`Invalid GitHub issue response for #${number}.`);
+    return issue.state;
+  }
 
   async listComments(number: number): Promise<IssueComment[]> {
     const pages = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/issues/${number}/comments?per_page=100`, undefined, { paginated: true, timeoutMs: this.timeoutMs });

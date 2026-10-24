@@ -5,6 +5,11 @@ const cp = require('node:child_process');
 const args = process.argv.slice(2);
 const url = new URL('https://fixture.invalid/' + args[1]);
 fs.appendFileSync(process.env.HOSTED_LOG, JSON.stringify({ endpoint: args[1] }) + '\n');
+// The first-start state read comes before the ticket branch exists, so answer it before resolving the branch.
+if (args[args.indexOf('--method') + 1] === 'GET' && url.pathname === '/repos/team/tool/issues/12') {
+  process.stdout.write(JSON.stringify({ number: 12, state: 'open' }), () => process.exit(0));
+  return;
+}
 const head = cp.execFileSync('git', ['rev-parse', 'mill/12'], { cwd: process.env.HOSTED_CWD, encoding: 'utf8' }).trim();
 const data = JSON.parse(fs.readFileSync(process.env.HOSTED_SCENARIO, 'utf8').replaceAll('HEAD_SHA', head));
 const fail = (status, message) => { process.stderr.write(`gh: ${message} (HTTP ${status})\n`); process.exit(1); };

@@ -179,7 +179,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         ticketWriter(options, config.project, cwd);
         const result = await runTeam(cwd, config.project, config.machine, Number(positional[2]), tracker as IntegrationTracker, { ...options, home });
         emit(result, `${result.outcome}: ${ref(result.ticket)} (${result.stage})${result.error ? `\n${result.error}` : ''}`);
-        return result.outcome === 'passed' ? 0 : 1;
+        return result.outcome === 'passed' || result.outcome === 'skipped' ? 0 : 1;
       }
       if (positional[0] === 'integrate') {
         if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))) throw new CliError(usage('integrate'), 2);
@@ -349,7 +349,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const tracker = options.tracker ?? (config.project.tracker.backend === 'gitlab' ? new GitLabTracker(config.project.tracker, cwd) : new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd)));
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer));
+        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed);
         if (writer) await flushAssignments(cwd, config.project, writer, options);
         // Drafting registers the millyard but leaves the run inactive until mill run.
         const snapshot = readRun(cwd);

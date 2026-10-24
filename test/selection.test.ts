@@ -51,7 +51,7 @@ function runRows(snapshot: RunSnapshot) {
   };
 }
 
-test('label selection persists the same ordered run rows and cached thread as explicit numbers', async (t) => {
+test('label selection omits closed tickets, persists the same ordered run rows and cached thread as explicit numbers', async (t) => {
   const tracker = new SelectionTracker([
     ticket(30, { labels: ['batch'], blockedBy: [2, 20], comments: [{ body: 'Keep this context.', author: 'human' }] }),
     ticket(20, { labels: ['batch'], blockedBy: null, body: 'Blocked by: #90' }),
@@ -60,13 +60,15 @@ test('label selection persists the same ordered run rows and cached thread as ex
     ticket(90, { state: 'closed' }), ticket(99),
   ]);
   const yard = await configured(t, tracker);
-  const explicit = await yard.cli('run', 'draft', '30', '20', '2', '10', '--json');
+  const explicit = await yard.cli('run', 'draft', '30', '20', '2', '--json');
   assert.equal(explicit.code, 0, explicit.stdout);
   const selected = await yard.cli('run', 'draft', '--label', 'batch', '--json');
   assert.equal(selected.code, 0, selected.stdout);
+  assert.match(selected.stdout, /skipped.*\b10\b/is);
   const result: RunSnapshot = JSON.parse(selected.stdout);
   assert.deepEqual(result.run.source, { kind: 'label', label: 'batch' });
-  assert.deepEqual(result.tickets.map(row => row.number), [10, 2, 20, 30]);
+  assert.deepEqual(result.tickets.map(row => row.number), [2, 20, 30]);
+  assert.deepEqual(result.edges.filter(edge => edge.blocker === 10), [{ blocked: 2, blocker: 10, outsideClosed: true }]);
   assert.deepEqual(runRows(result), runRows(JSON.parse(explicit.stdout)));
   tracker.offline = true;
   const status = await yard.cli('run', 'status', '--json');
@@ -83,7 +85,7 @@ test('spec selects only direct children and produces equivalent rows despite dup
     ticket(99),
   ], { 40: [20, 3, 12, 3], 3: [99] });
   const yard = await configured(t, tracker);
-  const explicit = await yard.cli('run', 'draft', '3', '20', '12', '--json');
+  const explicit = await yard.cli('run', 'draft', '3', '20', '--json');
   assert.equal(explicit.code, 0, explicit.stdout);
   const label = await yard.cli('run', 'draft', '--label', 'batch', '--json');
   assert.equal(label.code, 0, label.stdout);
@@ -91,14 +93,15 @@ test('spec selects only direct children and produces equivalent rows despite dup
   assert.equal(selected.code, 0, selected.stdout);
   const result: RunSnapshot = JSON.parse(selected.stdout);
   assert.deepEqual(result.run.source, { kind: 'spec', number: 40 });
-  assert.deepEqual(result.tickets.map(row => row.number), [12, 3, 20]);
+  assert.deepEqual(result.tickets.map(row => row.number), [3, 20]);
   assert.deepEqual(runRows(result), runRows(JSON.parse(explicit.stdout)));
   assert.deepEqual(runRows(result), runRows(JSON.parse(label.stdout)));
   tracker.children[40] = [12, 3, 20];
   const text = await yard.cli('run', 'draft', '--spec', '40');
   assert.equal(text.code, 0, text.stdout);
-  assert.match(text.stdout, /#12\s+Ticket 12\s+queued/);
-  assert.match(text.stdout, /#3\s+Ticket 3\s+blocked\s+#12/);
+  assert.match(text.stdout, /skipped.*#12|#12.*skipped/is);
+  assert.match(text.stdout, /#3\s+Ticket 3\s+queued/);
+  assert.match(text.stdout, /#20\s+Ticket 20\s+blocked\s+#3/);
   const status = await yard.cli('run', 'status', '--json');
   assert.deepEqual(runRows(JSON.parse(status.stdout)), runRows(result));
 });
@@ -167,15 +170,20 @@ test('GitHub label selection reads every page, skips pull requests and caches co
       [issues[0], { ...issues[0], number: 90, pull_request: { url: 'https://example.invalid/pull/90' } }],
       [issues[1], issues[0]],
     ],
+    // Asking GitHub for open issues only is an equally valid way to omit closed tickets.
+    'repos/team/tool/issues?state=open&labels=ready%20%26%20reviewed%2F%2B&per_page=100': [
+      [issues[0], { ...issues[0], number: 90, pull_request: { url: 'https://example.invalid/pull/90' } }],
+      [issues[0]],
+    ],
     'repos/team/tool/issues/7/dependencies/blocked_by?per_page=100': [[issues[1]]],
   });
   const result = await yard.cli('run', 'draft', '--label', label, '--json');
   assert.equal(result.code, 0, result.stdout);
   const snapshot: RunSnapshot = JSON.parse(result.stdout);
-  assert.deepEqual(snapshot.tickets.map(row => row.number), [8, 7]);
-  assert.deepEqual(snapshot.edges, [{ blocked: 7, blocker: 8, outsideClosed: false }]);
-  assert.deepEqual(snapshot.tickets[1]!.comments.map(comment => comment.body), ['First comment', 'Last comment']);
-  assert.equal(snapshot.tickets[0]!.body, '');
+  assert.deepEqual(snapshot.tickets.map(row => row.number), [7]);
+  assert.deepEqual(snapshot.edges, [{ blocked: 7, blocker: 8, outsideClosed: true }]);
+  assert.deepEqual(snapshot.tickets[0]!.comments.map(comment => comment.body), ['First comment', 'Last comment']);
+  assert.equal(snapshot.tickets[0]!.body, 'Blocked by: #999');
   assert.deepEqual(snapshot.run.source, { kind: 'label', label });
   await writeFile(gh, '#!/bin/sh\nexit 91\n');
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), snapshot);
@@ -196,7 +204,7 @@ test('GitHub spec selection reads every sub-issue page without including parent 
   assert.equal(result.code, 0, result.stdout);
   const snapshot: RunSnapshot = JSON.parse(result.stdout);
   assert.deepEqual(snapshot.run.source, { kind: 'spec', number: 40 });
-  assert.deepEqual(snapshot.tickets.map(row => row.number), [7, 8]);
+  assert.deepEqual(snapshot.tickets.map(row => row.number), [7]);
   assert.deepEqual(snapshot.tickets[0]!.comments.map(comment => comment.body), ['First comment', 'Last comment']);
 });
 
