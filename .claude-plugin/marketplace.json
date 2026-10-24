@@ -5,7 +5,7 @@
     {
       "name": "sawmill",
       "source": "./plugins/sawmill",
-      "description": "Draft a validated Sawmill run from a ticket selection."
+      "description": "Draft a validated Sawmill run from a ticket selection and learn from finished deliveries."
     }
   ]
 }
