@@ -219,6 +219,9 @@ test('separate CLI processes stop live workers in every role without killing the
 const fs = require('node:fs'); let body = '';
 process.stdin.on('data', x => body += x); process.stdin.on('end', () => {
   const args = process.argv.slice(2);
+  // Only the first-start state recheck may read the tracker.
+  const lookup = args.includes('GET') ? /^repos\\/team\\/tool\\/issues\\/(\\d+)$/.exec(args[1]) : null;
+  if (lookup) { console.log(JSON.stringify({number:Number(lookup[1]), state:'open'})); return; }
   if (!args.includes('--method') || args.includes('GET')) process.exit(71);
   fs.appendFileSync(process.env.STOP_FIXTURE + '/tracker.jsonl', JSON.stringify({args, body}) + '\\n');
   console.log('{}');

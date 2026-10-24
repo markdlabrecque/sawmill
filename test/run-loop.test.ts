@@ -86,7 +86,9 @@ test('parallel teams wait for the integration gate without spending infrastructu
   assert.ok((await y.status()).tickets.every(row => !row.team.infrastructureAttempts?.length));
   const requests = (await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.equal(requests.filter(args => args.includes('PUT')).length, 3);
-  assert.ok(requests.every(args => !args.some((arg: string) => /\/issues(?:\?|\/\d+$)/.test(arg) && args.includes('GET'))));
+  // The only issue reads are the state rechecks before each ticket's first start.
+  const reads = requests.filter(args => args.includes('GET') && args.some((arg: string) => /\/issues(?:\?|\/)/.test(arg)));
+  assert.deepEqual(reads.map(args => args[1]).sort(), [1, 2, 3].map(n => `repos/dispatch/tool/issues/${n}`));
 });
 
 test('infrastructure threshold exits visibly paused with queued work and a fresh run tries it', async t => {
