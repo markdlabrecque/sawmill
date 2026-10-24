@@ -890,3 +890,35 @@ test('native GitHub accepts skipped and neutral checks while retaining failed an
     assert.equal(result.requests.some(r => r.endpoint.endsWith('/merge')), other === 'success', result.stdout);
   }
 });
+
+test('CI that stays pending past its deadline stops the integration, keeps the work and resumes once CI passes', async t => {
+  const y = await fixture(t, () => new Promise(resolve => setTimeout(resolve, 20)));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait') + '\nphase_timeouts:\n  ci: 1s\n');
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'pending' });
+  const stalled = await y.cli('integrate', '9', '--json');
+  assert.equal(stalled.code, 1, stalled.stdout);
+  assert.match(stalled.stdout, /CI[^]*timed out after 1s/i);
+  assert.match(stalled.stdout, /still (running|pending)/i);
+  assert.match(stalled.stdout, /mill integrate 9/);
+  assert.deepEqual(y.tracker.methods, [], 'a stalled pipeline never merges');
+  assert.equal((await y.status()).tickets[0].completion, null);
+  assert.ok(y.git('branch', '--list', 'mill/9'));
+  assert.ok(y.git('ls-remote', 'origin', 'refs/heads/mill/9'), 'the pushed branch is retained');
+  // The integration lock is not left held: a later run, once CI is green, completes.
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'passed' });
+  const resumed = await y.cli('integrate', '9', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout).outcome, 'merged');
+});
+
+test('a pipeline that never appears is reported differently from one that is still running', async t => {
+  const y = await fixture(t, () => new Promise(resolve => setTimeout(resolve, 20)));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait') + '\nphase_timeouts:\n  ci: 1s\n');
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'none' });
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /timed out after 1s/i);
+  assert.match(result.stdout, /no pipeline (appeared|started|was found)/i);
+  assert.doesNotMatch(result.stdout, /still (running|pending)/i);
+  assert.deepEqual(y.tracker.methods, []);
+});
