@@ -6,7 +6,9 @@
 # .mill/config.yaml has test_harness: ddev, installs it as .mill/teardown.sh.
 #
 # Receives the worktree path and ticket number as $1 and $2, and as
-# MILL_WORKTREE, MILL_TICKET, MILL_PROJECT and MILL_MILLYARD.
+# MILL_WORKTREE, MILL_TICKET, MILL_PROJECT, MILL_MILLYARD, MILL_ENV and
+# MILL_STATE_DIR. Mill refuses to run it for an environment another ticket or
+# worktree owns, and removes MILL_STATE_DIR after the worktree is gone.
 
 set -euo pipefail
 
@@ -15,7 +17,7 @@ TICKET="${2:-${MILL_TICKET:?ticket number required}}"
 PROJECT="${MILL_PROJECT:?project name (name in .mill/config.yaml) required}"
 
 # Must match the name written by setup.sh.
-DDEV_NAME="${TICKET}-${PROJECT}"
+DDEV_NAME="${MILL_ENV:-${TICKET}-${PROJECT}}"
 
 # Delete by name so this works even if the worktree is already half gone.
 # A project DDEV does not know about is nothing to clean up.

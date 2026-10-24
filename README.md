@@ -323,7 +323,7 @@ Every `mill build` creates two scripts in the millyard, unless they already exis
 
 DDEV projects get working DDEV scripts. Every other project gets scripts that do nothing yet and explain themselves in comments. They are copied from `~/.config/sawmill/setup.sh` and `teardown.sh` (or `ddev.setup.sh` and `ddev.teardown.sh`), so edit those to change the default for every new millyard.
 
-Hooks run with Bash from the millyard's `.mill/` directory. They receive the worktree path and ticket number as `$1` and `$2`, plus `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, and `MILL_MILLYARD`. A missing hook is a no-op. A failed setup removes the worktree and puts the ticket in `logjam` with reason `environment`, so no role runs; a failed teardown keeps the worktree for recovery.
+Hooks run with Bash from the millyard's `.mill/` directory. They receive the worktree path and ticket number as `$1` and `$2`, plus `MILL_WORKTREE`, `MILL_TICKET`, `MILL_PROJECT`, `MILL_MILLYARD`, `MILL_ENV` and `MILL_STATE_DIR` (see below). A missing hook is a no-op. A failed setup removes the worktree and puts the ticket in `logjam` with reason `environment`, so no role runs; a failed teardown keeps the worktree for recovery.
 
 For a Node project, `.mill/setup.sh` might be:
 
@@ -336,11 +336,11 @@ npm ci
 
 ### Site preparation and fixtures
 
-Setup seeds a ticket's site once. An optional `.mill/prepare.sh` then brings it into agreement with the worktree's current commit: database updates, configuration, caches, built assets. It runs right after setup, and again whenever you run `mill worktree prepare <ticket>`, for example after a rebase. It must be safe to repeat and must never reseed.
+Setup seeds a ticket's site once. An optional `.mill/prepare.sh` then brings it into agreement with the worktree's current commit: database updates, configuration, caches, built assets. It runs right after setup, before each review, after a rebase moves the ticket's code during integration, and whenever you run `mill worktree prepare <ticket>`. It must be safe to repeat and must never reseed. `mill build` puts DDEV examples in `~/.config/sawmill/`: [`ddev.prepare.drupal.sh`](templates/ddev.prepare.drupal.sh) (`drush deploy`, assets) and [`ddev.prepare.wordpress.sh`](templates/ddev.prepare.wordpress.sh) (URL-safe search-replace, database upgrade, theme and plugin activation, caches, assets). Copy one to `.mill/prepare.sh` and adjust it.
 
-It gets the hook variables above plus `MILL_COMMIT`, `MILL_ENV` (`<ticket>-<project>`, the DDEV name) and `MILL_STATE_DIR` (`.mill/env/<ticket>`, a directory that belongs to this ticket alone). Its last line of output must be JSON such as `{"url": "https://155-islandhealth.ddev.site", "ready": true}`. `mill worktree prepare <ticket> --json` reports the commit, script hash, environment, URL and readiness. A failed or not-ready preparation exits 1 with its output; a drafted ticket goes to `logjam` with reason `environment`. Running it again resumes.
+It gets the hook variables above plus `MILL_COMMIT`. `MILL_ENV` is `<ticket>-<project>`, the DDEV name. `MILL_STATE_DIR` is `.mill/env/<ticket>`, which records the ticket and worktree that own it. Mill refuses to run setup, prepare or teardown against a state directory another ticket or worktree owns, and removes it with the worktree. The last line of output must be JSON such as `{"url": "https://155-islandhealth.ddev.site", "ready": true}`. `mill worktree prepare <ticket> --json` reports the commit, script hash, environment, URL and readiness; the team saves the same record as `team.site` on the ticket and hands it to the reviewer. A failed or not-ready preparation exits 1 with its output, and a drafted ticket goes to `logjam` with reason `environment`. Running it again, or `mill run answer <ticket>`, resumes.
 
-List required local inputs, such as a sanitized database dump, in `.mill/fixtures.json` as `[{"path": ".mill/db.sql", "sha256": "<hex>"}]`, with paths relative to the millyard. A missing or changed fixture stops worktree creation before any hook runs, naming the file and the expected hash.
+List required local inputs, such as a sanitized database dump, in `.mill/fixtures.json` as `[{"path": ".mill/db.sql", "sha256": "<hex>"}]`, with paths relative to the millyard. A missing or changed fixture stops worktree creation before any hook runs, naming the file and the expected hash. The DDEV setup hook imports `.mill/db.sql` when it exists, fails when `.mill/fixtures.json` lists it and it is missing, and otherwise notes that the site starts without one.
 
 ### Workspace preflight
 
