@@ -12,8 +12,8 @@ import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
 import { continueCommand } from './conflict-command.js';
 import { millyard } from './helpers.js';
 
-async function fixture(t: TestContext) {
-  const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.', labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
+async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
+  const ticket: Ticket = { number: 12, title: 'Return the answer', body,labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
   const requests: ChangeRequest[] = [];
   const tracker = {
     async getTicket() { return structuredClone(ticket); },
@@ -337,6 +337,69 @@ test('three review bounces persist the last failure and report retry-cap in text
   assert.equal(JSON.parse(again.stdout).error, 'Missing scenario 4.');
   const stopped = (await y.status()).tickets[0];
   assert.equal(stopped.bounces, 3); assert.equal(stopped.state, 'logjam'); assert.equal(stopped.reason, 'retry-cap');
+});
+
+test('a pass with an unmet acceptance item bounces every round to retry-cap, and a person waiver resumes it to merge', async t => {
+  const y = await fixture(t, 'Return 42 from answer.cjs.\n\n**Done when:**\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the answer in the pilot.\n');
+  let implementations = 0, revision = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') {
+      revision = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+      const waived = /AC2: waived by .*Pilot proof is out of scope/.test(request.handoff);
+      return { outcome: { outcome: 'pass', summary: 'Tests pass.', acceptance: [{ id: 'AC1', result: 'evidenced', evidence: { check: 'node answer.test.cjs', revision } },
+        waived ? { id: 'AC2', result: 'waived' } : { id: 'AC2', result: 'unresolved', reason: 'No pilot run yet.' }] } };
+    }
+    if (request.role === 'implementer' && ++implementations > 1) {
+      await writeFile(join(request.cwd, 'API.md'), `Repair ${implementations}\n`);
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', `Fix ${implementations}`);
+      return { outcome: { outcome: 'done', summary: 'Repaired.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const refusal = /Mill refused this pass[^]*AC2 \(A person confirms the answer in the pilot\.\): unresolved: No pilot run yet\./;
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.equal(value.outcome, 'retry-cap'); assert.equal(value.reason, 'retry-cap');
+  // The first and the last attempt get the same disposition for the same unmet item.
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+  assert.match(y.inputs[3]!.handoff, refusal);
+  assert.match(value.error, refusal);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'retry-cap'); assert.equal(row.bounces, 3);
+  assert.equal(row.team.outputs.reviewer.outcome.outcome, 'bounce');
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  assert.doesNotMatch(log, /\[review-pass\]/);
+  assert.match(log, /\[review-bounce\][^]*AC2[^]*No pilot run yet/);
+  assert.match(log, /\[retry-cap\] -> logjam \(retry-cap\)[^]*AC2[^]*No pilot run yet/);
+
+  const waived = await y.cli('run', 'waive', '12', 'AC2', '--reason', 'Pilot proof is out of scope for this repo.');
+  assert.equal(waived.code, 0, waived.stdout);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const before = y.inputs.length;
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout).outcome, 'passed');
+  const reviewer = y.inputs.slice(before).filter(r => r.role === 'reviewer');
+  assert.equal(reviewer.length, 1);
+  assert.match(reviewer[0]!.handoff, /AC2: waived by .*Pilot proof is out of scope for this repo\./);
+  const done = (await y.status()).tickets[0];
+  assert.equal(done.state, 'done'); assert.equal(done.completion, 'merged');
+  const report = y.ticket.comments.at(-1)!.body;
+  assert.match(report, /^\[sawmill:merged\]/);
+  assert.match(report, new RegExp(`Acceptance \\(checklist ${done.team.acceptance.snapshot}\\):\\nAC1: evidenced by node answer\\.test\\.cjs at ${revision}\\nAC2: waived by .+: Pilot proof is out of scope for this repo\\.`));
+});
+
+test('the merged report of a ticket without an acceptance checklist claims no acceptance evidence', async t => {
+  const y = await fixture(t);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.team.acceptance, undefined);
+  const report = y.ticket.comments.at(-1)!.body;
+  assert.match(report, /^\[sawmill:merged\]/);
+  assert.doesNotMatch(report, /Acceptance/);
 });
 
 test('a tracker outage cannot stop a step, since steps write nothing; only the merged comment is held', async t => {
