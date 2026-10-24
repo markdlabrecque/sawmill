@@ -319,7 +319,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const results = (run: Awaited<ReturnType<typeof tests>>) => run.code ? readResults(run.output) : undefined;
         const environment = (run: Awaited<ReturnType<typeof tests>>) => {
           const read = results(run);
-          if (!read?.ok) return read?.problem;
+          if (!read?.ok) return read && `${read.problem} This is an environment problem, not a failing test.`;
           return read.results.status !== 'ok' || !read.results.collected ? redEvidence(undefined, read.results).problem : undefined;
         };
         const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${config.timeout}.\n${run.output}`
