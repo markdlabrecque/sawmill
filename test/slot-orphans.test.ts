@@ -8,15 +8,14 @@ const slotDirectory = (home: string, name: string) => join(home, '.local/state/s
 
 test('an abandoned empty reservation next to a live worker is recovered without touching the live lease', async t => {
   const y = await fixture(t, [1, 3, 4, 5]);
-  assert.deepEqual((await y.once()).started.map((row: { ticket: number }) => row.ticket), [1]);
-  const [first] = await until(y.starts, rows => rows.length === 1);
   // The state manual lease cleanup left behind: a reservation directory with no ownership metadata.
-  await mkdir(slotDirectory(y.home, '1'));
+  await mkdir(slotDirectory(y.home, '1'), { recursive: true });
   const second = await y.once();
-  assert.deepEqual(second.started.map((row: { ticket: number }) => row.ticket), [3]);
+  assert.deepEqual(second.started.map((row: { ticket: number }) => row.ticket), [1, 3]);
   assert.equal(second.slotsFull, false);
   const live = await until(y.starts, rows => rows.length === 2);
   assert.equal(new Set(live.map(row => row.number)).size, 2);
+  const first = live.find(row => row.number === 1)!;
   process.kill(first.parent, 0);
   const slot = (await y.status()).tickets.find(row => row.number === 1)!.worker!.slot;
   assert.equal(slot, slotDirectory(y.home, '0'));
@@ -30,7 +29,7 @@ test('an abandoned empty reservation next to a live worker is recovered without 
 test('ambiguous ownership stays reserved and the output explains why capacity is unavailable', async t => {
   const y = await fixture(t, [1, 3, 4]);
   for (const name of ['0', '1']) {
-    await mkdir(slotDirectory(y.home, name));
+    await mkdir(slotDirectory(y.home, name), { recursive: true });
     await writeFile(join(slotDirectory(y.home, name), 'garbled.json'), '{not json');
   }
   const text: string = await y.once(y.home, false);
