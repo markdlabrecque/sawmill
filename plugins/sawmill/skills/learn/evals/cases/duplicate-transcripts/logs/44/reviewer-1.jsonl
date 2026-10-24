@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"f0e1d2c3-b4a5-4968-8776-655443322144","model":"claude-opus-5-5"}
+{"type":"assistant","session_id":"f0e1d2c3-b4a5-4968-8776-655443322144","message":{"role":"assistant","content":[{"type":"text","text":"`mill tickets reset 44` deletes the person's comment as well as Mill's: the filter matches any comment that starts with a Mill heading, and a person quoted one."}]}}
+{"type":"result","subtype":"success","session_id":"f0e1d2c3-b4a5-4968-8776-655443322144","result":"```mill-outcome\n{\"outcome\": \"bounce\", \"feedback\": \"Reset must keep a person's comment that quotes a Mill heading; match the agent marker, not the heading.\"}\n```"}

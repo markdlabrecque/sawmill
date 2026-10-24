@@ -1,0 +1,42 @@
+{
+  "case": "learning-loop",
+  "scope": "run 4b6d8f0a-2c4e-4a6b-8d0f-1a3c5e7b9d70, checking the open entries in learning.md",
+  "inputs": ["export.json", "learning.md", "tracker.json"],
+  "coverage": { "attemptsInScope": 4, "attemptsWithRecords": 4, "missing": [], "rates": "allowed" },
+  "observations": [],
+  "safeguards": {
+    "earnedCost": ["The #89 workspace preflight: no missing-dependency stop in 4 attempts at mill 602b9ce, against 3 of 8 before it."],
+    "avoidableWork": [],
+    "unproved": ["How often the preflight actually repaired a worktree: the records do not show repairs, and 4 attempts is a small sample."]
+  },
+  "recommendation": {
+    "action": "none",
+    "ticket": null,
+    "change": "No new change; settle the two ledger entries.",
+    "measurement": "Environment stops for missing dependencies per attempt over the next batch, to keep the confirmed entry honest.",
+    "baseline": "0 of 4 attempts in this run; 3 of 8 before #89.",
+    "confidence": "medium"
+  },
+  "ledger": {
+    "file": "learning.md",
+    "entries": [
+      {
+        "line": 3,
+        "status": "confirmed",
+        "reason": "0 of 4 attempts at 602b9ce (after 6c92aed) stopped for missing dependencies, against a baseline of 3 of 8.",
+        "evidence": ["attempt:07a2c4e6-8b0d-4f13-a5c7-9e1b3d5f7a70", "attempt:6d08c2e4-4b6d-4f79-cb2d-f5b7d9e1a373", "tracker.json:6", "commit:6c92aed"]
+      },
+      {
+        "line": 15,
+        "status": "retired",
+        "reason": "A stopgap superseded by the preflight in #89; the operator no longer needs to run npm ci by hand.",
+        "evidence": ["tracker.json:6", "commit:6c92aed"]
+      }
+    ]
+  },
+  "mustNot": [
+    "Leave either entry open once its batch has been measured.",
+    "Rewrite or delete an entry instead of changing its status with a reason.",
+    "Add a new permanent rule to the ledger without an accepted recommendation."
+  ]
+}

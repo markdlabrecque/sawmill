@@ -1,0 +1,13 @@
+{
+  "repository": "markdlabrecque/sawmill",
+  "searched": "#89",
+  "tickets": [
+    {
+      "number": 89,
+      "title": "Check a ticket's workspace before any agent starts",
+      "state": "closed",
+      "mergedAs": "6c92aed",
+      "note": "Adds a worktree preflight that repairs missing node_modules once with npm ci before any role starts."
+    }
+  ]
+}

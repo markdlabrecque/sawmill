@@ -1,0 +1,38 @@
+{
+  "case": "duplicate-transcripts",
+  "scope": "ticket #44",
+  "inputs": ["export.json", "run.json", "logs/44/reviewer-1.jsonl", "sessions/f0e1d2c3-b4a5-4968-8776-655443322144.jsonl"],
+  "coverage": { "attemptsInScope": 1, "attemptsWithRecords": 1, "missing": [], "rates": "refused" },
+  "observations": [
+    {
+      "class": "defect-caught",
+      "basis": "observed",
+      "summary": "Review caught reset deleting a person's comment. The role log, the native session it names, the session's compaction summary and a subagent check all describe this one bounce.",
+      "evidence": [
+        "attempt:d4e7a910-6c25-4b83-a7f0-9e1d2c3b4a44",
+        "logs/44/reviewer-1.jsonl:3",
+        "run.json:8",
+        "sessions/f0e1d2c3-b4a5-4968-8776-655443322144.jsonl:2"
+      ],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": ["Review: one bounce caught a fault that would have deleted a person's comment."],
+    "avoidableWork": [],
+    "unproved": ["Escaped defects and operator minutes for #44 are unknown."]
+  },
+  "recommendation": {
+    "action": "none",
+    "ticket": null,
+    "change": "No change; the record and the transcripts agree on one review catch.",
+    "measurement": "Review bounces per attempt in the next batch, counted from the records, not from transcript lines.",
+    "baseline": "1 review bounce in 1 attempt in this scope, matching findings.reviewBounces.",
+    "confidence": "medium"
+  },
+  "mustNot": [
+    "Count the native session, its compaction summary or the subagent message as further review catches.",
+    "Report more review bounces than the record's findings.reviewBounces.",
+    "Paste either transcript into the report."
+  ]
+}

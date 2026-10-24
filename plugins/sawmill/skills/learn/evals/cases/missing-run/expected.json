@@ -1,0 +1,43 @@
+{
+  "case": "missing-run",
+  "scope": "run 9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c50",
+  "inputs": ["export.json", "run.json"],
+  "coverage": {
+    "attemptsInScope": 3,
+    "attemptsWithRecords": 2,
+    "missing": [
+      { "what": "#51 was delivered in this run but has no attempt record: forgotten or older than the records.", "evidence": "run.json:5" }
+    ],
+    "rates": "refused"
+  },
+  "observations": [
+    {
+      "class": "environment-friction",
+      "basis": "observed",
+      "summary": "#52 needed one infrastructure retry and still merged.",
+      "evidence": ["attempt:5f7a9c1e-3d5b-4e72-9f04-6a8c0e2b4d52"],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": [],
+    "avoidableWork": ["One infrastructure retry on #52; its operator cost is unknown."],
+    "unproved": [
+      "Anything about #51: it has no record, so its bounces, retries and effort are unknown.",
+      "Operator effort for the run: humanMinutes is unknown for both recorded attempts."
+    ]
+  },
+  "recommendation": {
+    "action": "propose",
+    "ticket": null,
+    "change": "In the next batch, record active intervention with `mill record note <n> --minutes <m>` after each operator action and keep records until the retrospective, so effort and coverage can be compared.",
+    "measurement": "Attempts in the next batch with a record and with known humanMinutes.",
+    "baseline": "2 of 3 delivered tickets have a record; 0 of 2 records have known minutes.",
+    "confidence": "medium"
+  },
+  "mustNot": [
+    "State a per-ticket or per-run rate as if three tickets were measured.",
+    "Treat #51 as a clean delivery with zero findings.",
+    "Report operator minutes as zero."
+  ]
+}

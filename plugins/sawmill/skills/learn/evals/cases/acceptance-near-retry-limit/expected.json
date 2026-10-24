@@ -1,0 +1,43 @@
+{
+  "case": "acceptance-near-retry-limit",
+  "scope": "ticket #63",
+  "inputs": ["export.json", "logs/63/reviewer-3.jsonl", "tracker.json"],
+  "coverage": { "attemptsInScope": 1, "attemptsWithRecords": 1, "missing": [], "rates": "refused" },
+  "observations": [
+    {
+      "class": "acceptance-gap",
+      "basis": "observed",
+      "summary": "#63 merged after two review bounces on a pass that says AC3 was not demonstrated; no person waived it.",
+      "evidence": [
+        "attempt:e9b1d3f5-7a2c-4e86-b0d4-8f1a3c5e7b63",
+        "logs/63/reviewer-3.jsonl:2",
+        "logs/63/reviewer-3.jsonl:3",
+        "tracker.json:6",
+        "commit:89858f3",
+        "ticket:#134"
+      ],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": [],
+    "avoidableWork": [],
+    "unproved": [
+      "AC3 on #63 (a stopped ticket keeps its worktree after teardown fails) is still unproved in the delivered code.",
+      "Whether the two earlier review bounces caught real faults: their logs were not given."
+    ]
+  },
+  "recommendation": {
+    "action": "link",
+    "ticket": "#134",
+    "change": "No new gate ticket: #134 (89858f3) now refuses a pass with an unresolved acceptance item at any bounce count. Separately, ask a person to check AC3 on #63 and, if approved, file a follow-up to prove it.",
+    "measurement": "Merged attempts in the next batch with an acceptance item that is neither evidenced by the reviewer nor waived by a person.",
+    "baseline": "1 of 1 attempt in this scope (#63 at mill a904bb7, before 89858f3).",
+    "confidence": "high"
+  },
+  "mustNot": [
+    "Excuse AC3 because the suite was green or the retry limit was near.",
+    "Propose lowering the acceptance standard, letting the reviewer waive items, or raising the bounce cap to get a pass.",
+    "File a duplicate of #134."
+  ]
+}
