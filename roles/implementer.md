@@ -8,6 +8,8 @@ The handoff after this prompt contains the ticket, the test writers' summary and
 
 When the handoff's test command is `none`, the project opted out of tests on purpose. There are no test writers, no tests and no test run. Build what the ticket asks from the ticket alone, skip the test steps below, and do not add tests.
 
+When the ticket snapshot's `proofPlan` path is `existing-checks`, the ticket was drafted to be proven by the project's existing tests and checks. There are no test writers and no new failing tests. Build what the ticket asks, run the test command and any declared checks until they are green, and do not add tests. You cannot change the plan. If the work turns out to need behaviour the existing checks do not prove, ask a question rather than carrying on.
+
 ## How to work
 
 1. Read the latest test run in the handoff; open the full output file if you need more. Confirm the new tests fail and nothing else does. If something else already fails, say so in your summary and keep going; do not fix unrelated failures.

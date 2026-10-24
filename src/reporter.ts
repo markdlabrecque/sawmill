@@ -41,6 +41,8 @@ export async function reportComment(cwd: string, report: StageReport, ticket: Ru
     const added = (await git('diff', '--name-only', '--diff-filter=A', base, head, '--')).split('\n')
       .filter(path => /(^|\/)(__tests__|tests?|specs?)(\/|\.)|\.(test|spec)\./i.test(path));
     parts.push(`Merge commit: ${head}`, `Changes:\n${log}`, `Diffstat:\n${diffstat}`, `Added tests:\n${added.join('\n') || '(none)'}`);
+    if (ticket.proofPlan) parts.push(`Proof plan: ${ticket.proofPlan.path}\n${ticket.proofPlan.reason}`);
+    if (ticket.proofPlanRevisions?.length) parts.push(`Proof plan revisions:\n${ticket.proofPlanRevisions.map(({ from, to, reason }) => `${from} -> ${to}: ${reason}`).join('\n')}`);
     // Runs from before the checklist have none; nothing is claimed for them.
     const acceptance = ticket.team?.acceptance;
     const review = ticket.team?.outputs?.reviewer?.outcome;

@@ -387,6 +387,19 @@ required_checks:
 
 `mill integrate` runs each declared command with `bash -c` in the ticket worktree on the rebased head, after the test command and before push, in the order clean, build, lint, typecheck. Each must exit 0 within `timeout` (default `30m`) and leave HEAD and the worktree unchanged. A non-zero exit, including a missing command, reports `checks-failed` with the output and sends the work back to the implementer. A timeout or a changed worktree blocks delivery as `infrastructure`. Required checks run even with `tests: none`, and focused runs never stand in for them. A command repeated under two names runs once and is reported as the same evidence. Mill deletes no build output itself, so use `clean` to remove generated files so stale output cannot pass a build. The PR body and merge report list the checks that passed and the head they ran on. Existing configs without `required_checks` behave as before.
 
+### Proof plans
+
+Each ticket is proven test-first unless its body declares otherwise. A copy, documentation or refactor ticket that the existing tests and checks already cover can say so in a `## Proof plan` section:
+
+```markdown
+## Proof plan
+
+Path: existing-checks
+Reason: Copy-only change; the existing checks cover rendering.
+```
+
+`mill run draft` refuses a path other than `test-first` or `existing-checks`, or a plan with no reason. It stores the plan with the ticket, and `mill run status` shows a declared plan before work starts. An `existing-checks` ticket starts at the implementer, with no test writers. Review, the final test run and required checks still run and still block. The merge report names the plan and its reason. Roles cannot change a drafted plan. To change one, edit the ticket and draft again, with a reason that names the coverage that remains or the gap. When the new draft changes a ticket's path from the run it replaces, the ticket keeps a revision with the earlier path, the new path and the new reason. `mill run status` and the merge report show every revision.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.
