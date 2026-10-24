@@ -8,7 +8,7 @@ Working around a live run, its lifecycle and the shared scheduler: `docs/operati
 
 ### Issue tracker
 
-Issues live in GitHub Issues for `markdlabrecque/sawmill`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for `markdlabrecque/sawmill`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
