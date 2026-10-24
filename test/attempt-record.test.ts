@@ -169,7 +169,7 @@ test('a routine reset keeps the earlier attempt, and the next attempt points bac
   y.setScript(y.normal);
   assert.equal((await y.cli('team', 'run', '12', '--json')).code, 0);
   // A restart of the whole run, then a redraft over it, must not lose or duplicate history either.
-  assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
+  assert.equal((await y.cli('run', 'draft', '12', '--replace', '--include-closed')).code, 0);
   const history = await y.exported();
   assert.equal(history.totals.attempts, 2);
   assert.equal(history.attempts.length, 2);
