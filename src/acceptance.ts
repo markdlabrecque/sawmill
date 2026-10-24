@@ -46,9 +46,10 @@ export function waiverFor(acceptance: Acceptance, id: string): AcceptanceWaiver 
   return acceptance.waivers?.find(waiver => waiver.item === id && waiver.snapshot === acceptance.snapshot);
 }
 
-/** The checklist as the reviewer and implementer see it. Empty when the ticket has none. */
+/** The exact saved checklist as the reviewer and implementer see it, including an empty snapshot. */
 export function acceptanceHandoff(acceptance: Acceptance): string {
-  if (!acceptance.items.length) return '';
+  if (!acceptance.items.length) return `\n\nAcceptance checklist (snapshot ${acceptance.snapshot}): empty; no parsed acceptance items.\n` +
+    'Do not invent AC IDs or acceptance items. Omit `acceptance` or report an empty array; review the ticket requirements without numbering them.';
   const waived = acceptance.items.flatMap(item => {
     const waiver = waiverFor(acceptance, item.id);
     return waiver ? [`${item.id}: waived by ${waiver.by} at ${waiver.time}: ${waiver.reason}`] : [];
