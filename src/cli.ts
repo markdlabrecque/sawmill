@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { createWorktree, prepareWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
+import { exportRecords, forgetRecords, noteAttempt, reportRecords } from './attempt-record.js';
 import { waiveItem } from './waive.js';
 import { notify } from './notify.js';
 import { build, moveMillyard } from './build.js';
@@ -165,6 +166,43 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       // Status and draft output agree: the run as stored plus whether a scheduler is serving this home.
       const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home), unresolvedReservations: unresolvedSlots(home) });
+      if (positional[0] === 'record') {
+        const name = `record ${positional[1]}`;
+        const words = positional.slice(2);
+        const refuse = () => { const message = usage(name); emit({ status: 'usage-error', message }, message); return 2; };
+        const ticket = (word: string | undefined) => word !== undefined && /^[1-9]\d*$/.test(word) && Number.isSafeInteger(Number(word)) ? Number(word) : undefined;
+        if (positional[1] === 'export') {
+          if (words.length) return refuse();
+          // The export is JSON with or without --json.
+          stdout(JSON.stringify(exportRecords(cwd)) + '\n');
+          return 0;
+        }
+        if (positional[1] === 'report') {
+          if (words.length) return refuse();
+          const report = reportRecords(cwd);
+          emit(report.data, report.text);
+          return 0;
+        }
+        if (positional[1] === 'note') {
+          const number = ticket(words[0]);
+          const minutes = words[1] === '--minutes' && /^\d+$/.test(words[2] ?? '') && Number.isSafeInteger(Number(words[2])) ? Number(words[2]) : undefined;
+          const defect = words[1] === '--defect' && words[2]?.trim() ? words[2] : undefined;
+          if (words.length !== 3 || number === undefined || (minutes === undefined && defect === undefined)) return refuse();
+          const attempt = noteAttempt(cwd, number, { minutes, defect });
+          emit(attempt, `Noted on attempt ${attempt.id} of ${ref(number)}: human minutes ${attempt.humanMinutes}; escaped defects ${attempt.escapedDefects === 'unknown' ? 'unknown' : attempt.escapedDefects.join(', ')}.`);
+          return 0;
+        }
+        if (positional[1] === 'forget') {
+          const number = words[0] === '--ticket' ? ticket(words[1]) : undefined;
+          const before = words[0] === '--before' && /^\d{4}-\d\d-\d\d$/.test(words[1] ?? '') && !Number.isNaN(Date.parse(words[1]!)) ? words[1]! : undefined;
+          const all = words.length === 1 && words[0] === '--all';
+          if (!all && (words.length !== 2 || (number === undefined && before === undefined))) return refuse();
+          const removed = forgetRecords(cwd, all ? { all } : number !== undefined ? { ticket: number } : { before: before! });
+          const scope = all ? 'all tickets' : number !== undefined ? ref(number) : `attempts that ended before ${before}`;
+          emit({ status: 'ok', removed }, `Removed ${removed} attempt record${removed === 1 ? '' : 's'} for ${scope}.`);
+          return 0;
+        }
+      }
       if (positional[0] === 'team' && positional[1] === 'tail') {
         if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);
         await tailTicket(cwd, Number(positional[2]), { json, follow: positional[3] !== '--no-follow', stdout, signal: options.signal });

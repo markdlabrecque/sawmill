@@ -203,6 +203,11 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill worktree remove 12` | Run teardown and remove a clean worktree, retaining unmerged branches. |
 | `mill worktree gc` | Clean up worktrees for locally done tickets. |
 | `mill board` | Serve a live page of every run on this machine, with run controls. |
+| `mill record export` | Print every retained delivery attempt as JSON. See [Attempt records](#attempt-records). |
+| `mill record report` | Compare the retained attempts in a short report. |
+| `mill record note 12 --minutes 25` | Add the minutes a person actively spent on the ticket's latest attempt. |
+| `mill record note 12 --defect "#301"` | Link a defect found after delivery to the ticket's latest attempt. |
+| `mill record forget --ticket 12` | Delete a ticket's attempt records; `--before <YYYY-MM-DD>` or `--all` widen it. |
 
 Add `--json` for machine-readable output; tail streams JSON events. Exit codes are `0` for success, `1` for an operational failure or incomplete run, and `2` for usage or configuration errors.
 
@@ -296,6 +301,38 @@ To mark a ticket complete by hand and close its tracker issue without merging:
 ```sh
 mill run close 12
 ```
+
+### Attempt records
+
+Mill keeps a compact record of every delivery attempt in `.mill/records.sqlite`, beside the run. Use it to see how much rescue work tickets needed and which safeguards earned their keep. A record is written as the ticket's state changes. Neither `mill run reset` nor a redraft touches it: reset closes the ticket's attempt as it was, and the ticket's next start opens a new attempt that points back to it. Answering a stuck ticket continues the same attempt.
+
+`mill record export` prints `{ "schema": 1, "attempts": [...], "totals": {...} }`, oldest attempt first. It only reads. Each attempt has:
+
+- `id`, `project`, `run`, `ticket`, `previous` (the earlier attempt at the ticket, or `null`), `started` and `ended`.
+- `heads`: `source` (the ticket head last tested or reviewed), `base` (the integration commit under it), `delivered` (the head that was merged) and `mergeCommit`.
+- `completion.kind`: `merged`, `manual` (closed by hand), `stopped` (in logjam, with the `reason`) or `in-progress`.
+- `policy`: the proof plan, the test command, CI, declared and required checks, a hash of `.mill/config.yaml`, and the acceptance items with any waived.
+- `environment`: the Node version, platform, Mill build, hashes of the hooks, `.mill/fixtures.json` and dependency lock files, the prepared site, and each role's model and effort.
+- `results`: the tested head, red scenarios, required-check exit codes, CI state, browser cases and the approved head.
+- `findings`: these counts are kept apart because they are different kinds of work: `reviewBounces` (defects the reviewer caught), `testCorrections` (wrong tests the reviewer sent back to the test writers), `flakes` (failed final runs that passed on the rerun), `environmentFailures` and `infrastructureRetries`, `testsNotRed` send-backs, `repairBounces` from failed tests, checks, CI or conflicts, and `humanActions` (answers, closes, stops, test approvals and waivers).
+- `cost`, `humanMinutes`, `escapedDefects` and `phaseDurations` read `"unknown"` until something supplies them, never `0`. Mill does not measure cost or phase durations yet, and it never treats time spent waiting as a person's effort. Note those yourself:
+
+```sh
+mill record note 12 --minutes 25
+mill record note 12 --defect "#301"
+```
+
+A note goes on the ticket's latest attempt. Minutes add up across notes, and each defect is kept once. `mill record report` sums the attempts by completion and finding, and says which figures are unknown and for how many attempts.
+
+A record holds no transcript, question, feedback or log. Its few text fields are stripped of anything that looks like a token or password and cut to 200 characters. `.mill/logs` and the run file are kept and deleted as before. Records stay until you delete them:
+
+```sh
+mill record forget --ticket 12
+mill record forget --before 2026-01-01
+mill record forget --all
+```
+
+`--before` deletes the attempts that ended, or started if they never ended, before that date. `forget` overwrites the deleted rows and compacts the file, so the data is gone rather than hidden. A later attempt whose earlier one was deleted keeps its own record, and its `previous` becomes `null`.
 
 ## Configuration and hooks
 
