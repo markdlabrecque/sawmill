@@ -14,6 +14,7 @@ import { claimSlot, processStart, releaseSlot, transferSlot, unresolvedSlots, ty
 import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { withRunLock } from './run-lock.js';
+import { checkFirstStart } from './first-start.js';
 
 export interface DispatchResult {
   status: 'ok' | 'partial';
@@ -48,6 +49,14 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
     if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
+    // Before any slot or claim: a closed ticket is skipped, a failed lookup leaves it queued.
+    const first = await checkFirstStart(cwd, ticket, writer);
+    if (first.status === 'skipped') continue;
+    if (first.status === 'lookup-failed') {
+      result.status = 'partial';
+      result.failures.push({ ticket, error: first.error });
+      continue;
+    }
     const token = randomUUID(), started = new Date().toISOString();
     const lease = claimSlot(home, machine.concurrency, { token, processToken: token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, launcherStart: processStart(process.pid), pid: null, created: started });
     if (!lease) { result.slotsFull = true; result.unresolved = unresolvedSlots(home); break; }

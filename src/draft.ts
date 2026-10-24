@@ -7,7 +7,8 @@ import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
-export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false) {
+/** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch. */
+export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false) {
   await checkMillyard(cwd, project.integration);
   checkDraftable(cwd, replace);
   let tickets: Ticket[];
@@ -20,6 +21,15 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     tickets = await tracker.listChildren(selection.number);
   }
   tickets = [...new Map(tickets.map(ticket => [ticket.number, ticket])).values()];
+  const closed = includeClosed ? [] : tickets.filter(ticket => ticket.state === 'closed');
+  const refs = (rows: Ticket[]) => rows.map(ticket => `#${ticket.number}`).join(', ');
+  if (selection.kind === 'numbers' && closed.length) {
+    throw new CliError(`${refs(closed)} ${closed.length === 1 ? 'is' : 'are'} closed on the tracker. Leave ${closed.length === 1 ? 'it' : 'them'} out, or pass --include-closed to draft ${closed.length === 1 ? 'it' : 'them'} anyway; the tracker issue stays closed.`);
+  }
+  tickets = tickets.filter(ticket => !closed.includes(ticket));
+  if (!tickets.length && closed.length) {
+    throw new CliError(`Every selected ticket is closed: skipped ${refs(closed)}. Nothing was drafted and the current run is unchanged; pass --include-closed to draft closed tickets anyway.`);
+  }
   if (!tickets.length) {
     const message = selection.kind === 'label' ? `No tickets found with label ${JSON.stringify(selection.label)}.`
       : selection.kind === 'spec' ? `No direct children found for spec #${selection.number}.` : 'No tickets selected.';
@@ -37,7 +47,8 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   for (const ticket of tickets) requireBrowserCapability(project, ticket);
   const edges: RunEdge[] = tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false })));
   const selected = new Set(numbers);
-  const outside = new Map<number, Ticket>();
+  // A skipped closed ticket is an already satisfied blocker, not runnable work.
+  const outside = new Map<number, Ticket>(closed.map(ticket => [ticket.number, ticket]));
   for (const edge of edges) {
     if (selected.has(edge.blocker)) continue;
     const blocker = outside.get(edge.blocker) ?? await tracker.getTicket(edge.blocker);
@@ -52,7 +63,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
     ordered.push(...remaining.splice(next, 1));
   }
-  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign);
+  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) });
   await registerMillyard(home, cwd);
   return readRun(cwd);
 }

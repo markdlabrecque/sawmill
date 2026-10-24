@@ -6,7 +6,7 @@ import { GitHubWriter } from './github-writes.js';
 import { MergeRefusedError } from './tracker.js';
 import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipeline } from './tracker.js';
 
-/** PR discovery is separate from ticket reads; runs never refresh issue data. */
+/** PR discovery is separate from ticket reads; runs never refresh issue data beyond the first-start state check. */
 export class GitHubIntegration extends GitHubWriter implements IntegrationTracker {
   constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd()) { super(trackerConfig, directory); }
 

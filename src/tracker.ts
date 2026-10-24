@@ -23,7 +23,7 @@ export interface Ticket {
 
 export interface TicketReader {
   getTicket(number: number): Promise<Ticket>;
-  /** Return all matching tickets, including closed tickets, with complete threads. */
+  /** Return all matching tickets, including closed tickets, with complete threads; draft skips the closed ones. */
   listByLabel?(label: string): Promise<Ticket[]>;
   /** Return all direct children, with complete threads; do not include the parent. */
   listChildren?(number: number): Promise<Ticket[]>;
@@ -76,6 +76,8 @@ export interface TicketWriter {
   listComments?(number: number): Promise<IssueComment[]>;
   /** Idempotent: a comment that is already gone counts as deleted. */
   deleteComment?(id: number | string, number: number): Promise<void>;
+  /** The ticket's current open/closed state; read once, just before its first start. */
+  ticketState?(number: number): Promise<Ticket['state']>;
 }
 
 /** A definite server refusal, distinct from transport/authentication failures. */
