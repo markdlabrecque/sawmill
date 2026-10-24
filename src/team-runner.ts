@@ -569,8 +569,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
         if (conflictRepair) {
-          // Rebase rewrites SHAs. Require each protected patch, in order, before the separate
-          // fix commit, then compare the tests against the rebased copies, not the old ones.
+          // Rebase rewrites SHAs. Require each protected patch, in order, then compare
+          // the tests against the rebased copies, not the old ones.
           await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
           await remapRebasedWriters(path, progress, project.integration);
           progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
@@ -686,7 +686,8 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   if (!writers.length) throw rewritten();
   // An approved baseline that is not itself a writer commit comes after them in history.
   const originals = progress.testCommit && !writers.includes(progress.testCommit) ? [...writers, progress.testCommit] : writers;
-  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD^', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
+  // A replayed, reviewer-approved test correction can itself be HEAD.
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
   const copies = new Map<string, string>();
   let next = 0;
   for (const original of originals) {
