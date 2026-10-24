@@ -91,7 +91,10 @@ and [pipeline API](https://docs.gitlab.com/api/pipelines/), checked October 22, 
 
 A superseding successful MR rerun can pass without a new commit. Merged-results
 pipelines on synthetic SHAs do not prove the tested source SHA and remain
-unsupported by this exact-source-head gate.
+unsupported by this exact-source-head gate. `mill run draft` reads the project's
+`merge_pipelines_enabled` and `merge_trains_enabled` settings and refuses either
+one before any work starts. When the token cannot see them (they need Maintainer
+access, or the tier lacks them), the draft says so as not verified.
 
 A merge whose response is lost is reconciled before anything is retried: Sawmill
 saves the merge operation (MR, tested head and target) before the call, then reads

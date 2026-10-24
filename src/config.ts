@@ -24,6 +24,8 @@ export interface ProjectConfig {
   /** Commands Mill runs on the final head before push, even with tests: none. `checks` stay advisory. */
   required_checks?: RequiredChecks;
   ci: 'wait' | 'none';
+  /** Hosted check names that must each report and pass on the exact head, and names whose failure never blocks. GitHub only. */
+  ci_checks?: { required: string[]; advisory?: string[] };
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
   test_url?: string;
@@ -50,7 +52,7 @@ export interface ConfigIssue {
 }
 
 interface Rule {
-  type: 'string' | 'number' | 'object';
+  type: 'string' | 'number' | 'object' | 'list';
   fields?: Record<string, Rule>;
   optional?: boolean;
   default?: unknown;
@@ -66,6 +68,7 @@ const object = (fields: Record<string, Rule>): Rule => ({ type: 'object', fields
 const duration: Rule = { type: 'string', check: value => /^[1-9]\d*(s|m|h)$/.test(String(value)), hint: 'expected a positive duration with s, m, or h suffix' };
 const integer = (value: number, minimum: number): Rule => ({ type: 'number', default: value, check: value => Number.isSafeInteger(value) && Number(value) >= minimum, hint: `expected an integer >= ${minimum}` });
 const literal: Rule = { type: 'string', check: value => simpleCommand.test(String(value)), hint: 'expected one command with literal arguments, no shell syntax' };
+const names: Rule = { type: 'list', hint: 'expected a non-empty list of distinct check names' };
 const role = object({ model: string, effort: choice('low', 'medium', 'high', 'max') });
 const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } });
 const projectSchema = object({
@@ -90,6 +93,7 @@ const projectSchema = object({
     timeout: { ...duration, default: '30m' },
   }), optional: true },
   ci: choice('wait', 'none'),
+  ci_checks: { ...object({ required: names, advisory: { ...names, optional: true } }), optional: true },
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
   test_harness: { ...choice('ddev', 'docker', 'none'), hint: 'set test_harness: none to opt out of user testing' },
   test_url: { ...string, optional: true, check: value => {
@@ -127,6 +131,11 @@ function validate(value: unknown, rule: Rule, source: string, key: string, issue
       if (!Object.hasOwn(rule.fields ?? {}, field)) issues.push({ source, key: key ? `${key}.${field}` : field, problem: 'unknown key', message: 'unknown key' });
     }
     return result;
+  }
+  if (rule.type === 'list') {
+    if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) { issue('bad type', 'expected a list of strings'); return undefined; }
+    if (!value.length || value.some(item => !item.trim()) || new Set(value).size !== value.length) issue('bad value');
+    return value;
   }
   if (typeof value !== rule.type) { issue('bad type', `expected ${rule.type}`); return undefined; }
   const scalar = value as string | number;
@@ -174,6 +183,13 @@ export async function loadConfig(cwd: string, home: string): Promise<Configurati
   const machine = await readConfig(join(home, '.config/sawmill/config.yaml'), machineSchema, issues) as MachineConfig | undefined;
   if (project?.test_harness === 'docker' && project.test_url === undefined && !issues.some(issue => issue.source === projectPath && issue.key === 'test_url')) {
     issues.push({ source: projectPath, key: 'test_url', problem: 'missing', message: 'missing; required when test_harness is docker' });
+  }
+  const ciChecks = project?.ci_checks;
+  if (ciChecks?.required && !issues.some(issue => issue.source === projectPath && issue.key.startsWith('ci_checks'))) {
+    const problem = project!.tracker?.backend === 'gitlab' ? 'GitLab gates merges with its own pipeline rules; remove ci_checks'
+      : project!.ci !== 'wait' ? 'only applies with ci: wait'
+      : ciChecks.advisory?.some(name => ciChecks.required.includes(name)) ? 'a check cannot be both required and advisory' : '';
+    if (problem) issues.push({ source: projectPath, key: 'ci_checks', problem: 'bad value', message: `bad value; ${problem}` });
   }
   if (issues.length || !project || !machine) return { valid: false, issues };
   return { valid: true, project, machine, issues };

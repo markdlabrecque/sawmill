@@ -7,7 +7,7 @@ import type { Phase, Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
 import { defaultProofPlan, proofPlan, type ProofPlan, type ProofPlanRevision } from './proof-plan.js';
-import type { AssignResult, Ticket, TicketComment, Pipeline } from './tracker.js';
+import type { AssignResult, CheckPolicy, Ticket, TicketComment, Pipeline } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
 export type TicketState = 'queued' | 'blocked' | 'working' | 'done' | 'logjam';
@@ -193,7 +193,9 @@ export interface RunSnapshot {
     /** Drafted with --include-closed: dispatch starts a closed ticket instead of skipping it. */
     includeClosed?: true;
     /** Closed tickets the selector matched and the draft left out. */
-    skippedClosed?: number[] };
+    skippedClosed?: number[];
+    /** The hosted checks a merge waits for, read at draft. Absent for ci: none and for runs drafted without a host read. */
+    checkPolicy?: CheckPolicy };
   tickets: RunTicket[];
   edges: RunEdge[];
   pendingWrites: PendingWrite[];
@@ -231,7 +233,7 @@ export function checkDraftable(cwd: string, replace: boolean): void {
 
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
-  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}): void {
+  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy): void {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -249,7 +251,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
       CREATE TABLE IF NOT EXISTS pending_writes (id INTEGER PRIMARY KEY, ticket INTEGER NOT NULL REFERENCES tickets(number), kind TEXT NOT NULL, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, ticket INTEGER REFERENCES tickets(number), time TEXT NOT NULL, event TEXT NOT NULL);
       `);
-    for (const column of ['include_closed', 'skipped_closed']) {
+    for (const column of ['include_closed', 'skipped_closed', 'check_policy']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
     for (const column of ['proof_plan', 'proof_plan_revisions']) {
@@ -274,8 +276,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     };
     db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
-      closed.includeClosed ? 'yes' : null, closed.skippedClosed?.length ? JSON.stringify(closed.skippedClosed) : null);
+    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed, check_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
+      closed.includeClosed ? 'yes' : null, closed.skippedClosed?.length ? JSON.stringify(closed.skippedClosed) : null, checkPolicy ? JSON.stringify(checkPolicy) : null);
     const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated,proof_plan,proof_plan_revisions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => {
       const plan = proofPlan(ticket.body);
@@ -358,7 +360,8 @@ export function readRunFile(file: string): RunSnapshot {
     return { status: 'ok', run: { id: String(run.id), created: String(run.created), baseBranch: String(run.base_branch), source: JSON.parse(String(run.source)), tracker: JSON.parse(String(run.tracker)), ...(loop ? { loop } : {}),
       ...(run.activated ? { activated: String(run.activated) } : {}), ...(run.stopped ? { stopped: String(run.stopped) } : {}),
       ...(run.stopped_tickets ? { stoppedTickets: JSON.parse(String(run.stopped_tickets)) as number[] } : {}), lifecycle,
-      ...(run.include_closed ? { includeClosed: true as const } : {}), ...(run.skipped_closed ? { skippedClosed: JSON.parse(String(run.skipped_closed)) as number[] } : {}) }, tickets, edges, pendingWrites };
+      ...(run.include_closed ? { includeClosed: true as const } : {}), ...(run.skipped_closed ? { skippedClosed: JSON.parse(String(run.skipped_closed)) as number[] } : {}),
+      ...(run.check_policy ? { checkPolicy: JSON.parse(String(run.check_policy)) as CheckPolicy } : {}) }, tickets, edges, pendingWrites };
   } finally { db.close(); }
 }
 
