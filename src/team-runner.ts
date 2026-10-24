@@ -1,4 +1,5 @@
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
+import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -38,7 +39,7 @@ const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 const changedFiles = async (cwd: string, from: string, to: string, ...files: string[]) =>
   (await execute('git', ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', from, to, '--', ...files], { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.split('\0').filter(Boolean);
-export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
+export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal; acceptanceScreening?: AcceptanceScreeningOptions }
 export interface TeamResult {
   outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped' | 'skipped';
   ticket: number;
@@ -253,7 +254,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const mirrored = await transition(cwd, project, tracker, number, {
           state: exhausted ? 'logjam' : 'working', reason: exhausted ? 'retry-cap' : null,
           stage, bounces, team: progress,
-          report: { stage: exhausted ? 'retry-cap' : 'review-bounce', details: outcome.feedback, reachedStage: stage, round: bounces },
+          report: { stage: exhausted ? 'retry-cap' : 'review-bounce', details: outcome.feedback + (source === 'reviewer'
+            ? (progress.outputs?.reviewer?.diagnostics ?? []).filter(d => d.startsWith('Acceptance evidence advisory:')).map(d => `\n\n${d}`).join('') : ''), reachedStage: stage, round: bounces },
         }, testing, options);
         if (!mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
         checkStop(cwd, number);
@@ -272,7 +274,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome, undefined, result.command);
         if (capped) return { ...capped, integration: result };
       };
-      let latest: { head: string; handoff: string } | undefined;
+      let latest: { head: string; handoff: string; observed?: AcceptanceObservation } | undefined;
       const runTests = () => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
       /** Run the suite at another commit in this worktree, optionally with files taken from `overlay.from`, then return to the branch. */
       const testsAt = async (commit: string, overlay?: { from: string; files: string[] }) => {
@@ -344,7 +346,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const problem = baseline.problem ?? (evidence?.environment ? evidence.problem : undefined);
           if (problem) return await stop(infrastructure(`${problem}\nThis is an environment problem, not a failing test: fix the base branch or the test environment, then answer the ticket.\nNew tests' output: ${report.file}`));
         }
-        latest = { head, handoff: report.handoff };
+        latest = { head, handoff: report.handoff, observed: { revision: head, run: tested, artifact: report.file } };
         delete progress.redPending;
         if (tested.code !== 0 && evidence?.valid !== false) {
           delete progress.redFeedback;
@@ -383,7 +385,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all') !== status) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
         // A passing run must still report every scenario the red check accepted, now passing.
         const green = run.code === 0 && !run.timedOut ? greenProblem(progress.redScenarios, run.output) : undefined;
-        latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff + (green ? `\nGreen check failed: ${green}` : '') };
+        const report = await reportTestRun(cwd, number, config.command, run, config.timeout);
+        latest = { head, handoff: report.handoff + (green ? `\nGreen check failed: ${green}` : ''),
+          ...(!status ? { observed: { revision: head, run, artifact: report.file } } : {}) };
         return `\n\n${latest.handoff}`;
       };
       /** The corrected tests against the unfixed code the red check accepted: they must still fail there, for the intended reason. */
@@ -530,6 +534,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
           }, options);
+          if (role === 'reviewer' && (invoked.outcome.outcome === 'pass' || invoked.outcome.outcome === 'bounce')) {
+            const diagnostics = await acceptanceDiagnostics(cwd, path, beforeRole, acceptance, invoked.outcome.acceptance, latest?.observed, options.acceptanceScreening);
+            if (diagnostics.length) invoked.diagnostics = [...invoked.diagnostics ?? [], ...diagnostics];
+          }
           const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
