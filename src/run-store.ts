@@ -231,18 +231,19 @@ export const runPath = (cwd: string) => join(cwd, '.mill/run.sqlite');
 export const historyPath = (cwd: string) => join(cwd, '.mill/history');
 
 const pendingRunMessage = 'Run has pending tracker writes; use mill run answer to flush them or --replace to discard them.';
-const activeRunMessage = 'Run has working or logjam tickets; use --replace to overwrite it.';
+const activeRunMessage = 'Cannot replace a run in progress. Draft without --replace to append tickets safely.';
 
-export function checkDraftable(cwd: string, replace: boolean): void {
+export function checkDraftable(cwd: string, replace: boolean): RunSnapshot | undefined {
   if (!existsSync(runPath(cwd))) return;
   const snapshot = readRun(cwd);
-  if (!replace && snapshot.pendingWrites.length) throw new CliError(pendingRunMessage);
-  if (!replace && snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam')) throw new CliError(activeRunMessage);
+  if (replace && snapshot.run.lifecycle !== 'completed' && (snapshot.run.activated || snapshot.tickets.some(ticket => ticket.state === 'working' || ticket.state === 'logjam'))) throw new CliError(activeRunMessage);
+  if (!replace && snapshot.run.lifecycle === 'completed' && snapshot.pendingWrites.length) throw new CliError(pendingRunMessage);
+  return snapshot;
 }
 
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
-  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy): number | undefined {
+  closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy, validated?: RunSnapshot): number | undefined {
   const db = new DatabaseSync(runPath(cwd));
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
@@ -266,10 +267,19 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     for (const column of ['proof_plan', 'proof_plan_revisions']) {
       if (!db.prepare('PRAGMA table_info(tickets)').all().some(row => row.name === column)) db.exec(`ALTER TABLE tickets ADD COLUMN ${column} TEXT`);
     }
-    if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
-    if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
+    // Fence validation by membership, not by worker state: dispatch and checkpoint updates
+    // may proceed during tracker reads, and must never be replayed from a stale snapshot.
+    const current = db.prepare('SELECT * FROM run').get();
+    const members = db.prepare('SELECT number, state FROM tickets ORDER BY position').all();
+    const unfinished = members.some(row => row.state !== 'done');
+    if (current?.id !== validated?.run.id || JSON.stringify(members.map(row => Number(row.number))) !== JSON.stringify(validated?.tickets.map(ticket => ticket.number) ?? []) || Boolean(unfinished) !== Boolean(validated && validated.run.lifecycle !== 'completed')) {
+      throw new CliError('Run membership changed while drafting; retry mill run draft. Existing work is unchanged.');
+    }
+    if (replace && unfinished && (current?.activated || members.some(row => row.state === 'working' || row.state === 'logjam'))) throw new CliError(activeRunMessage);
+    const append = Boolean(current && unfinished && !replace);
+    if (!append && !replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
-    const old = db.prepare('SELECT * FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get();
+    const old = !append ? db.prepare('SELECT * FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get() : undefined;
     if (old) {
       mkdirSync(historyPath(cwd), { recursive: true });
       copyFileSync(runPath(cwd), join(historyPath(cwd), `${String(old.id)}.sqlite`));
@@ -283,18 +293,18 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
       const was = row.proof_plan ? JSON.parse(String(row.proof_plan)) as ProofPlan : defaultProofPlan;
       return was.path === plan.path ? earlier : [...earlier, { from: was.path, to: plan.path, reason: plan.reason }];
     };
-    db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
+    if (!append) db.exec('DELETE FROM pending_writes; DELETE FROM log; DELETE FROM edges; DELETE FROM tickets; DELETE FROM run;');
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed, check_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
+    if (!append) db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed, check_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
       closed.includeClosed ? 'yes' : null, closed.skippedClosed?.length ? JSON.stringify(closed.skippedClosed) : null, checkPolicy ? JSON.stringify(checkPolicy) : null);
     const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated,proof_plan,proof_plan_revisions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => {
       const plan = proofPlan(ticket.body);
       const revised = revisions(ticket.number, plan);
-      insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now,
+      insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position + (append ? members.length : 0), 'queued', now, now,
         JSON.stringify(plan), revised.length ? JSON.stringify(revised) : null);
     });
-    const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
+    const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?) ON CONFLICT(blocked, blocker) DO UPDATE SET outside_closed = excluded.outside_closed');
     for (const edge of edges) insertEdge.run(edge.blocked, edge.blocker, Number(edge.outsideClosed));
     const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
     if (assign) for (const ticket of tickets) insertWrite.run(ticket.number);

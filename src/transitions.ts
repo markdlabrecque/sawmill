@@ -401,10 +401,10 @@ function recordAssignment(db: DatabaseSync, number: number, assignment: Assignme
  * recorded on the ticket so status shows it. A failure stays queued for mill run
  * answer instead of turning a fresh draft into a logjam; a definite refusal is
  * dropped so it cannot hold the ticket back. */
-export async function flushAssignments(cwd: string, project: ProjectConfig, tracker: TicketWriter, options: MirrorOptions = {}): Promise<void> {
+export async function flushAssignments(cwd: string, project: ProjectConfig, tracker: TicketWriter, options: MirrorOptions & { tickets?: number[] } = {}): Promise<void> {
   checkTracker(cwd, project);
   const sleep = options.sleep ?? (async ms => { await setTimeout(ms); });
-  for (const write of readRun(cwd).pendingWrites.filter(write => write.kind === 'assign')) {
+  for (const write of readRun(cwd).pendingWrites.filter(write => write.kind === 'assign' && (!options.tickets || options.tickets.includes(write.ticket)))) {
     for (let attempt = 0; ; attempt++) {
       transaction(cwd, db => { db.prepare('UPDATE pending_writes SET attempts = attempts + 1 WHERE id = ?').run(write.id); });
       let result: AssignResult;
