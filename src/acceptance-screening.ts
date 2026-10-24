@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
@@ -63,7 +63,8 @@ function excerpts(sources: [string, string][], limit: number, apiKey?: string): 
   return sources.map(([source, raw]) => {
     const redacted = clean(raw, apiKey), truncated = redacted.length > perSource;
     const text = redacted.slice(0, perSource);
-    return { id: hash(`${source}\n${text}`), source: clean(source, apiKey), text, ...(truncated ? { truncated } : {}) };
+    const reference = clean(source, apiKey).slice(0, 512);
+    return { id: hash(`${reference}\n${text}`), source: reference, text, ...(truncated ? { truncated } : {}) };
   });
 }
 
@@ -107,7 +108,15 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   let usage: { inputTokens: number | null; outputTokens: number | null } | undefined;
   // Do not extract evidence, load the SDK or contact a service without both opt-in and credentials.
   const unavailable = !validConfiguration ? 'invalid-configuration' : !apiKey?.trim() ? 'missing-credentials' : undefined;
-  const parsed = observed && readResults(observed.run.output);
+  let retainedResult = false;
+  if (!unavailable && observed) {
+    try {
+      const size = (await stat(observed.artifact)).size;
+      retainedResult = size <= 16 * 1024 * 1024 && size === Buffer.byteLength(observed.run.output)
+        && hash(await readFile(observed.artifact, 'utf8')) === hash(observed.run.output);
+    } catch { /* Missing or modified retained output cannot support a claim. */ }
+  }
+  const parsed = retainedResult && observed ? readResults(observed.run.output) : undefined;
   const git = async (...args: string[]) => (await execute('git', args, { cwd: worktree, timeout: 5000, maxBuffer: 1024 * 1024 })).stdout;
   for (const item of acceptance.items.slice(0, 100)) {
     const finding: Finding = { itemId: item.id, revision, answer: 'insufficient', evidence: [] };
@@ -149,6 +158,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   if (questions.length) {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let failureReason = 'service-unavailable';
     try {
       const request: AcceptanceRequest = { model, questionVersion, questions };
       const classify = options.classify ?? ((input: AcceptanceRequest, signal: AbortSignal) => classifyWithTypeSafe(input, apiKey!, timeoutMs, signal));
@@ -156,7 +166,9 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
         Promise.resolve().then(() => classify(structuredClone(request), controller.signal)),
         new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),
       ]);
-      if (!record(response) || response.model !== model || !Array.isArray(response.answers) || response.answers.length !== questions.length) throw new Error('invalid-response');
+      failureReason = 'invalid-response';
+      if (!record(response) || !Array.isArray(response.answers) || response.answers.length !== questions.length) throw new Error('invalid-response');
+      if (response.model !== model) { failureReason = 'model-mismatch'; throw new Error('model-mismatch'); }
       const validated: Finding[] = [];
       for (const question of questions) {
         const rows = response.answers.filter(row => record(row) && row.itemId === question.itemId);
@@ -164,8 +176,10 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
         if (!record(row) || !judgment(row.answer) || !record(row.probabilities)) throw new Error('invalid-response');
         const { supported, contradictory, insufficient } = row.probabilities;
         if (!probability(supported) || !probability(contradictory) || !probability(insufficient) || Math.abs(supported + contradictory + insufficient - 1) > 0.000001) throw new Error('invalid-response');
-        if (!Array.isArray(row.evidenceIds) || !row.evidenceIds.length || new Set(row.evidenceIds).size !== row.evidenceIds.length
-          || row.evidenceIds.some(id => typeof id !== 'string' || !question.evidence.some(e => e.id === id))) throw new Error('invalid-response');
+        if (!Array.isArray(row.evidenceIds) || row.evidenceIds.length !== question.evidence.length || new Set(row.evidenceIds).size !== row.evidenceIds.length
+          || row.evidenceIds.some(id => typeof id !== 'string' || !question.evidence.some(e => e.id === id))) {
+          failureReason = 'invalid-evidence'; throw new Error('invalid-evidence');
+        }
         if (row.confidence !== undefined && !probability(row.confidence)) throw new Error('invalid-response');
         const probabilities = { supported, contradictory, insufficient };
         const ambiguous = Object.values(probabilities).filter(p => p >= probabilities[row.answer as Judgment]).length !== 1;
@@ -180,7 +194,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
       for (const finding of validated) Object.assign(findings.find(f => f.itemId === finding.itemId)!, finding);
     } catch {
       // Never copy service errors: they can include credentials or raw payloads.
-      fallback(controller.signal.aborted ? 'timeout' : 'service-or-response-unavailable');
+      fallback(controller.signal.aborted ? 'timeout' : failureReason);
     } finally { if (timer !== undefined) clearTimeout(timer); controller.abort(); }
   }
   const telemetry = { model: validConfiguration ? model : jevModel, questionVersion: validConfiguration ? questionVersion : acceptanceQuestionVersion,
