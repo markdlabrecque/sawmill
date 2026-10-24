@@ -18,6 +18,7 @@ import { createWorktree, prepareWorktree, removeWorktree, gcWorktrees } from './
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
 import { waiveItem } from './waive.js';
+import { notify } from './notify.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -297,6 +298,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const entries = readTicketLog(cwd, Number(positional[2]));
         emit(entries, formatTicketLog(entries));
         return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'notify') {
+        if (positional.length !== 2) throw new CliError(usage('run notify'), 2);
+        const result = await notify(cwd, config.project.role_timeout);
+        emit(result, result.status === 'no-hook' ? `No ${result.hook}; nothing was sent. Add an executable hook there to receive events as JSON on stdin.`
+          : [`Sent ${result.sent.length} new event(s).`, ...result.sent.map(event => `${ref(event.ticket)}: ${event.kind}`),
+            ...result.failures.map(({ event, error }) => `${ref(event.ticket)}: ${event.kind} not sent; it is retried next time: ${error}`)].join('\n'));
+        return result.status === 'failed' ? 1 : 0;
       }
       if (positional[0] === 'run' && positional[1] === 'approve-tests') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run approve-tests'), 2);
