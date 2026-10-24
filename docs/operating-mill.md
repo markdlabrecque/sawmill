@@ -57,15 +57,15 @@ To work on a ticket by hand, stop it first with `mill run stop <n>`, then wait f
    A `retry-cap` answer buys one more round: the implementer gets the reviewer's last feedback and your answer, and one more bounce stops the ticket again (#114).
 4. In an active run, the scheduler picks up the answered ticket, starting the scheduler if it was not running. An answer does not start an inactive draft, and `mill run answer` leaves a stopped run stopped: start it with `mill run`. Only a board answer also starts a stopped run (#93). An answer never clears a pause.
 
-A board action carries the attempt its diagnosis showed. If the ticket has moved on since the page drew it, such as a new failure or another answer, the board refuses the action and changes nothing; reload and read the new diagnosis.
+Every board ticket action carries the attempt the page drew, whatever state the ticket was in. If the ticket has moved on since, such as a queued ticket that ran and stopped, a new failure or another answer, the board refuses the action and changes nothing; reload and read the new diagnosis. The diagnosis also names the ticket's owner: its tracker assignment and the worker that last ran it.
 
 ### The common stops
 
 | Stop | What the diagnosis shows | Command |
 | --- | --- | --- |
-| Environment: setup, prepare, network or credentials | The failing hook or check and its output | Fix the cause, then `mill run answer <n>` with no text. It retries from the saved checkpoint without spending a bounce. |
-| Review or test correction ran out of rounds (`retry-cap`) | The reviewer's last feedback | `mill run answer <n> "<guidance>"` for one more round. If the implementer kept changing protected tests that are right as they stand, `mill run approve-tests <n>` first. |
-| CI failed | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
+| Environment: setup, prepare, network or credentials | The failing hook and its output | Fix the cause, then `mill run answer <n>` with no text. It retries from the saved checkpoint without spending a bounce. |
+| Review or test correction ran out of rounds (`retry-cap`) | The reviewer's last feedback, or the failing test command or required check | `mill run answer <n> "<guidance>"` for one more round. If the implementer kept changing protected tests that are right as they stand, `mill run approve-tests <n>` first. |
+| CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
 | Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
 
 To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. None of these needs `run.sqlite`.

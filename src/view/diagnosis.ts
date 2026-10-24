@@ -2,15 +2,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { RunTicket } from '../run-store.js';
 
 export interface Diagnosis {
   /** The stage the ticket stopped at, or its reason when no stage was recorded. */
   phase: string;
   reason: string | null;
-  /** The required check that failed, when that is what stopped it. */
+  /** The test command, required check or hook that failed, when that is what stopped it. */
   command: string | null;
+  /** Who holds the ticket: its tracker assignment and the worker that last ran it. */
+  owner: string | null;
   /** The recorded failure output, with secrets redacted and its length bounded. */
   excerpt: string;
   /** The newest full log for the ticket, for when the excerpt is not enough. */
@@ -74,13 +76,37 @@ function newestLog(millyard: string, number: number): string | null {
   } catch { return null; }
 }
 
-function evidence(ticket: RunTicket): string {
+/** What Mill recorded about this stop. Infrastructure attempts span the ticket's life, so one counts only when it failed into an environment stop. */
+function causes(ticket: RunTicket): string[] {
   const { question, stop, repair, infrastructureAttempts, redFeedback } = ticket.team;
+  const last = infrastructureAttempts?.at(-1);
+  const infrastructure = ticket.reason === 'environment' && last?.status === 'failed' ? last.error : undefined;
+  return [...new Set([stop?.error, question?.error, ticket.worker?.result?.error, infrastructure, repair?.feedback, redFeedback]
+    .filter((part): part is string => Boolean(part?.trim())))];
+}
+
+function evidence(ticket: RunTicket): string {
+  const { question } = ticket.team;
   if (ticket.reason === 'question' && question) return `The ${question.role} asked: ${question.question}`;
-  const parts = [stop?.error, question?.error, ticket.worker?.result?.error, infrastructureAttempts?.at(-1)?.error, repair?.feedback, redFeedback]
-    .filter((part): part is string => Boolean(part?.trim()));
+  const parts = causes(ticket);
   if (ticket.reason === 'stopped' && !parts.length) return `Stopped${ticket.stage ? ` at ${ticket.stage}` : ''} on request, with its work saved.`;
-  return [...new Set(parts)].join('\n\n') || `Logjam (${ticket.reason ?? 'unknown'})${ticket.stage ? ` at ${ticket.stage}` : ''}; nothing more is recorded. mill run log ${ticket.number} has every step.`;
+  return parts.join('\n\n') || `Logjam (${ticket.reason ?? 'unknown'})${ticket.stage ? ` at ${ticket.stage}` : ''}; nothing more is recorded. mill run log ${ticket.number} has every step.`;
+}
+
+/** A retry-cap stop keeps the check that failed integration; an environment stop names the project hook its error came from. */
+function failedCommand(ticket: RunTicket): string | null {
+  if (ticket.reason === 'retry-cap') return ticket.team.repair?.command ?? null;
+  if (ticket.reason !== 'environment') return null;
+  const hook = causes(ticket).map(part => /^(setup|teardown|prepare)\.sh\b/m.exec(part)?.[1]).find(Boolean);
+  return hook ? `.mill/${hook}.sh (${hook} hook)` : null;
+}
+
+function ownerOf(ticket: RunTicket): string | null {
+  const { assignment, worker } = ticket;
+  const assigned = !assignment ? null : assignment.status === 'assigned' ? "assigned to Mill's tracker account"
+    : assignment.status === 'held' ? `assigned to ${assignment.by}` : `assignment ${assignment.status}: ${assignment.error}`;
+  const ran = worker ? `worker ${worker.pid ?? 'not started'} (${worker.status}) in slot ${basename(worker.slot)}` : null;
+  return [assigned, ran].filter(Boolean).join('; ') || null;
 }
 
 /** The supported command for each known stop, with what it does. Every path ends in a Mill command, never a run-file edit. */
@@ -102,8 +128,11 @@ function nextStep(ticket: RunTicket): Diagnosis['next'] {
       return { command: `mill run answer ${n}`, explanation: 'Retries the tracker updates held for this ticket. No role runs again and no work is lost.' };
     case 'environment':
       return { command: `mill run answer ${n}`, explanation: `Fix the cause shown above first, such as the setup or prepare hook, the network or credentials. Answering without text then retries #${n}${at} from its saved checkpoint without spending a bounce.` };
-    case 'retry-cap':
-      return { command: `mill run answer ${n} "<guidance>"`, explanation: `Grants one more repair round: the implementer gets the last feedback and your guidance, and another failure stops it again. ${reset}` };
+    case 'retry-cap': {
+      const source = ticket.team.repair?.source;
+      const feedback = source === 'ci-failed' ? 'the CI failure shown above' : source === 'reviewer' ? "the reviewer's last feedback" : source ? `the last ${source} output` : 'the last feedback';
+      return { command: `mill run answer ${n} "<guidance>"`, explanation: `Grants one more repair round: the implementer gets ${feedback} and your guidance, and another failure stops it again. ${reset}` };
+    }
     case 'not-reproduced':
       return { command: `mill run answer ${n}`, explanation: `Re-runs the final tests on the current branch and, if they pass, carries on to the pull request and merge. To send it back to the implementer instead: mill run answer ${n} --implementer "<guidance>".` };
     case 'tests-not-red':
@@ -116,9 +145,9 @@ function nextStep(ticket: RunTicket): Diagnosis['next'] {
 export function diagnose(ticket: RunTicket, millyard: string): Diagnosis {
   const { team, integration } = ticket;
   const worktree = worktreeIdentity(ticket.worktree);
-  const failed = integration.checks?.runs.find(run => run.code !== 0);
+  const owner = ownerOf(ticket);
   return {
-    phase: ticket.stage ?? ticket.reason ?? 'unknown', reason: ticket.reason, command: failed?.command ?? null,
+    phase: ticket.stage ?? ticket.reason ?? 'unknown', reason: ticket.reason, command: failedCommand(ticket), owner: owner === null ? null : redact(owner),
     excerpt: excerpt(evidence(ticket)), log: newestLog(millyard, ticket.number), attempt: attemptOf(ticket), lastProgress: ticket.updated,
     identities: {
       build: worktree.build, local: worktree.local,

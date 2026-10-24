@@ -239,11 +239,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       delete progress.recovery;
       const acceptance = acceptanceFor({ ...current(), team: progress });
       if (acceptance.items.length) progress.acceptance = acceptance;
-      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number): Promise<TeamResult | undefined> => {
+      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number, command?: string): Promise<TeamResult | undefined> => {
         delete progress.question;
         delete progress.stop;
         delete progress.activeRole;
-        progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
+        progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(command ? { command } : {}), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
         const bounces = current().bounces + 1;
         const exhausted = bounces >= 3;
         const testing = source === 'reviewer' && progress.userTesting ? [{ kind: 'comment' as const, payload: { body: await reportComment(cwd, {
@@ -269,7 +269,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (result.outcome === 'infrastructure') return { ...await stop(infrastructure(result.message ?? 'Integration failed.')), integration: result };
         if (result.outcome === 'stopped') throw new Error('Stopped integration has no saved checkpoint.');
         if (result.outcome !== 'rebase-conflict') progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-        const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome);
+        const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome, undefined, result.command);
         if (capped) return { ...capped, integration: result };
       };
       let latest: { head: string; handoff: string } | undefined;

@@ -75,8 +75,8 @@ function act(key,p,t,a){if(!p||notes.get(key)?.state==='pending')return;
   if(a==='answer'){openAnswer(key,p,t);return}
   if(CONFIRM[a]&&!confirm(CONFIRM[a](t)))return;
   send(key,{action:a,millyard:p.millyard,runId:p.runId,...(t?{ticket:t.number}:{}),...attempt(t),...(CONFIRM[a]?{confirmed:true}:{})})}
-/** A stopped ticket's attempt as this page saw it, so an action never reaches a newer attempt. */
-function attempt(t){return t&&t.diagnosis?{attempt:t.diagnosis.attempt}:{}}
+/** The ticket's attempt as this page drew it, whatever its state, so an action never reaches a newer attempt. */
+function attempt(t){return t?{attempt:t.attempt}:{}}
 /** The request names the project, run and ticket as this page saw them; the server refuses it if they have changed. */
 async function send(key,body){note(key,'pending','Sending…');
   try{const r=await fetch('/api/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));
@@ -100,7 +100,7 @@ function detail(t,secs){
 /** What stopped the ticket, the code and environment it stopped on, and the supported command that moves it on. */
 function diagnosis(box,t){const d=t.diagnosis;box.hidden=!d;if(!d)return;
   box.querySelector('.dxh').textContent='Stopped at '+d.phase+(d.command?' running '+d.command:'')+' · last progress '+new Date(d.lastProgress).toLocaleString()+' · attempt '+d.attempt;
-  box.querySelector('.dxi').textContent=Object.entries(d.identities).filter(([,v])=>v).map(([k,v])=>k+' '+(/^[0-9a-f]{40}$/.test(v)?v.slice(0,12):v)).join(' · ')||'No code or environment identity is recorded.';
+  box.querySelector('.dxi').textContent=(Object.entries(d.identities).filter(([,v])=>v).map(([k,v])=>k+' '+(/^[0-9a-f]{40}$/.test(v)?v.slice(0,12):v)).join(' · ')||'No code or environment identity is recorded.')+(d.owner?' · owner: '+d.owner:'');
   box.querySelector('code').textContent=d.next.command;box.querySelector('.dxn span').textContent=d.next.explanation;
   box.querySelector('pre').textContent=d.excerpt;box.querySelector('.dxl').textContent=(d.log?'Full log: '+d.log+' · ':'')+'Every step: mill run log '+t.number}
 function render(){if(!view)return;const seen=new Set();let working=0,jam=0;

@@ -7,7 +7,7 @@ import { ticketUrl } from '../links.js';
 import { listMillyards } from '../registry.js';
 import { historyPath, readRun, readRunFile, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
-import { diagnose, redact, type Diagnosis } from './diagnosis.js';
+import { attemptOf, diagnose, redact, type Diagnosis } from './diagnosis.js';
 
 export const lanes = ['queued', 'launch', 'worktree', 'tests', 'implement', 'review', 'rebase', 'PR', 'CI', 'merged'] as const;
 export type Lane = typeof lanes[number];
@@ -31,6 +31,8 @@ export interface ViewTicket {
   /** What keeps the ticket from moving, or null when nothing does. */
   blockage: string | null;
   actions: Record<TicketAction, ViewAction>;
+  /** The attempt this view drew, whatever the state; an action naming it is refused once the ticket moves on. */
+  attempt: string;
   /** The evidence and supported next command for a ticket in logjam in the current run; null otherwise. */
   diagnosis: Diagnosis | null;
 }
@@ -134,7 +136,7 @@ function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null,
     };
     const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
     return { ...row, lane: laneOf(row), question: question === null ? null : redact(question),
-      blockage: blockage(ticket, pending), actions: millyard ? ticketActions(ticket, pending) : archived,
+      blockage: blockage(ticket, pending), actions: millyard ? ticketActions(ticket, pending) : archived, attempt: attemptOf(ticket),
       diagnosis: millyard && ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
   });
 }
