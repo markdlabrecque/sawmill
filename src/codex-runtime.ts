@@ -1,6 +1,10 @@
 import { directChild } from './direct-child.js';
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { access, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 import { authorizeVerification, type Verification } from './verification.js';
@@ -42,10 +46,37 @@ export class CodexRuntime implements Runtime {
     // Never let the template's Claude models or a local provider silently choose a family.
     // Availability and literal effort support are checked by Codex/the provider, not guessed here.
     if (!/^gpt-[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(request.model)) return { outcome: infrastructure(`Unsupported Codex model family: ${request.model}. Configure an explicit GPT model for every role.`) };
-    if (request.browser) return { outcome: infrastructure('Codex browser capability is unsupported: native CLI settings cannot enforce a per-command browser allowlist.') };
+    if (request.browser && request.role !== 'reviewer') return { outcome: infrastructure('Codex browser capability is supported only for the reviewer.') };
     if (request.signal?.aborted) return { outcome: infrastructure('Role interrupted before startup.') };
     if (process.platform === 'win32') return { outcome: infrastructure('Codex process-group cleanup is not supported on Windows.') };
     const sandbox = request.role === 'reviewer' ? 'read-only' : 'workspace-write';
+    const env = { ...process.env, ...this.options.env };
+    let browserOrigin: string | undefined;
+    let chromiumPath: string | undefined;
+    if (request.browser) {
+      try {
+        const url = new URL(request.browserUrl!);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+        browserOrigin = url.origin;
+      } catch { return { outcome: infrastructure('Codex browser capability requires a prepared HTTP(S) site URL without credentials.') }; }
+      for (const directory of (env.PATH ?? '').split(':').filter(isAbsolute)) {
+        for (const name of ['chromium', 'google-chrome', 'chrome']) {
+          const path = resolvePath(request.cwd, directory, name);
+          try {
+            await access(path, constants.X_OK);
+            const canonical = await realpath(path);
+            const withinWorktree = relative(request.cwd, canonical);
+            if (!withinWorktree || (!withinWorktree.startsWith('..') && !isAbsolute(withinWorktree))) continue;
+            chromiumPath = canonical; break;
+          } catch { /* Next executable. */ }
+        }
+        if (chromiumPath) break;
+      }
+      if (!chromiumPath) return { outcome: infrastructure('Codex browser capability requires Chromium on the invocation PATH.') };
+    }
+    const mcpServers = request.browser
+      ? `{mill_browser={command=${JSON.stringify(process.execPath)},args=[${JSON.stringify(fileURLToPath(new URL('./codex-browser-server.js', import.meta.url)))}],env={SAWMILL_BROWSER_URL=${JSON.stringify(request.browserUrl)},SAWMILL_CHROMIUM=${JSON.stringify(chromiumPath)}},required=true,default_tools_approval_mode="approve"}}`
+      : '{}';
     const args = ['exec', '--json', '--color', 'never', '--ignore-user-config', '--ignore-rules',
       '--model', request.model, '--sandbox', sandbox,
       '-c', `model_reasoning_effort=${JSON.stringify(request.effort)}`, '-c', 'model_provider="openai"',
@@ -53,7 +84,7 @@ export class CodexRuntime implements Runtime {
       '-c', 'sandbox_workspace_write.exclude_slash_tmp=true', '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true',
       '-c', 'allow_login_shell=false',
       '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'web_search="disabled"',
-      '-c', 'agents.enabled=false', '-c', 'mcp_servers={}',
+      '-c', 'agents.enabled=false', '-c', `mcp_servers=${mcpServers}`,
       '--disable', 'multi_agent', '--disable', 'apps', '--disable', 'plugins', '--disable', 'hooks',
       '--disable', 'browser_use', '--disable', 'browser_use_external', '--disable', 'in_app_browser'];
     const writeDirectories: string[] = [];
@@ -74,7 +105,7 @@ export class CodexRuntime implements Runtime {
     }
     args.push('-');
     const diagnostics = [
-      `Codex ${sandbox} sandbox, approvals never, network disabled; no shell command allowlist. Strict browser CLI exclusion is unsupported.`,
+      `Codex ${sandbox} sandbox, approvals never, command network disabled; no shell command allowlist.${request.browser ? ` Browser access uses an isolated Chromium MCP tool limited to ${browserOrigin}.` : ' Browser tools disabled.'}`,
       'Codex JSONL does not attest effective model/effort; explicit requested CLI settings are used without remapping.',
       ...(writeDirectories.length ? [`Checkpoint Git write grants: ${writeDirectories.join(', ')}. These are directory grants, not a git command allowlist.`] : []),
     ];

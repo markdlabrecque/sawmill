@@ -527,7 +527,7 @@ A reviewer's test correction renews the proof: Mill runs the corrected test file
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.
 
-For browser testing, add named cases under `## User test cases` in the ticket and configure a working harness. Reviewers receive the site URL and conditional `chrome-devtools-axi` access. Broken cases trigger repair.
+For browser testing, add named cases under `## User test cases` in the ticket and configure a working harness. Reviewers receive the site URL and conditional browser access: `chrome-devtools-axi` for Claude Code and Pi, or an isolated Chromium MCP tool for Codex. Broken cases trigger repair.
 
 A URL alone does not say whose site it is. Before browser cases run, Mill needs proof that the site belongs to the ticket: with DDEV, `ddev describe` must name the ticket's environment (`<ticket>-<project>`); with Docker, the last line of `.mill/prepare.sh` must include `"ticket": <n>`. Anything else is an `environment` failure before review. A Docker project with only `test_url` can still be reviewed, but its results are marked unproven and cannot be delivered.
 
@@ -546,7 +546,7 @@ When an integration rebase moves a ticket's reviewed code, `mill integrate` prep
 
 Before push, the final gate checks each ticket case, and each smoke case that is due, for a completed result. The result must come from a site the ticket owns, with today's fixtures and case text. A ticket case counts at the reviewed commit, or at Mill's own clean rebase of that commit, the same rule that carries review approval. A smoke case counts only at the final head. A missing, broken or stale result blocks delivery and sends the ticket back for a fresh review that runs every case again. The error names each case and what is wrong. The merge report lists each case with the commit, environment, fixtures, persona, time and artifacts that proved it.
 
-Codex currently refuses browser-case tickets before role work because its native permissions cannot enforce the required browser command policy. See [Codex](docs/codex-runtime.md), [Pi](docs/pi-runtime.md), and [GitLab](docs/gitlab.md) for backend setup, permission limits, and evidence. GitLab spec membership uses a first-line `Part of #<spec>` convention; it is not native work-item hierarchy selection.
+Codex browser cases require Chromium on `PATH`; its browser tool limits requests to the prepared site's origin. See [Codex](docs/codex-runtime.md), [Pi](docs/pi-runtime.md), and [GitLab](docs/gitlab.md) for backend setup, permission limits, and evidence. GitLab spec membership uses a first-line `Part of #<spec>` convention; it is not native work-item hierarchy selection.
 
 An optional [draft plugin](plugins/sawmill/README.md) provides `/sawmill:draft` in Claude Code. The `mill` CLI works independently of that plugin.
 

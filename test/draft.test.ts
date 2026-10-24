@@ -393,12 +393,11 @@ test('a missing selected ticket does not replace an existing draft', async (t) =
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), JSON.parse(first.stdout));
 });
 
-test('draft refuses Codex browser cases before any team work', async t => {
+test('draft accepts Codex browser cases when a test harness is configured', async t => {
   const tracker = new FakeTracker([ticket(1, { body: '## User test cases\n- Open the page and save a record.' })]);
   const y = await configured(t, tracker);
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('runtime: claude-code', 'runtime: codex').replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8080'));
   const result = await y.cli('run', 'draft', '1', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.match(result.stdout, /#1.*Codex.*browser.*unsupported/i);
-  assert.equal((await y.cli('run', 'status')).code, 1);
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.cli('run', 'status')).code, 0);
 });

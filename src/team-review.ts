@@ -97,7 +97,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
     role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
     effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}${acceptanceHandoff(acceptance)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
-    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, signal: options.signal,
+    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, browserUrl: browser.url, signal: options.signal,
   }, options);
   // The same checklist decides every round; an unmet item is a bounce, never a pass.
   const refused = result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
