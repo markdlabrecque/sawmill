@@ -261,7 +261,7 @@ process.stdin.on('end', () => {
   });
 }
 
-test('standalone repair retains completed cases and reviews only the fix commit plus failed cases', async t => {
+test('standalone repair reviews only the fix commit but reruns every case, since the repair makes earlier passes stale', async t => {
   const y = await fixture(t);
   await y.cli('worktree', 'create', '16');
   await writeFile(join(y.worktree, 'form.txt'), 'Original implementation\n');
@@ -274,11 +274,11 @@ test('standalone repair retains completed cases and reviews only the fix commit 
   y.git('-C', y.worktree, 'add', '.'); y.git('-C', y.worktree, 'commit', '-m', 'Repair submit');
   const result = await y.invoke(['team', 'review', '16', '--json'], { runtime: { async run(request) {
     const cases = JSON.parse(request.handoff.split('Cases to run, return each exact case name once:\n')[1]!);
-    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit answer']);
+    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit answer']);
     assert.match(request.handoff, /Fix diff:/);
     assert.match(request.handoff, /Submit shows an error/);
     assert.doesNotMatch(request.handoff.split('Fix diff:')[1]!.split('Test command:')[0]!, /Original implementation/);
-    return { outcome: { outcome: 'pass', cases: [{ case: 'Submit answer', result: 'completed' }] } };
+    return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit answer', result: 'completed' }] } };
   } } });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual((await y.status()).team.userTesting.cases, [{ case: 'Open page', result: 'completed' }, { case: 'Submit answer', result: 'completed' }]);

@@ -12,7 +12,14 @@ export type Outcome =
   | { outcome: 'test-correction'; files: string[]; mistake: string; preserves: string; summary?: string }
   | { outcome: 'question'; question: string }
   | { outcome: 'infrastructure'; error: string };
-export interface UserCase { case: string; result: 'completed' | 'broken'; step?: string }
+/** `persona` is the user role the case was performed as; `artifacts` are paths or links supporting it, never credentials. */
+export interface UserCase { case: string; result: 'completed' | 'broken'; step?: string; persona?: string; artifacts?: string[] }
+/** A link with a user name, password or secret-looking query value is a credential, not evidence. */
+const credential = (reference: string) => {
+  if (!URL.canParse(reference)) return false;
+  const url = new URL(reference);
+  return Boolean(url.username || url.password) || [...url.searchParams.keys()].some(key => /pass|token|secret|key|auth|session/i.test(key));
+};
 export interface RuntimeRequest {
   role: Role;
   cwd: string;
@@ -77,7 +84,8 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
   if (v.role !== undefined && v.role !== role) return bad();
   if (v.summary !== undefined && !nonempty(v.summary)) return bad();
   if (v.recommendations !== undefined && (!Array.isArray(v.recommendations) || !v.recommendations.every(nonempty))) return bad();
-  if (v.cases !== undefined && (!Array.isArray(v.cases) || !v.cases.every(c => c && typeof c === 'object' && nonempty(c.case) && ['completed', 'broken'].includes(c.result) && (c.result !== 'broken' || nonempty(c.step))))) return bad();
+  if (v.cases !== undefined && (!Array.isArray(v.cases) || !v.cases.every(c => c && typeof c === 'object' && nonempty(c.case) && ['completed', 'broken'].includes(c.result) && (c.result !== 'broken' || nonempty(c.step)) &&
+    (c.persona === undefined || nonempty(c.persona)) && (c.artifacts === undefined || (Array.isArray(c.artifacts) && c.artifacts.every((a: unknown) => nonempty(a) && !credential(a))))))) return bad();
   switch (v.outcome) {
     case 'done': if (role === 'reviewer' || !nonempty(v.summary)) return bad(); break;
     case 'no-change': if (role !== 'implementer' || !nonempty(v.summary)) return bad(); break;

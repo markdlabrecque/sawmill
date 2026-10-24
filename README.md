@@ -308,6 +308,7 @@ mill run close 12
 | `.mill/teardown.sh` | Release project resources before removing a worktree. |
 | `.mill/prepare.sh` | Optional: bring a ticket's site up to date with its current commit without reseeding. |
 | `.mill/fixtures.json` | Optional: required local fixtures and their SHA-256 hashes, checked before setup. |
+| `.mill/smoke-cases.md` | Optional: shared browser smoke cases run after an integration rebase moves a ticket's code. |
 | `.mill/logs/<ticket>/` | Raw role streams, stderr, sessions, and worker logs. |
 
 Machine defaults are two concurrent tickets across all millyards, three infrastructure retries, a pause threshold of three consecutive infrastructure results, and a 30-second CI polling interval. A success from a live team clears a pause. Otherwise the run stays paused, and status shows why. Restarting the scheduler or running `mill run` again does not clear the pause. Fix the cause, then run `mill run stop` and `mill run` to retry queued work. `mill run --foreground` also retries it.
@@ -338,7 +339,7 @@ npm ci
 
 Setup seeds a ticket's site once. An optional `.mill/prepare.sh` then brings it into agreement with the worktree's current commit: database updates, configuration, caches, built assets. It runs right after setup, before each review, after a rebase moves the ticket's code during integration, and whenever you run `mill worktree prepare <ticket>`. It must be safe to repeat and must never reseed. `mill build` puts DDEV examples in `~/.config/sawmill/`: [`ddev.prepare.drupal.sh`](templates/ddev.prepare.drupal.sh) (`drush deploy`, assets) and [`ddev.prepare.wordpress.sh`](templates/ddev.prepare.wordpress.sh) (URL-safe search-replace, database upgrade, theme and plugin activation, caches, assets). Copy one to `.mill/prepare.sh` and adjust it.
 
-It gets the hook variables above plus `MILL_COMMIT`. `MILL_ENV` is `<ticket>-<project>`, the DDEV name. `MILL_STATE_DIR` is `.mill/env/<ticket>`, which records the ticket and worktree that own it. Mill refuses to run setup, prepare or teardown against a state directory another ticket or worktree owns, and removes it with the worktree. The last line of output must be JSON such as `{"url": "https://155-islandhealth.ddev.site", "ready": true}`. `mill worktree prepare <ticket> --json` reports the commit, script hash, environment, URL and readiness; the team saves the same record as `team.site` on the ticket and hands it to the reviewer. A failed or not-ready preparation exits 1 with its output, and a drafted ticket goes to `logjam` with reason `environment`. Running it again, or `mill run answer <ticket>`, resumes.
+It gets the hook variables above plus `MILL_COMMIT`. `MILL_ENV` is `<ticket>-<project>`, the DDEV name. `MILL_STATE_DIR` is `.mill/env/<ticket>`, which records the ticket and worktree that own it. Mill refuses to run setup, prepare or teardown against a state directory another ticket or worktree owns, and removes it with the worktree. The last line of output must be JSON such as `{"url": "https://155-islandhealth.ddev.site", "ready": true}`. Adding `"ticket": 155` names the ticket whose site answered. A site that reports another ticket fails preparation, so review never checks it, and a Docker project's prepare hook must report it before browser cases run (see [Browser testing](#browser-testing-and-runtimes)). `mill worktree prepare <ticket> --json` reports the commit, script hash, environment, URL, readiness, fixture hashes and the reported owner; the team saves the same record as `team.site` on the ticket and hands it to the reviewer. A failed or not-ready preparation exits 1 with its output, and a drafted ticket goes to `logjam` with reason `environment`. Running it again, or `mill run answer <ticket>`, resumes.
 
 List required local inputs, such as a sanitized database dump, in `.mill/fixtures.json` as `[{"path": ".mill/db.sql", "sha256": "<hex>"}]`, with paths relative to the millyard. A missing or changed fixture stops worktree creation before any hook runs, naming the file and the expected hash. The DDEV setup hook imports `.mill/db.sql` when it exists, fails when `.mill/fixtures.json` lists it and it is missing, and otherwise notes that the site starts without one.
 
@@ -404,7 +405,24 @@ Reason: Copy-only change; the existing checks cover rendering.
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.
 
-For browser testing, add named cases under `## User test cases` in the ticket and configure a working harness. Reviewers receive the site URL and conditional `chrome-devtools-axi` access. Broken cases trigger repair; completed cases are retained for re-review.
+For browser testing, add named cases under `## User test cases` in the ticket and configure a working harness. Reviewers receive the site URL and conditional `chrome-devtools-axi` access. Broken cases trigger repair.
+
+A URL alone does not say whose site it is. Before browser cases run, Mill needs proof that the site belongs to the ticket: with DDEV, `ddev describe` must name the ticket's environment (`<ticket>-<project>`); with Docker, the last line of `.mill/prepare.sh` must include `"ticket": <n>`. Anything else is an `environment` failure before review. A Docker project with only `test_url` can still be reviewed, but its results are marked unproven and cannot be delivered.
+
+Each saved browser result records the commit, the prepared site (environment, URL, prepare-script hash), the SHA-256 of each file in `.mill/fixtures.json`, the ticket proven to own the site, each case's text and the time. A reviewer may add the `persona` a case was performed as and `artifacts` (paths or links to screenshots, recordings or logs). A link with a user name, password or token is refused. Role logs stay in `.mill/logs/<ticket>/` after the worktree is removed. A later review keeps an earlier pass only at the same commit, on the same site, with the same fixtures and case text. After any repair, fixture change or edit to a case, every case runs again.
+
+Shared smoke cases go in `.mill/smoke-cases.md`, written like a ticket's cases (a list, or `###` headings with steps):
+
+```md
+- Home page loads
+  1. Visit /.
+- Editor can log in
+  1. Log in as the editor persona and open the dashboard.
+```
+
+When an integration rebase moves a ticket's reviewed code, `mill integrate` prepares the site at the new commit, runs the required checks, and then has the reviewer run every smoke case on it. Their results are recorded against the new commit. A broken smoke case reports `smoke-failed` and sends the work back to the implementer. The smoke cases then run again on the repaired head before delivery.
+
+Before push, the final gate checks each ticket case, and each smoke case that is due, for a completed result. The result must come from a site the ticket owns, with today's fixtures and case text. A ticket case counts at the reviewed commit, or at Mill's own clean rebase of that commit, the same rule that carries review approval. A smoke case counts only at the final head. A missing, broken or stale result blocks delivery and sends the ticket back for a fresh review that runs every case again. The error names each case and what is wrong. The merge report lists each case with the commit, environment, fixtures, persona, time and artifacts that proved it.
 
 Codex currently refuses browser-case tickets before role work because its native permissions cannot enforce the required browser command policy. See [Codex](docs/codex-runtime.md), [Pi](docs/pi-runtime.md), and [GitLab](docs/gitlab.md) for backend setup, permission limits, and evidence. GitLab spec membership uses a first-line `Part of #<spec>` convention; it is not native work-item hierarchy selection.
 

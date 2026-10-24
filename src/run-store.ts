@@ -19,6 +19,8 @@ export interface IntegrationProgress {
   testedHead?: string;
   /** Required-check evidence for `head`; reset with the rest of the progress on every rebase. */
   checks?: { head: string; runs: { name: string; command: string; code: number | null; ms: number; sameAs?: string }[] };
+  /** The browser proof the final gate accepted for `head`, one line per required case. */
+  browser?: { head: string; cases: string[] };
   pushedHead?: string;
   pipeline?: Pipeline;
   changeRequest?: { id: number | string; url: string; headCommit: string };
@@ -62,6 +64,8 @@ export interface TeamProgress {
   acceptance?: import('./acceptance.js').Acceptance;
   /** The site last prepared for review or after a rebase: what verification checked. */
   site?: PreparedSite;
+  /** Results of the declared shared smoke cases, run after an integration rebase moved the code. */
+  smoke?: import('./user-testing.js').UserTesting;
 }
 /** Identity and readiness of a ticket's prepared site. */
 export interface PreparedSite {
@@ -72,6 +76,10 @@ export interface PreparedSite {
   stateDir: string;
   url: string | null;
   ready: boolean | null;
+  /** SHA-256 of each file .mill/fixtures.json lists, as found at preparation; null when it lists none. */
+  fixtures?: { path: string; sha256: string }[] | null;
+  /** The ticket prepare.sh reported as the owner of the site that answered; null when it reported none. */
+  owner?: number | null;
 }
 /** The original writer commits stay in `testCommits`; `testCommit` moves only when a review accepts `head`. */
 export interface TestCorrection {
@@ -105,7 +113,7 @@ export interface InfrastructureAttempt {
 }
 /** Last repair request, retained after success for reporting and later case re-runs. */
 export interface RepairContext {
-  source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'ci-failed';
+  source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'smoke-failed' | 'ci-failed';
   feedback: string;
   baseCommit: string;
   failedCases?: import('./runtime.js').UserCase[];

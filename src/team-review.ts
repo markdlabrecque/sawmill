@@ -88,7 +88,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
       ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
       : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;
     prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
-    browser = await browserHandoff(project, ticket.body, ticket.worktree, options.home, options.signal, progress.userTesting);
+    browser = await browserHandoff(project, ticket.body, ticket.worktree, number, options.home, options.signal, progress.userTesting, progress.site);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     runtime = { async run() { return { outcome: infrastructure(`Review preparation failed: ${message}`) }; } };
@@ -105,7 +105,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const outcome = result.outcome;
   progress.outputs!.reviewer = result;
   if (readRun(cwd).tickets.find(row => row.number === number)!.stopRequested) return stopped();
-  const testing = userTestingResult(browser, outcome, progress.userTesting);
+  const testing = userTestingResult(browser, outcome);
   if (testing) progress.userTesting = testing;
   if (outcome.outcome === 'question') {
     const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', outcome, progress, options);
