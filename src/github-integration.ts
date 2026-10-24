@@ -4,7 +4,7 @@ import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { MergeRefusedError } from './tracker.js';
-import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipeline } from './tracker.js';
+import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipeline, ReconciledChangeRequest } from './tracker.js';
 
 /** PR discovery is separate from ticket reads; runs never refresh issue data beyond the first-start state check. */
 export class GitHubIntegration extends GitHubWriter implements IntegrationTracker {
@@ -31,6 +31,16 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
 
   async getChangeRequest(id: number | string): Promise<ChangeRequest> {
     return this.changeRequest(await this.request('GET', `pulls/${encodeURIComponent(String(id))}`));
+  }
+
+  async reconcileChangeRequest(id: number | string): Promise<ReconciledChangeRequest> {
+    const value = await this.request('GET', `pulls/${encodeURIComponent(String(id))}`);
+    const pr = value as { state?: unknown; merged?: unknown; merge_commit_sha?: unknown } | null;
+    if (!['open', 'closed'].includes(String(pr?.state)) || typeof pr?.merged !== 'boolean') throw new Error('GitHub returned an invalid PR state.');
+    const request = this.changeRequest(value);
+    // An open PR's merge_commit_sha is only a test merge, so it counts once merged.
+    if (!pr.merged) return { ...request, state: pr.state as 'open' | 'closed' };
+    return { ...request, state: 'merged', ...(typeof pr.merge_commit_sha === 'string' ? { mergeCommit: pr.merge_commit_sha } : {}) };
   }
 
   async getPipeline(commit: string): Promise<Pipeline> {

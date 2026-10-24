@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
 import { MergeRefusedError } from './tracker.js';
-import type { AssignResult, ChangeRequest, CiJob, IssueComment, JobLog, LogLimits, Pipeline, Ticket, Tracker } from './tracker.js';
+import type { AssignResult, ChangeRequest, CiJob, IssueComment, JobLog, LogLimits, Pipeline, ReconciledChangeRequest, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
@@ -211,6 +211,17 @@ export class GitLabTracker implements Tracker {
     const result = this.changeRequest((await this.request('GET', `/merge_requests/${encodeURIComponent(String(id))}`)).value);
     if (String(result.id) !== String(id)) throw new Error('GitLab returned a different MR.');
     return result;
+  }
+
+  async reconcileChangeRequest(id: number | string): Promise<ReconciledChangeRequest> {
+    const mr = record((await this.request('GET', `/merge_requests/${encodeURIComponent(String(id))}`)).value);
+    const result = this.changeRequest(mr);
+    // A locked MR is mid-merge; its outcome is not known yet.
+    if (mr.state === 'opened') return { ...result, state: 'open' };
+    if (mr.state === 'closed') return { ...result, state: 'closed' };
+    if (mr.state !== 'merged') throw new Error(`GitLab reported MR state ${String(mr.state)}, which does not settle the merge yet.`);
+    const commit = mr.merge_commit_sha ?? mr.squash_commit_sha;
+    return { ...result, state: 'merged', ...(sha(commit) ? { mergeCommit: commit } : {}) };
   }
 
   async getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline> {

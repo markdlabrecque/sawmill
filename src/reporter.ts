@@ -18,8 +18,13 @@ export interface StageReport {
   baseCommit?: string;
   /** A person asked for this report on the tracker; other steps stay in the run log. */
   post?: boolean;
+  /** Project, run, ticket and operation identity; a replayed report is found by it rather than posted again. */
+  operation?: string;
 }
 const execute = promisify(execFile);
+
+/** The report line that identifies its operation. */
+export const operationMarker = (operation: string) => `Operation: ${operation}`;
 
 /** Stable first line for both readers and parsers; evidence comes from local git/state. */
 export async function reportComment(cwd: string, report: StageReport, ticket: RunTicket): Promise<string> {
@@ -31,6 +36,7 @@ export async function reportComment(cwd: string, report: StageReport, ticket: Ru
   if (report.reason) parts.push(`Reason: ${report.reason}`);
   if (report.reachedStage) parts.push(`Stage reached: ${report.reachedStage}`);
   if (report.changeRequestUrl) parts.push(`Change request: ${report.changeRequestUrl}`);
+  if (report.operation) parts.push(operationMarker(report.operation));
   if (report.stage === 'merged' && ticket.mergeCommit) {
     const head = ticket.mergeCommit;
     const base = report.baseCommit ?? `${head}^`;

@@ -4,7 +4,7 @@ import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
-import { reportComment, type StageReport } from './reporter.js';
+import { operationMarker, reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
@@ -236,7 +236,8 @@ export async function transition(cwd: string, project: ProjectConfig, tracker: T
     if (change.report.stage === 'merged' && mergeCommit) next.state = 'done';
     // Every report is in the run log; the tracker hears only the outcome, notes for a person to try, or a requested post.
     if (next.state === 'done' || change.report.stage === 'user-testing' || change.report.post) {
-      pending.unshift({ kind: 'comment', payload: { body: await reportComment(cwd, change.report, { ...ticket, ...change }) } });
+      const marker = change.report.operation ? { marker: operationMarker(change.report.operation) } : {};
+      pending.unshift({ kind: 'comment', payload: { body: await reportComment(cwd, change.report, { ...ticket, ...change }), ...marker } });
     }
   }
   if (next.state === 'done') {
@@ -265,7 +266,12 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
       let assigned: AssignResult | undefined;
       try {
         switch (write.kind) {
-          case 'comment': await tracker.addComment(number, write.payload.body); break;
+          case 'comment': {
+            // An earlier attempt may have landed with its response lost; a marked report already on the ticket is not posted again.
+            const { marker } = write.payload;
+            if (marker && (attempt > 0 || write.attempts > 0) && tracker.listComments && (await tracker.listComments(number)).some(comment => comment.body.includes(marker))) break;
+            await tracker.addComment(number, write.payload.body); break;
+          }
           case 'add-label': await tracker.addLabel(number, write.payload.label); break;
           case 'remove-label': await tracker.removeLabel(number, write.payload.label); break;
           case 'close': await tracker.closeTicket(number); break;

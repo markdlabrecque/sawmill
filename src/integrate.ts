@@ -6,6 +6,7 @@ import { runRole } from './role-runner.js';
 import { createRuntime } from './runtime-factory.js';
 import type { Runtime } from './runtime.js';
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { logRerunRow, rerunCount, transition, type MirrorOptions, type Transition } from './transitions.js';
 import { MergeRefusedError } from './tracker.js';
-import type { IntegrationTracker, Pipeline } from './tracker.js';
+import type { IntegrationTracker, Pipeline, ReconciledChangeRequest } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
@@ -168,8 +169,33 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     await save({ team, stage: 'reviewer' });
     throw new Error('Review approval no longer matches the ticket HEAD; a fresh review is required.');
   };
+  /** Reads the saved operation's request again. Returns the merge commit once the host confirms
+   * that exact request and head merged, undefined while it is still open; anything else stops. */
+  const reconcileMerge = async (operation: NonNullable<IntegrationProgress['operation']>): Promise<string | undefined> => {
+    const request = `change request ${operation.changeRequestId} (${operation.changeRequestUrl})`;
+    const check = `Check it on the host, then run \`mill integrate ${number}\` again.`;
+    let current: ReconciledChangeRequest;
+    try { current = await tracker.reconcileChangeRequest!(operation.changeRequestId); }
+    catch (error) { throw new Error(`Could not confirm whether ${request} merged after its merge response was lost: ${message(error)}. Nothing was retried; run \`mill integrate ${number}\` again once the host answers.`); }
+    if (String(current.id) !== String(operation.changeRequestId)) throw new Error(`The host answered for request ${current.id}, which differs from the saved ${request}. ${check}`);
+    if (current.state === 'open') return undefined;
+    if (current.state === 'closed') throw new Error(`The saved ${request} was closed without merging. ${check}`);
+    if (current.state !== 'merged') throw new Error(`The host reported an uncertain state for ${request}. ${check}`);
+    if (current.headCommit !== operation.sourceHead) throw new Error(`The saved ${request} merged head ${current.headCommit}, not the tested head ${operation.sourceHead}. ${check}`);
+    if (!current.mergeCommit || !/^[a-f\d]{40,64}$/i.test(current.mergeCommit)) throw new Error(`The saved ${request} merged, but the host reported no merge commit. ${check}`);
+    return current.mergeCommit;
+  };
   try {
     boundary();
+    // A merge whose response never arrived is settled on the same request before anything is retried.
+    if (!mergeCommit && progress.operation?.kind === 'merge' && tracker.reconcileChangeRequest) {
+      const confirmed = await reconcileMerge(progress.operation);
+      if (confirmed) {
+        mergeCommit = confirmed;
+        progress.mergedHead = progress.operation.sourceHead;
+        await advance('merge-accepted', { mergeCommit, completion: 'merged' });
+      }
+    }
     if (!mergeCommit) {
       await requireApproval();
       await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
@@ -342,7 +368,10 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
           await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
           await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all') ||
           (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
-      guard();
+      // The identity and intended target are durable before the host is asked.
+      const operation = { kind: 'merge' as const, id: `merge-${randomUUID()}`, changeRequestId: progress.changeRequest.id, changeRequestUrl: progress.changeRequest.url, sourceHead: head, targetBranch: project.integration };
+      progress.operation = operation;
+      await save();
       boundary();
       let merged: { mergeCommit: string };
       try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
@@ -354,7 +383,10 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
           if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
           if ((await readPipeline()).state === 'failed') return await ciFailed();
         }
-        throw error;
+        if (error instanceof MergeRefusedError || !tracker.reconcileChangeRequest) throw error;
+        const confirmed = await reconcileMerge(operation);
+        if (!confirmed) throw error;
+        merged = { mergeCommit: confirmed };
       }
       if (!/^[a-f\d]{40,64}$/i.test(merged.mergeCommit)) throw new Error('Tracker returned an invalid merge commit.');
       mergeCommit = merged.mergeCommit;
@@ -387,7 +419,8 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.localRemoved = true;
       await save();
     }
-    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}\nTested head: ${progress.testedHead}${browserSummary(progress)}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
+    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}\nTested head: ${progress.testedHead}${browserSummary(progress)}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url,
+      ...(progress.operation ? { operation: `${project.tracker.repo}#${number} run ${snapshot.run.id} ${progress.operation.id}` } : {}) } });
     return result('merged');
   } catch (error) {
     if (error instanceof StopRequested) {
