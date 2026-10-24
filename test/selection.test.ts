@@ -62,7 +62,8 @@ test('label selection omits closed tickets, persists the same ordered run rows a
   const yard = await configured(t, tracker);
   const explicit = await yard.cli('run', 'draft', '30', '20', '2', '--json');
   assert.equal(explicit.code, 0, explicit.stdout);
-  const selected = await yard.cli('run', 'draft', '--label', 'batch', '--json');
+  const selectedYard = await configured(t, tracker);
+  const selected = await selectedYard.cli('run', 'draft', '--label', 'batch', '--json');
   assert.equal(selected.code, 0, selected.stdout);
   assert.match(selected.stdout, /skipped.*\b10\b/is);
   const result: RunSnapshot = JSON.parse(selected.stdout);
@@ -70,8 +71,11 @@ test('label selection omits closed tickets, persists the same ordered run rows a
   assert.deepEqual(result.tickets.map(row => row.number), [2, 20, 30]);
   assert.deepEqual(result.edges.filter(edge => edge.blocker === 10), [{ blocked: 2, blocker: 10, outsideClosed: true }]);
   assert.deepEqual(runRows(result), runRows(JSON.parse(explicit.stdout)));
+  const repeated = await selectedYard.cli('run', 'draft', '30', '20', '2', '--json');
+  assert.equal(repeated.code, 0, repeated.stdout);
+  assert.deepEqual(JSON.parse(repeated.stdout), result);
   tracker.offline = true;
-  const status = await yard.cli('run', 'status', '--json');
+  const status = await selectedYard.cli('run', 'status', '--json');
   assert.equal(status.code, 0, status.stdout);
   assert.deepEqual(JSON.parse(status.stdout), result);
 });
@@ -87,9 +91,11 @@ test('spec selects only direct children and produces equivalent rows despite dup
   const yard = await configured(t, tracker);
   const explicit = await yard.cli('run', 'draft', '3', '20', '--json');
   assert.equal(explicit.code, 0, explicit.stdout);
-  const label = await yard.cli('run', 'draft', '--label', 'batch', '--json');
+  const labelYard = await configured(t, tracker);
+  const label = await labelYard.cli('run', 'draft', '--label', 'batch', '--json');
   assert.equal(label.code, 0, label.stdout);
-  const selected = await yard.cli('run', 'draft', '--spec', '40', '--json');
+  const selectedYard = await configured(t, tracker);
+  const selected = await selectedYard.cli('run', 'draft', '--spec', '40', '--json');
   assert.equal(selected.code, 0, selected.stdout);
   const result: RunSnapshot = JSON.parse(selected.stdout);
   assert.deepEqual(result.run.source, { kind: 'spec', number: 40 });
@@ -97,13 +103,13 @@ test('spec selects only direct children and produces equivalent rows despite dup
   assert.deepEqual(runRows(result), runRows(JSON.parse(explicit.stdout)));
   assert.deepEqual(runRows(result), runRows(JSON.parse(label.stdout)));
   tracker.children[40] = [12, 3, 20];
-  const text = await yard.cli('run', 'draft', '--spec', '40');
+  const text = await selectedYard.cli('run', 'draft', '--spec', '40');
   assert.equal(text.code, 0, text.stdout);
   assert.match(text.stdout, /skipped.*#12|#12.*skipped/is);
   assert.match(text.stdout, /#3\s+Ticket 3\s+queued/);
   assert.match(text.stdout, /#20\s+Ticket 20\s+blocked\s+#3/);
-  const status = await yard.cli('run', 'status', '--json');
-  assert.deepEqual(runRows(JSON.parse(status.stdout)), runRows(result));
+  const status = await selectedYard.cli('run', 'status', '--json');
+  assert.deepEqual(JSON.parse(status.stdout), result);
 });
 
 test('empty tracker selections name the selector and preserve the previous draft', async (t) => {

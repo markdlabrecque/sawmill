@@ -7,8 +7,8 @@ import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 import { until } from './dispatch-fixture.js';
 
-async function reviewYard(t: TestContext) {
-  const ticket: Ticket = { number: 11, title: 'Review the café', body: 'Preserve the full patch.', state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
+async function reviewYard(t: TestContext, browserCase = false) {
+  const ticket: Ticket = { number: 11, title: 'Review the café', body: browserCase ? '## User test cases\n- Open the home page' : 'Preserve the full patch.', state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
   let reads = true;
   const tracker = {
     async getTicket() { assert.ok(reads, 'review must use the cached ticket'); return structuredClone(ticket); },
@@ -22,7 +22,7 @@ async function reviewYard(t: TestContext) {
     .replace('# name: islandhealth', 'name: review')
     .replace('# repo: owner/name', 'repo: team/tool')
     .replace('integration: main', 'integration: integration')
-    .replace('# test_harness: none', 'test_harness: none')
+    .replace('# test_harness: none', browserCase ? 'test_harness: docker\ntest_url: http://example.invalid' : 'test_harness: none')
     .replaceAll('claude-opus-5-5', 'claude-opus-4-6'));
   assert.equal((await yard.cli('run', 'draft', '11')).code, 0);
   assert.equal((await yard.cli('worktree', 'create', '11')).code, 0);
@@ -443,12 +443,7 @@ test('an unsupported test command permission rule is refused before running a pr
 });
 
 test('browser review refuses a pass that omits the requested case result', async t => {
-  const yard = await reviewYard(t);
-  // Redraft with a supported harness so this exercises the review boundary.
-  await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://example.invalid'));
-  yard.tracker.getTicket = async () => ({ ...yard.ticket, body: '## User test cases\n- Open the home page' });
-  assert.equal((await yard.cli('run', 'draft', '11', '--replace')).code, 0);
-  assert.equal((await yard.cli('worktree', 'create', '11')).code, 0);
+  const yard = await reviewYard(t, true);
   const runtime = { async run() { return { outcome: { outcome: 'pass' as const } }; } };
   const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
   assert.equal(result.code, 1, result.stdout);
