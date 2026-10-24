@@ -18,6 +18,7 @@ export const commands: Command[] = [
   { name: 'run close', usage: 'mill run close <n> [--json]', summary: 'Close a ticket in the run.' },
   { name: 'run answer', usage: 'mill run answer <n> [text] [--implementer] [--json]', summary: 'Answer a logjammed ticket and requeue it. In an active run the shared scheduler picks it up; an inactive or stopped run stays as it is. --implementer retries a not-reproduced repair.' },
   { name: 'run approve-tests', usage: 'mill run approve-tests <n> [--json]', summary: "Accept a logjammed ticket's committed tests as its new protected baseline; answering it then resumes at review." },
+  { name: 'run waive', usage: 'mill run waive <n> <item> --reason <text> [--json]', summary: "Waive one item of a ticket's acceptance checklist, such as AC2, with the reason; a review may then pass it unproved. Only a person waives, and the run log keeps who did and why. It never bypasses the tests, review or CI." },
   { name: 'run reset', usage: 'mill run reset <n> [--json]', summary: 'Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it.' },
   { name: 'team tail', usage: 'mill team tail <n> [--no-follow] [--json]', summary: "Follow the ticket's newest role log; --no-follow prints it and returns." },
   { name: 'team review', usage: 'mill team review <n> [--json]', summary: 'Review an existing ticket worktree, including handwritten work.' },

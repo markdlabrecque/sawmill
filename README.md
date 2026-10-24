@@ -193,6 +193,7 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill scheduler stop` | Stop the shared scheduler; working tickets keep going. |
 | `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
 | `mill run approve-tests 12` | Accept a logjammed ticket's committed tests as its new protected baseline. |
+| `mill run waive 12 AC2 --reason "..."` | Waive one item of a ticket's acceptance checklist, with the reason. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
 | `mill team review 12` | Review an existing ticket worktree, including handwritten work. |
 | `mill team tail 12` | Follow the ticket's newest role log. |
@@ -270,6 +271,15 @@ mill run answer 12
 ```
 
 `approve-tests` refuses unless the ticket is in logjam and the worktree is clean. It makes the worktree HEAD the new protected baseline, clears the stuck repair and its bounces, and resumes the ticket at review. The run log records who approved which commit, and when.
+
+The checkboxes under a ticket's "Done when" are its acceptance checklist, named `AC1`, `AC2`, and so on. A review passes only when it reports evidence for every item, naming the check and the revision, or the item was waived by a person. Mill sends any other pass back as a bounce that lists the unmet items, on the last round the same as the first, so a ticket that runs out of retries stops with them in the log. When an item needs proof only you can give, or you accept it unproved, waive it and answer:
+
+```sh
+mill run waive 12 AC2 --reason "Manual proof deferred to the pilot."
+mill run answer 12
+```
+
+A waiver applies to that item of the checklist as drafted. The run log records who waived it and why. It does not bypass the tests, the protected-test check, review of the head, or CI.
 
 Request a stop at the next stage boundary:
 

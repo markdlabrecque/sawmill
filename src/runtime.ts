@@ -1,12 +1,13 @@
 import type { Effort, Role } from './config.js';
+import { acceptanceResults, type AcceptanceResult } from './acceptance.js';
 import type { Verification } from './verification.js';
 
 export type Outcome =
   | { outcome: 'done'; summary: string }
   /** Implementer repair round: the failure could not be reproduced, so nothing was committed. */
   | { outcome: 'no-change'; summary: string }
-  | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[] }
-  | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[] }
+  | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[]; acceptance?: AcceptanceResult[] }
+  | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[]; acceptance?: AcceptanceResult[] }
   /** Reviewer only: a protected test is wrong. The CLI routes it to the test-writers, scoped to `files`. */
   | { outcome: 'test-correction'; files: string[]; mistake: string; preserves: string; summary?: string }
   | { outcome: 'question'; question: string }
@@ -82,6 +83,10 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
     case 'no-change': if (role !== 'implementer' || !nonempty(v.summary)) return bad(); break;
     case 'pass': case 'bounce':
       if (role !== 'reviewer' || (v.outcome === 'bounce' && !nonempty(v.feedback))) return bad();
+      // Shape only: whether the results meet the ticket's checklist is the coordinator's decision.
+      if (v.acceptance !== undefined && (!Array.isArray(v.acceptance) || !v.acceptance.every(a => a && typeof a === 'object' && nonempty(a.id) && acceptanceResults.includes(a.result) &&
+        (a.evidence === undefined || (a.evidence && typeof a.evidence === 'object' && ['check', 'revision'].every(key => a.evidence[key] === undefined || typeof a.evidence[key] === 'string'))) &&
+        (a.reason === undefined || typeof a.reason === 'string')))) return bad();
       break;
     case 'test-correction':
       if (role !== 'reviewer' || !Array.isArray(v.files) || !v.files.length || !v.files.every(nonempty) || !nonempty(v.mistake) || !nonempty(v.preserves)) return bad();

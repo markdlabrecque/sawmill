@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { acceptanceReport } from './acceptance.js';
 import { CliError } from './errors.js';
 import type { RunTicket } from './run-store.js';
 
@@ -40,6 +41,10 @@ export async function reportComment(cwd: string, report: StageReport, ticket: Ru
     const added = (await git('diff', '--name-only', '--diff-filter=A', base, head, '--')).split('\n')
       .filter(path => /(^|\/)(__tests__|tests?|specs?)(\/|\.)|\.(test|spec)\./i.test(path));
     parts.push(`Merge commit: ${head}`, `Changes:\n${log}`, `Diffstat:\n${diffstat}`, `Added tests:\n${added.join('\n') || '(none)'}`);
+    // Runs from before the checklist have none; nothing is claimed for them.
+    const acceptance = ticket.team?.acceptance;
+    const review = ticket.team?.outputs?.reviewer?.outcome;
+    if (acceptance?.items.length) parts.push(acceptanceReport(acceptance, review?.outcome === 'pass' ? review.acceptance : []));
   }
   const sessions = ['test-writers', 'implementer', 'reviewer'] as const;
   const ids = sessions.flatMap(role => (ticket.sessionIds[role] ?? []).map(id => `${role}: ${id}`));

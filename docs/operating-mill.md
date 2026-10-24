@@ -80,6 +80,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 | Hand fix | Use instead |
 | --- | --- |
 | Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). Automatic reviewer-requested corrections (#97) need neither. |
+| Edit `acceptance` in `run.sqlite` to let an unproved "Done when" item pass | `mill run waive <n> <item> --reason <text>`, then `mill run answer <n>` (#134). |
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |
