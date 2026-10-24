@@ -31,5 +31,5 @@ pause_threshold: 3
 ci_poll_interval: 30s
 
 # How long mill update waits for working tickets to finish before it gives
-# up, leaves the installed mill unchanged and releases dispatch.
-update_drain_timeout: 4h
+# up, leaves the installed mill unchanged and releases dispatch. Default 4h.
+# update_drain_timeout: 4h
