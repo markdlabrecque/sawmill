@@ -1268,7 +1268,7 @@ test('a bouncing reviewer cannot dispatch repair from dirty work or a changed br
   }
 });
 
-test('user-testing repair re-runs only broken cases with the fix diff and retains completed results', async t => {
+test('user-testing repair re-runs every case with the fix diff, since the repair commit makes earlier passes stale', async t => {
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit the answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
@@ -1288,11 +1288,11 @@ test('user-testing repair re-runs only broken cases with the fix diff and retain
         assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit the answer']);
         return { outcome: { outcome: 'bounce', feedback: 'Submit fails.', cases: [{ case: 'Open page', result: 'completed' }, broken] } };
       }
-      assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit the answer']);
+      assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit the answer']);
       assert.match(request.handoff, /Fix diff:/);
       assert.match(request.handoff, /\+Fixed submit/);
       assert.doesNotMatch(request.handoff.split('Fix diff:')[1]!.split('Test command:')[0]!, /answer.test.cjs|module.exports/);
-      return { outcome: { outcome: 'pass', cases: [{ case: 'Submit the answer', result: 'completed' }], recommendations: ['The submit label could be clearer.'] } };
+      return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit the answer', result: 'completed' }], recommendations: ['The submit label could be clearer.'] } };
     }
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.deepEqual((await y.status()).tickets[0].team.repair.failedCases, [broken]);
@@ -1315,7 +1315,7 @@ test('user-testing repair re-runs only broken cases with the fix diff and retain
   assert.match(reports[1]!.body, /submit label could be clearer/);
 });
 
-test('a failed user-testing mirror durably retains the bounce and cases for repair after answer', async t => {
+test('a failed user-testing mirror durably retains the bounce and cases, and the repair after answer reruns every case', async t => {
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
@@ -1344,8 +1344,8 @@ test('a failed user-testing mirror durably retains the bounce and cases for repa
       return { outcome: { outcome: 'done', summary: 'Fixed submit.' } };
     }
     const cases = JSON.parse(request.handoff.split('Cases to run, return each exact case name once:\n')[1]!);
-    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit answer']);
-    return { outcome: { outcome: 'pass', cases: [{ case: 'Submit answer', result: 'completed' }] } };
+    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit answer']);
+    return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit answer', result: 'completed' }] } };
   });
   const second = await y.cli('team', 'run', '12', '--json');
   assert.equal(second.code, 0, second.stdout);
