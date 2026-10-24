@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { CliError } from './errors.js';
 import { processAlive } from './process-ownership.js';
+import { processStart } from './slots.js';
 
 /** One scheduler per machine and home. Its directory holds ownership, its log and the
  * wake file; it never holds run state, which stays in each millyard's SQLite file. */
@@ -14,9 +15,12 @@ export const schedulerPath = (home: string) => join(home, '.local/state/sawmill/
 export const schedulerLog = (home: string) => join(schedulerPath(home), 'scheduler.log');
 const ownerPath = (home: string) => join(schedulerPath(home), 'owner.sqlite');
 export const wakePath = (home: string) => join(schedulerPath(home), 'wake');
+/** Held by `mill update` while it swaps the installation: the scheduler admits no new tickets. */
+const holdPath = (home: string) => join(schedulerPath(home), 'update-hold.json');
 
-export interface SchedulerOwner { pid: number; processStart?: string; token: string; started: string }
-export interface SchedulerStatus { available: boolean; pid?: number; started?: string; log: string }
+/** `build` is the build id the scheduler loaded, when its installation was stamped. */
+export interface SchedulerOwner { pid: number; processStart?: string; token: string; started: string; build?: string }
+export interface SchedulerStatus { available: boolean; pid?: number; started?: string; build?: string; log: string }
 
 /** Reads without creating anything; an unreadable owner file counts as no scheduler. */
 export function readScheduler(home: string): SchedulerOwner | undefined {
@@ -34,7 +38,7 @@ export function readScheduler(home: string): SchedulerOwner | undefined {
 export function schedulerStatus(home: string): SchedulerStatus {
   const owner = readScheduler(home);
   return owner && processAlive(owner.pid, owner.processStart)
-    ? { available: true, pid: owner.pid, started: owner.started, log: schedulerLog(home) }
+    ? { available: true, pid: owner.pid, started: owner.started, ...(owner.build ? { build: owner.build } : {}), log: schedulerLog(home) }
     : { available: false, log: schedulerLog(home) };
 }
 
@@ -71,9 +75,34 @@ export function notifyScheduler(home: string): void {
   catch { /* The fallback scan still finds the change. */ }
 }
 
+/** Takes the update hold, or returns false when another live process holds it. A dead holder's hold is replaced. */
+export function holdDispatch(home: string): boolean {
+  mkdirSync(schedulerPath(home), { recursive: true });
+  const hold = JSON.stringify({ pid: process.pid, processStart: processStart(process.pid) });
+  for (;;) {
+    try { writeFileSync(holdPath(home), hold, { flag: 'wx' }); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (dispatchHeld(home)) return false;
+    rmSync(holdPath(home), { force: true });
+  }
+}
+
+export function releaseDispatch(home: string): void {
+  rmSync(holdPath(home), { force: true });
+}
+
+/** Whether a live `mill update` holds dispatch; a crashed update's hold no longer counts. */
+export function dispatchHeld(home: string): boolean {
+  try {
+    const holder = JSON.parse(readFileSync(holdPath(home), 'utf8')) as { pid: number; processStart?: string };
+    return processAlive(holder.pid, holder.processStart);
+  } catch { return false; }
+}
+
 /** Returns the live scheduler, starting a detached one if none holds ownership. Concurrent
- * callers may each launch one; all but the ownership winner exit at once. */
-export async function ensureScheduler(home: string): Promise<{ pid: number; log: string; launched: boolean }> {
+ * callers may each launch one; all but the ownership winner exit at once. `daemon` is the
+ * scheduler entry point to start, by default the one beside this module. */
+export async function ensureScheduler(home: string, daemon = fileURLToPath(new URL('./scheduler-daemon.js', import.meta.url))): Promise<{ pid: number; log: string; launched: boolean }> {
   const log = schedulerLog(home);
   const current = schedulerStatus(home);
   if (current.available) return { pid: current.pid!, log, launched: false };
@@ -81,7 +110,7 @@ export async function ensureScheduler(home: string): Promise<{ pid: number; log:
   const fd = openSync(log, 'a');
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(process.execPath, [fileURLToPath(new URL('./scheduler-daemon.js', import.meta.url)), home], {
+    child = spawn(process.execPath, [daemon, home], {
       cwd: home, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }

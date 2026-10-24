@@ -9,6 +9,7 @@ import type { MachineConfig, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { checkMillyard } from './millyard.js';
 import { readRun, mergeCleanupPending, type RunSnapshot, type WorkerOwnership } from './run-store.js';
+import { dispatchHeld } from './scheduler.js';
 import { claimSlot, processStart, releaseSlot, transferSlot, type SlotLease } from './slots.js';
 import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
@@ -20,6 +21,8 @@ export interface DispatchResult {
   started: { ticket: number; worker: WorkerOwnership }[];
   failures: { ticket: number; error: string }[];
   slotsFull: boolean;
+  /** A running `mill update` holds dispatch, so the pass started nothing more. */
+  held: boolean;
 }
 export type WorkerEvent = { ticket: number; worker: WorkerOwnership };
 /** Ordered local candidates only. Claiming repeats these checks inside a write transaction. */
@@ -39,13 +42,15 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   options: { limit?: number; wait?: boolean } = {}): Promise<DispatchResult> {
   cwd = await realpath(cwd);
   const snapshot = await dispatchPreflight(cwd, project, options.wait);
-  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false };
+  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
     if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
     const token = randomUUID(), started = new Date().toISOString();
     const lease = claimSlot(home, machine.concurrency, { token, processToken: token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, launcherStart: processStart(process.pid), pid: null, created: started });
     if (!lease) { result.slotsFull = true; break; }
+    // Checked after the claim: mill update takes its hold before it counts slots, so either it sees this lease or this sees the hold.
+    if (dispatchHeld(home)) { releaseSlot(lease); result.held = true; break; }
     const directory = join(cwd, '.mill/logs', String(ticket));
     const worker: WorkerOwnership = { token, processToken: token, runId: snapshot.run.id, slot: lease.path, launcherPid: process.pid, launcherStart: lease.launcherStart, pid: null, status: 'starting', started, log: join(directory, `worker-${token}.log`) };
     let claimed = false;

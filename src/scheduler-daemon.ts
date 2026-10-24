@@ -9,7 +9,8 @@ import { recoverWorkers } from './recovery.js';
 import { listMillyards, millyardsPath } from './registry.js';
 import { lockHeld, withRunLock } from './run-lock.js';
 import { readRun } from './run-store.js';
-import { claimScheduler, readScheduler, releaseScheduler, schedulerPath } from './scheduler.js';
+import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
+import { claimScheduler, dispatchHeld, readScheduler, releaseScheduler, schedulerPath } from './scheduler.js';
 import { listSlots, processStart, slotsPath } from './slots.js';
 import { consumeResults } from './transitions.js';
 
@@ -25,7 +26,8 @@ const backoff = 10000;
 const watchFiles = process.env.MILL_SCHEDULER_WATCH !== 'off';
 const say = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
 const token = process.env.MILL_WORKER_TOKEN ?? randomUUID();
-const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString() });
+const build = readBuildIdentity(packageRoot)?.id;
+const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString(), ...(build ? { build } : {}) });
 if (process.send) await new Promise<void>(resolve => process.send!({ type: 'scheduler', pid: owner.pid }, () => resolve()));
 if (process.connected) process.disconnect?.();
 if (owner.token !== token) {
@@ -113,7 +115,8 @@ async function pass(watching: (path: string) => void) {
     if (candidate) runnable.push(candidate);
   }
   runnable.sort((a, b) => (turns.get(a.cwd) ?? 0) - (turns.get(b.cwd) ?? 0));
-  while (runnable.length && !stopping) {
+  // While mill update swaps the installation, recover and consume results but start nothing.
+  while (runnable.length && !stopping && !dispatchHeld(home!)) {
     for (const candidate of [...runnable]) {
       if (stopping || listSlots(home!).length >= candidate.machine.concurrency) return;
       if (await admit(candidate)) turns.set(candidate.cwd, ++turn);
@@ -122,7 +125,7 @@ async function pass(watching: (path: string) => void) {
   }
 }
 
-say(`Scheduler started (pid ${process.pid}).`);
+say(`Scheduler started (pid ${process.pid}, ${describeBuild(readBuildIdentity(packageRoot))}).`);
 mkdirSync(slotsPath(home), { recursive: true });
 mkdirSync(millyardsPath(home), { recursive: true });
 // Exit when stopped or when ownership is gone, such as a removed home or a replacement owner.

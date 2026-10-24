@@ -16,11 +16,19 @@ Install from source:
 git clone https://github.com/markdlabrecque/sawmill.git
 cd sawmill
 npm ci
-npm run build
-npm install --global .
+npm pack
+npm install --global markdlabrecque-sawmill-*.tgz
 ```
 
-Keep this checkout if your global npm installation links to it. To update, pull the latest source and rerun `npm ci`, `npm run build`, and `npm install --global .`.
+`npm pack` builds Sawmill and writes it to a `.tgz` file, and installing that file gives the global `mill` its own copy. Do not install with `npm install --global .`: that links the global `mill` to the checkout, and `mill update` will not replace a checkout. If you installed that way, reinstall once from a packed copy as above.
+
+To update, bring a local checkout to the revision you want, for example with `git pull`, then run:
+
+```sh
+mill update /path/to/sawmill
+```
+
+`mill update` builds the checkout, waits for working tickets to finish, swaps in the new build, and restarts the scheduler. It never fetches or changes the checkout. `mill --version` shows the running build. See [Operating Mill](docs/operating-mill.md) for the details.
 
 ## Quickstart
 

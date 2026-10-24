@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface Command {
   name: string;
@@ -30,12 +31,13 @@ export const commands: Command[] = [
   { name: 'board', usage: 'mill board [--port <n>] [--json]', summary: 'Serve a live page of every run on this machine, with controls to stop, answer, reset and close tickets and to start or stop a run; --json prints one snapshot.' },
   { name: 'scheduler status', usage: 'mill scheduler status [--json]', summary: 'Show whether the shared scheduler is running, its log, and the state of every registered run.' },
   { name: 'scheduler stop', usage: 'mill scheduler stop [--json]', summary: 'Stop the shared scheduler after its current pass; working tickets keep going and the next mill run starts it again.' },
+  { name: 'update', usage: 'mill update <source> [--json]', summary: "Rebuild and install mill from a local Sawmill checkout you choose: run npm ci and npm run build in a staged copy, check it, then replace this installation's runtime and role prompts together. It never fetches, pulls, switches branches or changes the checkout; uncommitted edits are built and the build is marked dirty. The shared scheduler admits no new tickets meanwhile, working tickets finish on the old build first, and a scheduler that was running restarts on the new one. Every run keeps its state. A failed build leaves the previous installation in place." },
 ];
 
 const options = [
   '  --json       Print machine-readable output.',
   '  -h, --help   Show help for mill or a command.',
-  '  --version    Print the mill version.',
+  '  --version    Print the mill version, its build identity and the executable it runs.',
 ];
 
 export function usage(name: string): string {
@@ -71,6 +73,7 @@ export function helpText(words: string[]): string | undefined {
   return [`Usage: ${command.usage}`, '', command.summary, '', 'Options:', ...options.slice(0, 2)].join('\n');
 }
 
-export function version(): string {
-  return (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+/** The package version of the installation at `root`. */
+export function version(root: string): string {
+  return (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { version: string }).version;
 }
