@@ -423,7 +423,58 @@ required_checks:
   timeout: 30m
 ```
 
-`mill integrate` runs each declared command with `bash -c` in the ticket worktree on the rebased head, after the test command and before push, in the order clean, build, lint, typecheck. Each must exit 0 within `timeout` (default `30m`) and leave HEAD and the worktree unchanged. A non-zero exit, including a missing command, reports `checks-failed` with the output and sends the work back to the implementer. A timeout or a changed worktree blocks delivery as `infrastructure`. Required checks run even with `tests: none`, and focused runs never stand in for them. A command repeated under two names runs once and is reported as the same evidence. Mill deletes no build output itself, so use `clean` to remove generated files so stale output cannot pass a build. The PR body and merge report list the checks that passed and the head they ran on. Existing configs without `required_checks` behave as before.
+`mill integrate` runs each declared command with `bash -c` in the ticket worktree on the rebased head, after the test command and before push, in the order clean, build, lint, typecheck, artifact. Each must exit 0 within `timeout` (default `30m`) and leave HEAD and the worktree unchanged. A non-zero exit, including a missing command, reports `checks-failed` with the output and sends the work back to the implementer. A timeout or a changed worktree blocks delivery as `infrastructure`. Required checks run even with `tests: none`, and focused runs never stand in for them. A command repeated under two names runs once and is reported as the same evidence. Mill deletes no build output itself, so use `clean` to remove generated files so stale output cannot pass a build. The PR body and merge report list the checks that passed and the head they ran on. Existing configs without `required_checks` behave as before.
+
+`artifact` is the smoke check of what you actually ship, and it runs last, after the build. For a package or CLI, install and exercise the packed archive in a clean temporary folder, not the source tree, so a runtime file left out of the package blocks delivery: `d=$(mktemp -d) && npm pack --pack-destination "$d" && npm install --prefix "$d" "$d"/*.tgz && "$d"/node_modules/.bin/mytool --version`. For a CMS, check the built assets and exported configuration the release will carry.
+
+### Release handoff
+
+A merge is not a release. Once a ticket merges, `mill release handoff <n>` reports what a release operator needs: the delivered revision and merge commit, whether the `artifact` check passed on the delivered head, each acceptance item with its evidence or waiver, and the project's release steps. It reads the run's saved record, so it still works after the worktree is gone. It changes nothing, and Mill never deploys or promotes a release.
+
+Declare the steps a release needs under `release.steps`. Each has an `id`, a `kind` (`migration`, `configuration`, `assets`, `external-effect` or `manual`), the `text` an operator follows, and a `recovery` class: `reversible` (undone with the code), `separate` (only a separate backup or restore recovers it) or `irreversible`. `paths` limits a step to changes that touch matching files; a step that does not apply is listed as not applicable. `check` names a required check whose pass on the delivered head verifies the step. Every other step stays pending, because Mill cannot see a migration run or an editor at work. `recovery_note` says how to recover, and `rollback` is shown only when you declare one; Mill never invents a rollback command. A Drupal project might declare:
+
+```yaml
+release:
+  steps:
+    - id: update-db
+      kind: migration
+      text: Take a database backup, then run drush updatedb. Existing content keeps its values.
+      paths: ['**/*.install', '**/*.post_update.php']
+      recovery: irreversible
+      recovery_note: Restore the database backup taken before the update; otherwise fix forward.
+    - id: config-import
+      kind: configuration
+      text: Run drush config:import; it changes configuration only, never content.
+      paths: ['config/sync/**']
+      recovery: separate
+      recovery_note: Re-import the configuration export taken before the release.
+```
+
+A WordPress project might declare:
+
+```yaml
+release:
+  steps:
+    - id: theme-assets
+      kind: assets
+      text: Publish the compiled theme assets.
+      paths: ['wp-content/themes/**']
+      check: build
+      recovery: reversible
+    - id: search-replace
+      kind: migration
+      text: Run wp search-replace on the new URL with --dry-run first; posts keep their content.
+      paths: ['wp-content/mu-plugins/**']
+      recovery: separate
+      recovery_note: Restore the database export taken before the release.
+    - id: flush-cache
+      kind: external-effect
+      text: Flush the object cache with wp cache flush.
+      recovery: reversible
+      rollback: wp cache flush
+```
+
+The handoff is release-ready only when the artifact, every acceptance item and every applicable step is verified or waived. Anything else is listed as pending, by name, in both the text and `--json` output. Recovery groups the applicable steps by class and states plainly that reverting the merge commit undoes the code, not any data, configuration or external effect.
 
 ### Proof plans
 

@@ -19,6 +19,7 @@ import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
 import { exportRecords, forgetRecords, noteAttempt, reportRecords } from './attempt-record.js';
 import { waiveItem } from './waive.js';
+import { formatHandoff, releaseHandoff } from './release.js';
 import { notify } from './notify.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
@@ -202,6 +203,12 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           emit({ status: 'ok', removed }, `Removed ${removed} attempt record${removed === 1 ? '' : 's'} for ${scope}.`);
           return 0;
         }
+      }
+      if (positional[0] === 'release' && positional[1] === 'handoff') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('release handoff'), 2);
+        const handoff = await releaseHandoff(cwd, config.project, Number(positional[2]));
+        emit(handoff, formatHandoff(handoff, ref(handoff.ticket)));
+        return 0;
       }
       if (positional[0] === 'team' && positional[1] === 'tail') {
         if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);

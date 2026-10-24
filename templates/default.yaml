@@ -86,15 +86,34 @@ tests:
 #   typecheck: npx tsc --noEmit
 
 # Optional checks Mill itself runs on the rebased final head before push, in
-# this order: clean, build, lint, typecheck. Each is a shell command run in the
-# worktree. Any failure, missing command or timeout blocks delivery with its
-# output, and they run even with tests: none. Mill deletes nothing itself: use
-# clean to remove generated output so a stale build cannot pass. Unlike checks
-# above, these are not granted to roles.
+# this order: clean, build, lint, typecheck, artifact. Each is a shell command
+# run in the worktree. Any failure, missing command or timeout blocks delivery
+# with its output, and they run even with tests: none. Mill deletes nothing
+# itself: use clean to remove generated output so a stale build cannot pass.
+# artifact smokes the actual installable or build artifact, not the source
+# tree: for a package, pack it and install it in a clean temporary folder.
+# Unlike checks above, these are not granted to roles.
 # required_checks:
 #   clean: rm -rf dist
 #   build: npm run build
+#   artifact: d=$(mktemp -d) && npm pack --pack-destination "$d" && npm install --prefix "$d" "$d"/*.tgz
 #   timeout: 30m
+
+# Optional release obligations mill release handoff reports after a merge. Mill
+# never performs or deploys them. kind: migration, configuration, assets,
+# external-effect or manual. paths: the step applies only when the delivered
+# change touches a matching file. check: a required check whose pass verifies
+# the step; without one the step stays pending. recovery: reversible (undone
+# with the code), separate (only a backup or restore recovers it) or
+# irreversible. rollback is shown only when declared here.
+# release:
+#   steps:
+#     - id: update-db
+#       kind: migration
+#       text: Run drush updatedb; existing content keeps its values.
+#       paths: ['**/*.install']
+#       recovery: irreversible
+#       recovery_note: Restore the database backup taken before the update.
 
 # wait: after the rebase gate, push the branch and wait for the tracker's
 # pipeline on that exact commit before merging; red is one more implementer
