@@ -1,5 +1,5 @@
 import { requireTypeSafeKey } from './typesafe.js';
-import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
+import { acceptanceCorrection, acceptanceFor, acceptanceHandoff, refusePass, reportResubmissionLimit } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -71,12 +71,13 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
   let head = '';
   let committed = false;
+  let status = '';
   let latest = '';
   let observed: AcceptanceObservation | undefined;
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
-    const status = (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
+    status = (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
     committed = !status;
     if (project.tests !== 'none') {
       const run = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
@@ -100,11 +101,34 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
     runtime = { async run() { return { outcome: infrastructure(`Review preparation failed: ${message}`) }; } };
   }
   const duration = Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0);
-  const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
-    role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
-    effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}${acceptanceHandoff(acceptance)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
-    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, browserUrl: browser.url, signal: options.signal,
-  }, options);
+  let result: Awaited<ReturnType<typeof runRole>>;
+  for (;;) {
+    result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
+      role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
+      effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}${acceptanceHandoff(acceptance)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}${progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}`,
+      ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, browserUrl: browser.url, signal: options.signal,
+    }, options);
+    progress.outputs!.reviewer = result;
+    if (readRun(cwd).tickets.find(row => row.number === number)!.stopRequested) return stopped();
+    const correction = acceptanceCorrection(acceptance, result.outcome, head, progress.reportCorrection);
+    if (!correction) {
+      if (result.outcome.outcome === 'pass' || result.outcome.outcome === 'bounce') delete progress.reportCorrection;
+      break;
+    }
+    // A report correction may not authorize review of different code, or hide reviewer writes.
+    try {
+      if ((await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim() !== head ||
+          (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim() !== status) throw new Error('Worktree or HEAD changed during review; refusing report resubmission.');
+    } catch (error) { result.outcome = infrastructure(String(error)); break; }
+    progress.reportCorrection = correction;
+    const exhausted = correction.attempts > reportResubmissionLimit;
+    const details = `${exhausted ? 'Reviewer report-shape failure: resubmission limit exhausted.' : `Requesting reviewer report resubmission ${correction.attempts}/${reportResubmissionLimit}.`}\n\n${correction.feedback}`;
+    const ok = await transition(cwd, project, writer, number, {
+      team: progress, ...(exhausted ? { state: 'logjam', reason: 'report-shape' } : {}),
+      report: { stage: 'report-shape', details, reachedStage: 'reviewer', round: result.round },
+    }, [], options);
+    if (exhausted || !ok || !result.mirrored) return { status: 'logjam', ticket: number, ...result, outcome: infrastructure(details) };
+  }
   if (result.outcome.outcome === 'pass' || result.outcome.outcome === 'bounce') {
     const diagnostics = await acceptanceDiagnostics(cwd, ticket.worktree, head, acceptance, result.outcome.acceptance, observed, options.acceptanceScreening);
     if (diagnostics.length) result.diagnostics = [...result.diagnostics ?? [], ...diagnostics];

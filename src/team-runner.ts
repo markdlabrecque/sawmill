@@ -1,5 +1,5 @@
 import { requireTypeSafeKey } from './typesafe.js';
-import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
+import { acceptanceCorrection, acceptanceFor, acceptanceHandoff, refusePass, reportResubmissionLimit } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { exportRecords } from './attempt-record.js';
 import { executionMeasurement, selectModel } from './model-routing.js';
@@ -555,7 +555,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           }
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...selected, prompt: prompt + verificationInstructions(verificationFrom(project), role),
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${role === 'reviewer' && progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
           }, options);
@@ -580,8 +580,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
-        // The same checklist decides every round; an unmet item is a bounce, never a pass.
-        const refused = role === 'reviewer' && result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
+        const reportCorrection = role === 'reviewer' ? acceptanceCorrection(acceptance, result.outcome, beforeRole, progress.reportCorrection) : undefined;
+        // Unmet requirements bounce to code repair; unknown IDs instead return to the reviewer.
+        const refused = !reportCorrection && role === 'reviewer' && result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
         if (refused) result.outcome = refused;
         if (result.outcome.outcome === 'no-change') {
           checkStop(cwd, number);
@@ -637,7 +638,24 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           }
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
+        if (reportCorrection) {
+          progress.reportCorrection = reportCorrection;
+          resume = progress.next = 'reviewer';
+          const exhausted = reportCorrection.attempts > reportResubmissionLimit;
+          const details = `${exhausted ? 'Reviewer report-shape failure: resubmission limit exhausted.' : `Requesting reviewer report resubmission ${reportCorrection.attempts}/${reportResubmissionLimit}.`}\n\n${reportCorrection.feedback}`;
+          if (exhausted) {
+            checkStop(cwd, number);
+            const ok = await transition(cwd, project, tracker, number, {
+              state: 'logjam', reason: 'report-shape', stage: 'reviewer', team: progress,
+              report: { stage: 'report-shape', details, reason: 'report-shape', reachedStage: role, round: result.round },
+            }, [], options);
+            return { outcome: ok ? 'aborted' : 'infrastructure', ticket: number, stage: 'reviewer', reason: ok ? 'report-shape' : 'tracker', error: details, roleOutcome: result.outcome };
+          }
+          await save({ report: { stage: 'report-shape', details, reachedStage: role, round: result.round } });
+          continue;
+        }
         if (role === 'reviewer') {
+          delete progress.reportCorrection;
           progress.reviewedHead = beforeRole;
           if (result.outcome.outcome === 'pass') progress.approvedHead = beforeRole;
         }
