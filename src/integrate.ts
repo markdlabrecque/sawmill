@@ -49,6 +49,14 @@ type CommandRun = { code: number | null; timedOut: boolean; output: string };
 export async function tests(cwd: string, project: ProjectConfig, home?: string, childStarted?: (pid: number) => void): Promise<CommandRun> {
   const config = project.tests;
   if (config === 'none') throw new Error('Tests are off (tests: none); there is no test command to run.');
+  // Generated files survive checkout. Let the project remove only its own outputs before
+  // every run, including the baseline and the return to the ticket's tests after it.
+  const required = project.required_checks;
+  if (required?.clean !== undefined) {
+    const cleaned = await command(cwd, required.clean, required.timeout, home, childStarted);
+    if (cleaned.timedOut) throw new Error(`Test preparation clean timed out after ${required.timeout}: ${required.clean}\n${cleaned.output}`);
+    if (cleaned.code !== 0) throw new Error(`Test preparation clean failed (exit ${cleaned.code}): ${required.clean}\n${cleaned.output}`);
+  }
   return command(cwd, config.command, config.timeout, home, childStarted);
 }
 
