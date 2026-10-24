@@ -51,11 +51,34 @@ To work on a ticket by hand, stop it first with `mill run stop <n>`, then wait f
 
 ## Answering a stuck ticket
 
-1. Read the reason in `mill run status` and the latest report, in full, with `mill run log <n>`. A stuck ticket gets only the `logjam` label, not a comment.
+1. Read the diagnosis on the ticket in `mill board` (or `mill board --json`): the phase or check that failed, a redacted excerpt of its output, the reviewed, tested, local and pushed heads, the build and environment, the newest full log, and the supported next command with what it will do. `mill run status` prints the next command for each stop, and `mill run log <n>` has every report in full. A stuck ticket gets only the `logjam` label, not a comment.
 2. Answer with `mill run answer <n> "<text>"`. Say what to do and why. A bare "go" gives the agent nothing new, so it often stops in the same place.
 3. For an outage you fixed, such as setup or the network, answer without text: `mill run answer <n>`.
    A `retry-cap` answer buys one more round: the implementer gets the reviewer's last feedback and your answer, and one more bounce stops the ticket again (#114).
 4. In an active run, the scheduler picks up the answered ticket, starting the scheduler if it was not running. An answer does not start an inactive draft, and `mill run answer` leaves a stopped run stopped: start it with `mill run`. Only a board answer also starts a stopped run (#93). An answer never clears a pause.
+
+Every board ticket action carries the attempt the page drew, whatever state the ticket was in. If the ticket has moved on since, such as a queued ticket that ran and stopped, a new failure or another answer, the board refuses the action and changes nothing; reload and read the new diagnosis. The diagnosis also names the ticket's owner: its tracker assignment and the worker that last ran it.
+
+### The common stops
+
+| Stop | What the diagnosis shows | Command |
+| --- | --- | --- |
+| Environment: setup, prepare, network or credentials | The failing hook and its output | Fix the cause, then `mill run answer <n>` with no text. It retries from the saved checkpoint without spending a bounce. |
+| Review or test correction ran out of rounds (`retry-cap`) | The reviewer's last feedback, or the failing test command or required check | `mill run answer <n> "<guidance>"` for one more round. If the implementer kept changing protected tests that are right as they stand, `mill run approve-tests <n>` first. |
+| CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
+| Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
+
+To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. None of these needs `run.sqlite`.
+
+## Being told when to act
+
+Put an executable `.mill/notify.sh` in the millyard to be told instead of polling. While the scheduler serves the run, and on each `mill run notify`, Mill runs the hook once per new event with the event as JSON on stdin:
+
+- `decision-needed`: a ticket stopped and waits for you. The event has its next command, explanation and redacted excerpt. A ticket that stops again on a new attempt sends a new event.
+- `completed`: a ticket is done.
+- `stalled`: a working ticket has recorded no progress for longer than `role_timeout`. Mill never records progress to send a heartbeat, so this is the only signal for a hang.
+
+Each event goes out once per run, even across restarts; an unchanged poll sends nothing. A hook that exits non-zero is retried on the next pass. For example, `notify-send "Mill" "$(jq -r '"#\(.ticket) \(.kind)"')"`.
 
 ## Which stops are real
 
@@ -84,6 +107,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |
+| Query `run.sqlite` to find why a ticket stopped and what to run | The diagnosis in `mill board` or `mill board --json` (#143). |
 | Edit `question`, `activeRole`, or `next` in `run.sqlite` | No command yet. #87 only covers a corrected test, so file a ticket that names the field. |
 | Rebuild and reinstall `mill` after a pull, then restart the scheduler | `mill update <checkout>` (#122). Preflight warns when the running build's revision is older than `origin`. |
 

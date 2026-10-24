@@ -37,6 +37,8 @@ export interface IntegrationResult {
   outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'smoke-failed' | 'ci-failed' | 'infrastructure' | 'stopped';
   ticket: number;
   message?: string;
+  /** The local test command or required check that failed, with its exit code. */
+  command?: string;
   pipeline?: Pipeline;
   mergeCommit?: string;
   changeRequestUrl?: string;
@@ -147,7 +149,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
   let progress: IntegrationProgress = { ...ticket.integration };
   let mergeCommit = ticket.mergeCommit;
   let stage = ticket.stage ?? 'rebase';
-  const result = (outcome: IntegrationResult['outcome'], detail?: string): IntegrationResult => ({ outcome, ticket: number, ...(detail ? { message: detail } : {}), ...(progress.pipeline ? { pipeline: progress.pipeline } : {}), ...(mergeCommit ? { mergeCommit } : {}), ...(progress.changeRequest ? { changeRequestUrl: progress.changeRequest.url } : {}) });
+  const result = (outcome: IntegrationResult['outcome'], detail?: string, command?: string): IntegrationResult => ({ outcome, ticket: number, ...(detail ? { message: detail } : {}), ...(command ? { command } : {}),...(progress.pipeline ? { pipeline: progress.pipeline } : {}), ...(mergeCommit ? { mergeCommit } : {}), ...(progress.changeRequest ? { changeRequestUrl: progress.changeRequest.url } : {}) });
   const guard = () => {
     const current = readRun(cwd);
     const row = current.tickets.find(row => row.number === number);
@@ -258,13 +260,13 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
         if (tested.code !== 0) {
           await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
-          return result('tests-failed', tested.output || `Tests exited ${tested.code}.`);
+          return result('tests-failed', tested.output || `Tests exited ${tested.code}.`, `${project.tests.command} (test command, exit ${tested.code})`);
         }
         // Exit 0 is not enough when a scenario accepted as red was skipped, renamed away or still fails.
         const green = greenProblem(readRun(cwd).tickets.find(row => row.number === number)!.team.redScenarios, tested.output);
         if (green) {
           await save({ report: { stage: 'rebase', details: `Local tests passed but the green check failed. ${green}\n${tested.output}` } });
-          return result('tests-failed', `${green}\n${tested.output}`);
+          return result('tests-failed', `${green}\n${tested.output}`, `${project.tests.command} (test command, green check)`);
         }
         if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
       }
@@ -287,7 +289,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
           if (ran.code !== 0) {
             const detail = `Required check ${name} failed (exit ${ran.code}): ${script}\n${ran.output}`;
             await save({ report: { stage: 'rebase', details: detail } });
-            return result('checks-failed', detail);
+            return result('checks-failed', detail, `${script} (required check ${name}, exit ${ran.code})`);
           }
           if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`Required check ${name} changed the ticket worktree or HEAD; refusing to push unchecked work.`);
         }

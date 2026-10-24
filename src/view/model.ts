@@ -7,6 +7,7 @@ import { ticketUrl } from '../links.js';
 import { listMillyards } from '../registry.js';
 import { historyPath, readRun, readRunFile, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
+import { attemptOf, diagnose, redact, type Diagnosis } from './diagnosis.js';
 
 export const lanes = ['queued', 'launch', 'worktree', 'tests', 'implement', 'review', 'rebase', 'PR', 'CI', 'merged'] as const;
 export type Lane = typeof lanes[number];
@@ -30,6 +31,10 @@ export interface ViewTicket {
   /** What keeps the ticket from moving, or null when nothing does. */
   blockage: string | null;
   actions: Record<TicketAction, ViewAction>;
+  /** The attempt this view drew, whatever the state; an action naming it is refused once the ticket moves on. */
+  attempt: string;
+  /** The evidence and supported next command for a ticket in logjam in the current run; null otherwise. */
+  diagnosis: Diagnosis | null;
 }
 export type TicketAction = 'stop' | 'answer' | 'reset' | 'close';
 /** Whether the run rules allow an action now; `reason` says why not. */
@@ -106,8 +111,8 @@ export function ticketActions(ticket: RunTicket, pending: boolean): Record<Ticke
 const archived: Record<TicketAction, ViewAction> = Object.fromEntries((['stop', 'answer', 'reset', 'close'] as const)
   .map(action => [action, allow('Archived runs are view-only.')])) as Record<TicketAction, ViewAction>;
 
-/** Long agent output is cut so the snapshot stays small; the run log keeps it whole. */
-const clip = (text: string) => text.length > 600 ? `${text.slice(0, 600)}…` : text;
+/** Long agent output is cut so the snapshot stays small; the run log keeps it whole. Secrets never reach the page. */
+const clip = (text: string) => { const clean = redact(text); return clean.length > 600 ? `${clean.slice(0, 600)}…` : clean; };
 
 function blockage(ticket: RunTicket, pending: boolean): string | null {
   if (ticket.state === 'blocked') return `Waiting for ${ticket.blockers.map(number => `#${number}`).join(', ')} to finish.`;
@@ -121,15 +126,18 @@ function blockage(ticket: RunTicket, pending: boolean): string | null {
   return clip(`Logjam (${ticket.reason ?? 'unknown'})${at}${detail ? `: ${detail}` : '.'}`);
 }
 
-function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null, current = false): ViewTicket[] {
+/** `millyard` is given for the current run only: its stopped tickets are diagnosed, archived ones are not. */
+function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null, millyard?: string): ViewTicket[] {
   return run.tickets.map((ticket): ViewTicket => {
     const pending = run.pendingWrites.some(write => write.ticket === ticket.number);
     const row = {
       number: ticket.number, title: ticket.title, url: issueUrl(tracker, ticket.number), state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
     };
-    return { ...row, lane: laneOf(row), question: ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null,
-      blockage: blockage(ticket, pending), actions: current ? ticketActions(ticket, pending) : archived };
+    const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
+    return { ...row, lane: laneOf(row), question: question === null ? null : redact(question),
+      blockage: blockage(ticket, pending), actions: millyard ? ticketActions(ticket, pending) : archived, attempt: attemptOf(ticket),
+      diagnosis: millyard && ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
   });
 }
 
@@ -177,7 +185,7 @@ export async function readView(home: string): Promise<ViewSnapshot> {
     const runs: ViewRun[] = [];
     try {
       const run = readRun(millyard);
-      const tickets = viewTickets(run, tracker, true);
+      const tickets = viewTickets(run, tracker, millyard);
       if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run, tracker) });
       else projects.push({ name, millyard, runId: run.run.id, error: null, runStatus: runStatus(run), pausedReason: run.run.loop?.pausedReason ?? null, runActions: runActions(run), tickets });
     } catch (error) {

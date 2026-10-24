@@ -18,6 +18,7 @@ import { createWorktree, prepareWorktree, removeWorktree, gcWorktrees } from './
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
 import { waiveItem } from './waive.js';
+import { notify } from './notify.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -34,6 +35,7 @@ import { formatRun, formatTicketLog, readRun, readTicketLog, type MirrorWrite, t
 import { ticketRef } from './links.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 import { resolveMillyard } from './millyard.js';
+import { diagnose } from './view/diagnosis.js';
 import { readView } from './view/model.js';
 import { serveView } from './view/server.js';
 
@@ -238,7 +240,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const snapshot = view(readRun(cwd));
         const { scheduler, unresolvedReservations: unresolved } = snapshot;
         const capacity = unresolved.length ? [`Machine slots: ${listSlots(home).length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
-        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity].join('\n'));
+        // Each stop names its supported next command; mill board --json carries the full diagnosis.
+        const stops = snapshot.tickets.filter(ticket => ticket.state === 'logjam').map(ticket => {
+          const { phase, command, next } = diagnose(ticket, cwd);
+          return `${ref(ticket.number)} stopped at ${phase}${command ? ` running ${command}` : ''}. Next: ${next.command}. ${next.explanation}`;
+        });
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity,
+          ...stops, ...(stops.length ? ['Evidence, identities and log for each stop: mill board, or mill board --json.'] : [])].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
@@ -297,6 +305,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const entries = readTicketLog(cwd, Number(positional[2]));
         emit(entries, formatTicketLog(entries));
         return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'notify') {
+        if (positional.length !== 2) throw new CliError(usage('run notify'), 2);
+        const result = await notify(cwd, config.project.role_timeout);
+        emit(result, result.status === 'no-hook' ? `No ${result.hook}; nothing was sent. Add an executable hook there to receive events as JSON on stdin.`
+          : [`Sent ${result.sent.length} new event(s).`, ...result.sent.map(event => `${ref(event.ticket)}: ${event.kind}`),
+            ...result.failures.map(({ event, error }) => `${ref(event.ticket)}: ${event.kind} not sent; it is retried next time: ${error}`)].join('\n'));
+        return result.status === 'failed' ? 1 : 0;
       }
       if (positional[0] === 'run' && positional[1] === 'approve-tests') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run approve-tests'), 2);

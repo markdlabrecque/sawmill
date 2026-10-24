@@ -126,6 +126,8 @@ export interface RepairContext {
   source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'smoke-failed' | 'ci-failed';
   feedback: string;
   baseCommit: string;
+  /** The local test command or required check that failed integration, with its exit code. */
+  command?: string;
   failedCases?: import('./runtime.js').UserCase[];
 }
 export interface WorkerOwnership {
