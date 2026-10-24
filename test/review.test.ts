@@ -5,6 +5,7 @@ import test, { type TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
 import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+import { until } from './dispatch-fixture.js';
 
 async function reviewYard(t: TestContext) {
   const ticket: Ticket = { number: 11, title: 'Review the café', body: 'Preserve the full patch.', state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
@@ -345,18 +346,24 @@ test('CLI termination cleans up the vendor and records interruption before exiti
   const { symlink, chmod } = await import('node:fs/promises');
   await writeFile(join(yard.root, 'gh'), `#!${process.execPath}\nprocess.stdin.resume(); process.stdin.on('end', () => process.stdout.write('{}'));\n`);
   await chmod(join(yard.root, 'gh'), 0o755);
-  await processRuntime(yard, `process.stdin.resume(); require('node:fs').writeFileSync('vendor.pid', String(process.pid)); process.stdout.write(${JSON.stringify(JSON.stringify(init) + '\n')}); setTimeout(() => process.exit(), 1500);`);
+  await processRuntime(yard, `process.stdin.resume(); require('node:fs').writeFileSync('vendor.pid', String(process.pid)); process.stdout.write(${JSON.stringify(JSON.stringify(init) + '\n')}); setInterval(() => {}, 1000);`);
   await symlink(join(yard.root, 'fake-claude'), join(yard.root, 'claude'));
+  let pid = 0;
   const child = spawn(process.execPath, [new URL('../src/bin.js', import.meta.url).pathname, 'team', 'review', '11', '--json'], {
     cwd: yard.cwd, env: { ...yard.env, PATH: `${yard.root}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(async () => {
+    child.kill('SIGKILL');
+    const vendorPid = pid || Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0'));
+    if (vendorPid) { try { process.kill(vendorPid, 'SIGKILL'); } catch {} }
   });
   let stdout = ''; child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.resume();
   const exited = new Promise<number | null>(resolve => child.on('close', code => resolve(code)));
-  let pid = 0;
-  for (let i = 0; i < 100; i++) { pid = Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0')); if (pid) break; await new Promise(resolve => setTimeout(resolve, 10)); }
+  pid = await until(async () => Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0')), value => value > 0);
   assert.ok(pid, 'fake vendor started');
-  t.after(() => { child.kill('SIGKILL'); try { process.kill(pid, 'SIGKILL'); } catch {} });
+  await until(async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0],
+    row => row.sessionIds.reviewer?.includes('fixture-session') === true);
   child.kill('SIGTERM');
   assert.equal(await exited, 1, stdout);
   assert.match(JSON.parse(stdout).outcome.error, /interrupted/i);
