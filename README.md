@@ -352,6 +352,21 @@ checks:
 
 These commands run trusted project code, the same as the test command. They supplement the full suite and never replace it: Mill's red check, the green run and the run before merge still use `tests.command`. A failing focused test or check counts as an ordinary test failure, not a broken tool.
 
+### Required checks
+
+`checks` are advisory: roles may run them, but Mill does not enforce them before merge. To make a check block delivery, declare it under `required_checks`:
+
+```yaml
+required_checks:
+  clean: rm -rf dist
+  build: npm run build
+  lint: npm run lint
+  typecheck: npx tsc --noEmit
+  timeout: 30m
+```
+
+`mill integrate` runs each declared command with `bash -c` in the ticket worktree on the rebased head, after the test command and before push, in the order clean, build, lint, typecheck. Each must exit 0 within `timeout` (default `30m`) and leave HEAD and the worktree unchanged. A non-zero exit, including a missing command, reports `checks-failed` with the output and sends the work back to the implementer. A timeout or a changed worktree blocks delivery as `infrastructure`. Required checks run even with `tests: none`, and focused runs never stand in for them. A command repeated under two names runs once and is reported as the same evidence. Mill deletes no build output itself, so use `clean` to remove generated files so stale output cannot pass a build. The PR body and merge report list the checks that passed and the head they ran on. Existing configs without `required_checks` behave as before.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.
