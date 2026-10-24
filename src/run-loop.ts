@@ -7,7 +7,7 @@ import { dispatchOnce, dispatchPreflight, readyTickets, workerEvents, type Dispa
 import { readRun } from './run-store.js';
 import { listSlots, slotsPath } from './slots.js';
 import type { TicketWriter } from './tracker.js';
-import { activateRun, beginLoop, consumeResults } from './transitions.js';
+import { activateRun, beginLoop, consumeResults, reconcilePick } from './transitions.js';
 import { lockHeld, withRunLock } from './run-lock.js';
 import { recoverWorkers } from './recovery.js';
 import { registerMillyard } from './registry.js';
@@ -51,26 +51,30 @@ async function runLocked(cwd: string, project: ProjectConfig, machine: MachineCo
   activateRun(cwd);
   await registerMillyard(home, cwd);
   beginLoop(cwd);
-  const started: DispatchResult['started'] = [], failures: DispatchResult['failures'] = [];
+  const started: DispatchResult['started'] = [], failures: DispatchResult['failures'] = [], notes: string[] = [];
   for (;;) {
     const notification = changes(cwd, home);
     try {
       await recoverWorkers(cwd, home);
       const before = readRun(cwd);
+      if (before.run.pendingPick !== undefined) {
+        const note = reconcilePick(cwd, before.run.id);
+        if (note) notes.push(note);
+      }
       const controlBefore = consumeResults(cwd, machine.pause_threshold);
       const occupied = new Set(listSlots(home).map(slot => slot.path));
       const capacity = occupied.size < machine.concurrency;
       if (capacity && !controlBefore.pausedReason && before.run.lifecycle !== 'stopped' && readyTickets(before).length) {
         const dispatched = await dispatchOnce(cwd, project, machine, home, writer, () => !consumeResults(cwd, machine.pause_threshold).pausedReason && readRun(cwd).run.lifecycle !== 'stopped');
-        started.push(...dispatched.started); failures.push(...dispatched.failures);
+        started.push(...dispatched.started); failures.push(...dispatched.failures); notes.push(...dispatched.notes);
       }
       const snapshot = readRun(cwd);
       const live = workerEvents(snapshot).some(event => event.worker.status !== 'finished');
       const control = consumeResults(cwd, machine.pause_threshold);
-      if (snapshot.run.lifecycle === 'stopped' && !live) return { status: 'stopped', reason: 'The run was stopped; start it again with mill run.', runId: snapshot.run.id, started, failures };
-      if (control.pausedReason && !live) return { status: 'paused', reason: control.pausedReason, runId: snapshot.run.id, started, failures };
+      if (snapshot.run.lifecycle === 'stopped' && !live) return { status: 'stopped', reason: 'The run was stopped; start it again with mill run.', runId: snapshot.run.id, started, failures, notes };
+      if (control.pausedReason && !live) return { status: 'paused', reason: control.pausedReason, runId: snapshot.run.id, started, failures, notes };
       if (!live && !readyTickets(snapshot).length) {
-        return { status: failures.length || snapshot.tickets.some(row => row.state !== 'done') ? 'partial' : 'ok', runId: snapshot.run.id, started, failures };
+        return { status: failures.length || snapshot.tickets.some(row => row.state !== 'done') ? 'partial' : 'ok', runId: snapshot.run.id, started, failures, notes };
       }
       await notification.waiting;
     } finally { notification.close(); }

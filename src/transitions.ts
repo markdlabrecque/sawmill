@@ -177,6 +177,8 @@ function update(db: DatabaseSync, number: number, change: Transition, writes: Mi
   if (change.stage !== undefined) db.prepare('UPDATE tickets SET stage_started = ? WHERE number = ?').run(now, number);
   for (const write of writes) enqueue(db, number, write);
   db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, now, JSON.stringify({ change, writes }));
+  // Lifecycle changes (including a blocker's state) invalidate a preference immediately.
+  clearIneligiblePick(db);
 }
 
 /** The same readiness checks govern picks and worker claims, under the run's write lock. */

@@ -310,7 +310,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       if (positional[0] === 'run' && positional[1] === '--foreground') {
         if (positional.length !== 2) throw new CliError(usage('run'), 2);
         const result = await runLoop(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
-        emit(result, 'reason' in result ? result.reason! : `${result.status}: started ${result.started.length} team(s).`);
+        emit(result, ['reason' in result ? result.reason! : `${result.status}: started ${result.started.length} team(s).`, ...result.notes].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       // --background is kept as an alias for the default so #43 scripts keep working.

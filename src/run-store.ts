@@ -435,6 +435,7 @@ export function formatTicketLog(entries: LogEntry[]): string {
   return entries.map(({ time, event }) => {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
     if (event.stateLookupError !== undefined) return `${time} state check failed: ${String(event.stateLookupError)}`;
+    if (typeof event.pick === 'string') return `${time} ${event.pick}`;
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
     if (event.waived) { const { item, reason, by, snapshot } = event.waived as import('./acceptance.js').AcceptanceWaiver; return `${time} ${item} waived by ${by} for checklist ${snapshot}: ${reason}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }
