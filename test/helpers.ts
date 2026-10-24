@@ -6,6 +6,10 @@ import type { TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
 import { stopScheduler } from '../src/scheduler.js';
 
+// Execution-success fixtures require local configuration, never a real credential.
+// Missing-key scenarios explicitly remove or blank this in their execution environment.
+process.env.TYPESAFE_API_KEY = 'sawmill-test-dummy-key';
+
 export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'tracker' | 'sleep'> = {}, prefix = 'sawmill-') {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const cwd = join(root, 'main');

@@ -1,3 +1,4 @@
+import { requireTypeSafeKey } from './typesafe.js';
 import { watch } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ import { activateRun, beginLoop, consumeResults } from './transitions.js';
 import { lockHeld, withRunLock } from './run-lock.js';
 import { recoverWorkers } from './recovery.js';
 import { registerMillyard } from './registry.js';
-import { ensureScheduler, notifyScheduler } from './scheduler.js';
+import { ensureExecutionScheduler, notifyScheduler } from './scheduler.js';
 
 /** Notifications are hints. SQLite is re-read after every wake, including a bounded
  * fallback for missed filesystem notifications. Subscribe before reading state. */
@@ -25,6 +26,7 @@ function changes(cwd: string, home: string) {
 /** `mill run --foreground`: activates the run and coordinates it in this terminal. It holds
  * the run's loop lock, so the shared scheduler leaves the run to it until it returns. */
 export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {
+  requireTypeSafeKey();
   readRun(cwd);
   await recoverWorkers(cwd, home);
   return withRunLock(cwd, 'loop', () => runLocked(cwd, project, machine, home, writer), true);
@@ -36,8 +38,8 @@ export async function resumeRun(cwd: string, home: string, number: number): Prom
   const snapshot = readRun(cwd);
   if (snapshot.run.lifecycle !== 'active' || snapshot.tickets.find(row => row.number === number)?.state !== 'queued' || lockHeld(cwd, 'loop')) return undefined;
   try {
+    const scheduler = await ensureExecutionScheduler(home);
     await registerMillyard(home, cwd);
-    const scheduler = await ensureScheduler(home);
     notifyScheduler(home);
     return { pid: scheduler.pid, log: scheduler.log };
   } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }

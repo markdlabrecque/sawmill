@@ -1,3 +1,4 @@
+import { typeSafeKeyAvailable } from './typesafe.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
@@ -28,7 +29,7 @@ const watchFiles = process.env.MILL_SCHEDULER_WATCH !== 'off';
 const say = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
 const token = process.env.MILL_WORKER_TOKEN ?? randomUUID();
 const build = readBuildIdentity(packageRoot)?.id;
-const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString(), ...(build ? { build } : {}) });
+const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString(), typeSafeKeyAvailable: typeSafeKeyAvailable(), ...(build ? { build } : {}) });
 if (process.send) await new Promise<void>(resolve => process.send!({ type: 'scheduler', pid: owner.pid }, () => resolve()));
 if (process.connected) process.disconnect?.();
 if (owner.token !== token) {
@@ -93,6 +94,9 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
   try {
     const before = readRun(cwd);
     if (before.run.lifecycle === 'inactive') return undefined;
+    // A keyless daemon may remain available for administration, but cannot recover,
+    // activate or admit work. Report once, without spending any ticket retry budget.
+    if (before.run.lifecycle === 'active' && !typeSafeKeyAvailable()) throw new Error('TYPESAFE_API_KEY is missing from the scheduler execution environment. Set/export it, run mill scheduler stop, then mill run.');
     // A completed run is still watched while a worker finishes its cleanup, so a crash there is recovered.
     if (before.run.lifecycle === 'completed' && before.tickets.every(row => !row.worker || row.worker.status === 'finished')) {
       await sendNotifications(cwd);

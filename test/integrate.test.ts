@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import { MergeRefusedError } from '../src/tracker.js';
 import type { ChangeRequest, Ticket } from '../src/tracker.js';
 import { runCli } from '../src/cli.js';
 import { millyard } from './helpers.js';
+import { loadConfig } from '../src/config.js';
+import { CliError } from '../src/errors.js';
+import { integrate } from '../src/integrate.js';
+import { withRunLock } from '../src/run-lock.js';
+import { readRun } from '../src/run-store.js';
+import { listSlots } from '../src/slots.js';
 
 class FakeTracker {
   readsAllowed = true;
@@ -78,6 +87,122 @@ async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = as
   tracker.delete = async branch => { yard.git('push', '--no-follow-tags', 'origin', '--delete', branch); };
   const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
   return { ...yard, tracker, path, seed, status, approve };
+}
+
+// Authorized integration-start regression coverage: use genuinely reviewed work,
+// then remove configuration only in the environment that will execute it.
+const missingKeys = [['unset', undefined], ['empty', ''], ['whitespace', ' \t\n ']] as const;
+const privateKey = 'integration-start-secret-must-not-appear';
+
+function missingKeyMessage(message: string) {
+  assert.match(message, /TYPESAFE_API_KEY/);
+  assert.match(message, /set|export|environment/i);
+  assert.ok(!message.includes(privateKey));
+}
+
+async function guardedIntegration(t: TestContext) {
+  const y = await fixture(t);
+  const activity = join(y.root, 'unexpected-activity');
+  // These would run during integration even without a tracker or model call.
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: test -f feature.test.ts', `command: 'echo tests >> "${activity}"'`));
+  await writeFile(join(y.cwd, '.mill/prepare.sh'), `echo prepare >> "${activity}"\nexit 1\n`);
+  const loaded = await loadConfig(y.cwd, y.home);
+  assert.equal(loaded.valid, true);
+  const before = readRun(y.cwd);
+  assert.equal(before.tickets[0]!.stage, 'review-pass');
+  assert.equal(before.tickets[0]!.team.approvedHead, y.git('rev-parse', 'mill/9'));
+  const refs = y.git('show-ref');
+  const remoteRefs = y.git('ls-remote', 'origin');
+  const calls: string[] = [];
+  const touch = (name: string): never => { calls.push(name); throw new Error(`Unexpected ${name}`); };
+  const tracker = new Proxy(y.tracker, {
+    get(target, name, receiver) {
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? () => touch(`tracker ${String(name)}`) : value;
+    },
+  });
+  const options = {
+    home: y.home,
+    runtime: { async run() { return touch('model'); } },
+    async sleep() { touch('retry delay'); },
+  };
+  t.mock.method(globalThis, 'fetch', async () => touch('network'));
+  const unchanged = async () => {
+    const durable = (snapshot: ReturnType<typeof readRun>) => ({
+      ...snapshot, tickets: snapshot.tickets.map(({ timeInStageSeconds: _elapsed, ...row }) => row),
+    });
+    assert.deepEqual(durable(readRun(y.cwd)), durable(before), 'no activation, claims, stages, or retry budget spent');
+    assert.deepEqual(listSlots(y.home), []);
+    assert.deepEqual(calls, []);
+    assert.equal(await readFile(activity, 'utf8').catch(() => ''), '', 'no setup, preparation, tests, or child calls');
+    assert.equal(y.git('show-ref'), refs);
+    assert.equal(y.git('ls-remote', 'origin'), remoteRefs);
+    assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+    assert.ok(!JSON.stringify(readRun(y.cwd)).includes(privateKey));
+  };
+  return { ...y, activity, project: loaded.project, tracker, options, unchanged };
+}
+
+for (const [label, value] of missingKeys) {
+  test(`integrate rejects a ${label} TypeSafe key before waiting on the integration lock or doing work`, async t => {
+    const y = await guardedIntegration(t);
+    const previous = process.env.TYPESAFE_API_KEY;
+    t.after(() => { if (previous === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = previous; });
+    if (value === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = value;
+    let pending: Promise<unknown> | undefined;
+    try {
+      await withRunLock(y.cwd, 'integration', async () => {
+        pending = integrate(y.cwd, y.project, 9, y.tracker, y.options).then(
+          result => ({ result }), error => ({ error }),
+        );
+        // A local validation rejection settles before another event-loop turn.
+        // Releasing the lock only afterwards proves it never waited for ownership.
+        const settled = await Promise.race([pending, new Promise(resolve => setImmediate(() => resolve('waiting')))]);
+        assert.notEqual(settled, 'waiting', 'credential validation must precede the integration-lock wait');
+        assert.ok(settled && typeof settled === 'object' && 'error' in settled);
+        assert.ok(settled.error instanceof CliError);
+        assert.equal(settled.error.exitCode, 2);
+        missingKeyMessage(settled.error.message);
+        await y.unchanged();
+      });
+    } finally { await pending; }
+  });
+
+  for (const json of [false, true]) for (const locked of [false, true]) {
+    test(`integrate CLI ${json ? 'JSON' : 'text'} rejects a ${label} TypeSafe key ${locked ? 'with a legacy lock' : 'before side effects'}`, async t => {
+      const y = await guardedIntegration(t);
+      // Fail and record tracker/model children without calling real services.
+      // Read-only git/config discovery remains available to the CLI.
+      const bin = join(y.root, 'guard-bin');
+      await mkdir(bin);
+      for (const name of ['gh', 'glab', 'claude', 'codex', 'pi']) {
+        const path = join(bin, name);
+        await writeFile(path, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(y.activity)}, ${JSON.stringify(name + '\n')}); process.exit(71);\n`);
+        await chmod(path, 0o755);
+      }
+      // A legacy lock is a second deterministic ordering check: its operational
+      // error must not hide missing execution configuration.
+      if (locked) await writeFile(join(y.cwd, '.mill/integrate.lock'), 'held');
+      const env = { ...y.env, PATH: `${bin}:${process.env.PATH}`, TYPESAFE_API_KEY: value, UNRELATED_SECRET: privateKey };
+      if (value === undefined) delete env.TYPESAFE_API_KEY;
+      const reply = await promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL('../src/bin.js', import.meta.url)), 'integrate', '9', ...(json ? ['--json'] : []),
+      ], { cwd: y.cwd, env, timeout: 20000 }).then(
+        output => ({ code: 0, ...output }),
+        (error: { code: number; stdout: string; stderr: string }) => error,
+      );
+      assert.equal(reply.code, 2, `${reply.stdout}${reply.stderr}`);
+      if (json) {
+        const output = JSON.parse(reply.stdout);
+        assert.equal(output.status, 'configuration-error');
+        missingKeyMessage(JSON.stringify(output));
+      } else missingKeyMessage(`${reply.stdout}${reply.stderr}`);
+      assert.ok(!`${reply.stdout}${reply.stderr}`.includes(privateKey));
+      await y.unchanged();
+    });
+  }
 }
 
 test('integrate rebases, tests and squash-merges through a ticket-linked PR, then reports and closes', async t => {

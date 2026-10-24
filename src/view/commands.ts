@@ -8,7 +8,7 @@ import { resetTicket } from '../reset.js';
 import { lockHeld } from '../run-lock.js';
 import { resumeRun } from '../run-loop.js';
 import { readRun, type RunSnapshot } from '../run-store.js';
-import { ensureScheduler, notifyScheduler } from '../scheduler.js';
+import { ensureExecutionScheduler, requireSchedulerConfiguration, notifyScheduler } from '../scheduler.js';
 import type { TicketWriter } from '../tracker.js';
 import { activateRun, answerTicket, closeTicket, requestStop, stopRunAtBoundaries } from '../transitions.js';
 import { attemptOf } from './diagnosis.js';
@@ -88,6 +88,10 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
       return reset.status === 'ok' ? ok(`Reset #${ticket.number}; it is queued and starts fresh.`)
         : failed(`The tracker did not accept the reset of #${ticket.number}; pending writes are held. Try again.`);
     }
+    if (run.run.lifecycle === 'active' || (run.run.lifecycle === 'stopped' && runActions(run).start.available)) {
+      requireSchedulerConfiguration(home);
+      if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home);
+    }
     const message = typeof request.message === 'string' && request.message.trim() ? request.message : undefined;
     if (!await answerTicket(cwd, project, writer, ticket.number, message, options)) return failed(`The tracker did not accept the answer to #${ticket.number}; it is held for retry.`);
     // An answer starts a stopped run, but never a draft that was never started.
@@ -107,7 +111,9 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
 
 /** The same start as mill run, which then resumes only the tickets the board's Stop Run stopped. */
 async function startRun(cwd: string, home: string, project: ProjectConfig, writer: TicketWriter, options: Pick<CliOptions, 'sleep'>, done: string): Promise<CommandReply> {
+  requireSchedulerConfiguration(home);
   if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project);
+  await ensureExecutionScheduler(home);
   const stopped = readRun(cwd).run.stoppedTickets ?? [];
   activateRun(cwd);
   await registerMillyard(home, cwd);
@@ -117,8 +123,6 @@ async function startRun(cwd: string, home: string, project: ProjectConfig, write
     if (ticket?.state !== 'logjam' || ticket.reason !== 'stopped') continue;
     if (!await answerTicket(cwd, project, writer, number, undefined, options)) held.push(number);
   }
-  try { await ensureScheduler(home); }
-  catch (error) { return failed(`The run is started, but the shared scheduler did not start: ${text(error)}`); }
   notifyScheduler(home);
   if (held.length) return failed(`The run is started, but the tracker did not accept resuming ${held.map(n => `#${n}`).join(', ')}; answer them to retry.`);
   return ok(done);
