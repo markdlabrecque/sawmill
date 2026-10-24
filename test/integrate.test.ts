@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
@@ -333,6 +333,132 @@ else process.exit(9);
   assert.equal(finalRequests.filter(r => r.method === 'DELETE').length, 1);
   assert.equal(finalRequests.filter(r => r.endpoint.endsWith('/pulls') && r.method === 'POST').length, 1);
 
+});
+
+/** A native GitHub host that keeps PR #42's state in files. A switch file makes it act, then lose the
+ * response: lose-create and lose-merge after creating or merging, close-instead after closing unmerged. */
+async function lostResponseGitHub(t: TestContext, y: Awaited<ReturnType<typeof fixture>>) {
+  const bin = join(y.root, 'bin'); await mkdir(bin);
+  const log = join(y.root, 'requests.jsonl');
+  const file = (name: string) => join(y.root, name);
+  await writeFile(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+const endpoint = args[1];
+const method = args[args.indexOf('--method') + 1];
+const body = args.includes('--input') ? JSON.parse(fs.readFileSync(0, 'utf8')) : undefined;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ endpoint, method, body }) + '\\n');
+const file = name => ${JSON.stringify(y.root)} + '/' + name;
+const has = name => fs.existsSync(file(name));
+const git = (...args) => cp.execFileSync('git', args, { cwd: ${JSON.stringify(y.cwd)}, encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
+const lose = () => { console.error('read ECONNRESET'); process.exit(1); };
+const pr = () => {
+  const merged = has('pr-merged') ? JSON.parse(fs.readFileSync(file('pr-merged'), 'utf8')) : null;
+  return { number: 42, html_url: 'https://github.com/team/tool/pull/42', head: { sha: merged ? merged.head : git('rev-parse', 'mill/9') },
+    state: merged || has('pr-closed') ? 'closed' : 'open', merged: Boolean(merged), merge_commit_sha: merged ? merged.sha : null };
+};
+if (endpoint.includes('/issues/')) { if (method === 'GET') process.exit(8); console.log('{}'); }
+else if (endpoint.includes('/pulls?')) console.log(JSON.stringify(has('pr-created') && pr().state === 'open' ? [pr()] : []));
+else if (endpoint.endsWith('/pulls') && method === 'POST') { fs.writeFileSync(file('pr-created'), 'yes'); if (has('lose-create')) lose(); console.log(JSON.stringify(pr())); }
+else if (endpoint.endsWith('/pulls/42/merge') && method === 'PUT') {
+  if (has('close-instead')) { fs.writeFileSync(file('pr-closed'), 'yes'); lose(); }
+  const host = file('native-host-' + fs.readdirSync(${JSON.stringify(y.root)}).length);
+  git('clone', '--branch', 'integration', ${JSON.stringify(y.remote)}, host);
+  git('-C', host, 'config', 'user.name', 'Fixture'); git('-C', host, 'config', 'user.email', 'fixture@example.invalid');
+  git('-C', host, 'config', 'core.hooksPath', '/dev/null');
+  git('-C', host, 'merge', '--squash', 'origin/mill/9'); git('-C', host, 'commit', '-m', 'Native fixture merge');
+  const sha = git('-C', host, 'rev-parse', 'HEAD');
+  git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
+  fs.writeFileSync(file('pr-merged'), JSON.stringify({ head: body.sha, sha }));
+  if (has('lose-merge')) lose();
+  console.log(JSON.stringify({ merged: true, sha }));
+}
+else if (endpoint === 'repos/team/tool/pulls/42' && method === 'GET') {
+  if (has('read-fail')) { console.error('HTTP 503: fixture PR read unavailable'); process.exit(1); }
+  console.log(JSON.stringify(pr()));
+}
+else if (endpoint === 'repos/team/tool/git/refs/heads/mill%2F9' && method === 'DELETE') { git('push', 'origin', '--delete', 'mill/9'); }
+else process.exit(9);
+`);
+  await chmod(join(bin, 'gh'), 0o755);
+  const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`;
+  t.after(() => { process.env.PATH = oldPath; });
+  const integrate = async () => {
+    let stdout = '';
+    const code = await runCli(['integrate', '9', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {} });
+    return { code, stdout, value: JSON.parse(stdout) };
+  };
+  const counts = async () => {
+    const requests = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { endpoint: string; method: string });
+    return {
+      opens: requests.filter(r => r.endpoint.endsWith('/pulls') && r.method === 'POST').length,
+      merges: requests.filter(r => r.endpoint.endsWith('/pulls/42/merge')).length,
+      reads: requests.filter(r => r.endpoint === 'repos/team/tool/pulls/42' && r.method === 'GET').length,
+    };
+  };
+  const merged = async () => JSON.parse(await readFile(file('pr-merged'), 'utf8')) as { head: string; sha: string };
+  return { set: (name: string) => writeFile(file(name), 'yes'), clear: (name: string) => rm(file(name)), integrate, counts, merged };
+}
+
+test('native GitHub confirms a merge whose response was lost on the same PR and records it with one merge', async t => {
+  const y = await fixture(t);
+  const host = await lostResponseGitHub(t, y);
+  await host.set('lose-merge');
+  const { code, stdout, value } = await host.integrate();
+  assert.equal(code, 0, stdout);
+  assert.equal(value.outcome, 'merged');
+  const { head, sha } = await host.merged();
+  assert.equal(value.mergeCommit, sha);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged'); assert.equal(row.mergeCommit, sha);
+  assert.equal(row.integration.mergedHead, head);
+  assert.equal(y.git('rev-parse', 'HEAD'), sha);
+  assert.equal(y.tracker.head('mill/9'), '');
+  assert.deepEqual(await host.counts(), { opens: 1, merges: 1, reads: 1 });
+});
+
+test('native GitHub stops a lost merge as infrastructure with no completion when the PR is closed unmerged or unreadable', async t => {
+  for (const [name, switches, explain] of [
+    ['closed unmerged', ['close-instead'], /closed without merging/],
+    ['unreadable', ['lose-merge', 'read-fail'], /Could not confirm[^]*fixture PR read unavailable/],
+  ] as const) {
+    await t.test(name, async sub => {
+      const y = await fixture(sub);
+      const host = await lostResponseGitHub(sub, y);
+      for (const name of switches) await host.set(name);
+      const { code, stdout, value } = await host.integrate();
+      assert.equal(code, 1, stdout);
+      assert.equal(value.outcome, 'infrastructure'); assert.match(value.message, explain);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.completion, null); assert.equal(row.mergeCommit, null);
+      assert.equal((await host.counts()).merges, 1);
+      if (name !== 'unreadable') return;
+      // The host merged; once it can be read, a restart confirms that merge instead of merging again.
+      await host.clear('read-fail');
+      const again = await host.integrate();
+      assert.equal(again.code, 0, again.stdout);
+      assert.equal(again.value.mergeCommit, (await host.merged()).sha);
+      assert.equal((await y.status()).tickets[0].completion, 'merged');
+      assert.equal((await host.counts()).merges, 1);
+    });
+  }
+});
+
+test('native GitHub reuses a PR whose create response was lost instead of opening another', async t => {
+  const y = await fixture(t);
+  const host = await lostResponseGitHub(t, y);
+  await host.set('lose-create');
+  const first = await host.integrate();
+  assert.equal(first.code, 1, first.stdout);
+  assert.equal(first.value.outcome, 'infrastructure');
+  await host.clear('lose-create');
+  const second = await host.integrate();
+  assert.equal(second.code, 0, second.stdout);
+  assert.equal(second.value.outcome, 'merged');
+  assert.equal(second.value.mergeCommit, (await host.merged()).sha);
+  const counts = await host.counts();
+  assert.equal(counts.opens, 1); assert.equal(counts.merges, 1);
 });
 
 test('integration stops if a local stop or manual completion arrives at a stage boundary', async t => {
