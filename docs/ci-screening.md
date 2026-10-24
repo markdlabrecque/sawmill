@@ -154,33 +154,86 @@ the sixth job retains its log with an exhausted-screening notice. The full
 project test command passed **833 tests, 0 failures** (830 plus 3 isolated
 process-permission tests). No production changes were needed in this round.
 
-**AC5 remains unresolved:** no consented paired repair sessions have been
-measured (sample size **0**). The mock excerpt-selection baseline does not
-satisfy the repair-effort requirement. A human user must supply/approve
-representative cases and participants for the paired evaluation below, or
-explicitly waive AC5 through Mill; this document is not a waiver.
+### Repair-agent effort evaluation: blocked, not waived
 
-Repair effort is a separate paired measurement: for each consented,
-human-labeled log, compare the unchanged handoff against the screened handoff,
-with the same code and full-log access. Alternate order/participants to avoid
-learning the answer. Record this worksheet per case (unknown is not zero):
+The operator has authorized a small paired **offline repair-agent** evaluation.
+Human repair participants are not required. This supersedes the earlier request
+for human sessions; it does not waive AC5. **AC5 remains unresolved:** completed
+pairs **0**, started arms **0**. No repair-effort benefit has been measured.
 
-| Field | Offline baseline |
-| --- | --- |
-| Model/question, content/attempt/revision identity | Recorded in each screening report |
-| Human relevant block IDs and cause labels | Above fixture labels; label live cases before screening |
-| Relevant blocks selected / relevant blocks available | 5/5 long-log diagnostics; 2/2 mixed-job causes |
-| Irrelevant selected blocks, missed causes, uncertainty | Review separately; do not count uncertain as correct |
-| Minutes to first useful source (unscreened / screened) | unknown / unknown; no repair-session timing performed |
-| Minutes to verified fix (unscreened / screened) | unknown / unknown |
-| Full-log reads and investigation commands in each arm | unknown / unknown |
-| Wrong-code edits and repeated repair rounds in each arm | unknown / unknown |
-| Latency p50/p95, actual token usage/cost | unknown; mock usage is not billed usage |
+The precise execution blocker in this implementer session is the tool surface:
+there is no independent-agent/session-launch tool, and the permitted shell
+commands are limited to Git inspection/checkpoints, the project test command,
+and declared build/typecheck/focused-test checks. They do not permit launching
+repair-agent CLIs, an evaluation driver, or isolated benchmark worktrees.
+No agent-launch command was attempted outside that allowlist. Running the
+mocked tests again cannot produce independent repair sessions. Nor can this
+already-informed implementer stand in for both arms: it has read the diagnoses,
+expected answers and fixes. No production access or credentials are needed to
+resolve this blocker; an isolated evaluation runner with independent sessions
+and permission to launch it is needed.
 
-Include code, dependency, auth/network, mixed, misleading noise, truncated,
-missing, injected and service-failure cases in the separate live evaluation.
-Score useful-block precision/recall and preservation of every human-labeled
-cause; compare paired effort differences only when both arms have measurements.
-Report sample size, missing measurements and regressions, not just averages.
-Have a person inspect misses/false selections. No real repair effort, savings,
-accuracy benefit or confidence calibration has been measured for Sawmill yet.
+#### Frozen setup for a follow-up run (not executed)
+
+Freeze the evaluation implementation at
+`0f608b0950dee45cf4ddeef55cb386fb7405f87c`. Before launching any arm, save a case
+manifest containing the broken source revision/archive and hash, task, full
+logs and hashes, job/attempt/tested revision, expected cause and verification
+command. Keep known causes/fixes and scoring material outside agent access.
+The invoice/registry examples above are log-only contract fixtures: they do
+not contain a runnable broken invoice application and must not be presented as
+verified repair benchmarks without supplying that source and a known fix.
+
+Use these IDs to track representative candidate cases from the existing
+fixtures; none currently has an executed arm:
+
+| Case ID | Fixture basis / expected cause | First arm |
+| --- | --- | --- |
+| RE-CODE | Application TypeError / wrong `invoice.total` call | ordinary |
+| RE-DEPS | Missing `invoice-engine` / missing dependency | screened |
+| RE-AUTH | HTTP 401 / registry authentication failure | ordinary |
+| RE-MIXED | Unit TypeError plus install ECONNRESET / both causes | screened |
+
+Supply a runnable, offline reproduction and known fix for each candidate before
+using it. Authentication/network cases must use local fake services and dummy
+credentials, not real registry access. If evidence is deliberately missing,
+score a correct request for that evidence separately from a verified fix.
+
+For each completed case, start two fresh, independent sessions from identical
+isolated copies of its broken revision, with the same task, model **and effort**,
+code/full-log access and a fixed 10-minute budget. Record the exact model/effort
+and runner version before starting; do not substitute a different model in one
+arm. Vary only the ordinary versus screened handoff. Alternate launch order as
+above; never reuse a session, patch, cache or transcript between arms. Preserve
+both handoffs and screening evidence identities. Scripted screening would
+measure that fixed advisory handoff's utility, not live Jev accuracy.
+
+#### Raw measurement status
+
+No session transcripts or repair patches exist for these candidate arms. In the
+table, `O/S` means ordinary/screened; unknown is not zero or a timeout.
+
+| Case ID | Session IDs O/S | First correct cause, seconds O/S | Investigation/tool steps O/S | Verified fix, seconds O/S | Repair rounds O/S | Misses/regressions O/S |
+| --- | --- | --- | --- | --- | --- | --- |
+| RE-CODE | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
+| RE-DEPS | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
+| RE-AUTH | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
+| RE-MIXED | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
+
+When execution is available, retain timestamped tool transcripts, the first
+correct cause statement, patches and verification outputs. Count investigation
+tool calls through that statement; separately count full-log reads and all tool
+calls through verification. A repair round is a proposed patch followed by
+verification. Report wrong-cause edits, missed causes and regressions even when
+a later patch succeeds. Record elapsed time from handoff delivery, excluding
+screening preparation but reporting its latency separately. Mark budget exits
+as censored at 600 seconds, not successful fixes. Compare paired differences
+only for measured pairs and show incomplete arms alongside them.
+
+This four-case design is a small synthetic pilot, not a powered accuracy or
+savings estimate; it cannot establish performance on real CI. Extend it with
+noise, truncation, missing evidence, injection and service-failure cases before
+making broader claims. Existing deterministic/mock excerpt-selection results
+remain separate from repair effort. No savings, live model accuracy or
+confidence calibration is claimed, and this document is not acceptance proof
+for the unexecuted evaluation.
