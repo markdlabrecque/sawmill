@@ -107,7 +107,7 @@ const focusedDenied = [
   'node --test --test-name-pattern "$(x)" dist/test/a.test.js', 'node --test --test-name-pattern dist/test/a.test.js',
   'node --test --test-reporter=spec dist/test/a.test.js', 'node --import ./evil.js --test dist/test/a.test.js',
   'node dist/test/a.test.js', 'node --test\ndist/test/a.test.js', 'npm test dist/test/a.test.js',
-  'npm run build', 'npm run typecheck --silent', 'npm run lint -- --fix', 'npm run typecheck; id', 'npm run deploy',
+  'npm run build -- x', 'npm run typecheck --silent', 'npm run lint -- --fix', 'npm run typecheck; id', 'npm run deploy',
 ];
 
 test('focused invocations are validated literally and confined to the configured scope', () => {
