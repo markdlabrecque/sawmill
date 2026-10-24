@@ -534,7 +534,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, number, options.home, options.signal, progress.userTesting, progress.site) : undefined;
           checkStop(cwd, number);
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
-          const saved = progress.selections?.find(event => event.id === progress.activeRole?.selectionId);
+          const original = progress.selections?.find(event => event.id === progress.activeRole?.selectionId);
+          // A later retry can reject a choice that the first invocation merely failed to run.
+          // Consult the whole persisted decision chain, including when resuming older runs.
+          const decisionId = original?.reusedFrom ?? original?.id;
+          const rejected = decisionId ? progress.selections?.find(event =>
+            (event.id === decisionId || event.reusedFrom === decisionId) && event.execution.selectionRejected) : undefined;
+          const saved = rejected ?? original;
           const routed = role !== 'reviewer' && (project.model_routing?.enabled || saved);
           const attempt = routed ? exportRecords(cwd).attempts.filter(attempt => attempt.ticket === number).at(-1) : undefined;
           if (routed && !attempt) throw new Error('Cannot persist model selection without a delivery attempt.');
