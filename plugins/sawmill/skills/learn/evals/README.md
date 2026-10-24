@@ -72,3 +72,19 @@ A tracker or ticket write during an evaluation is a failure.
 The test suite checks the structure of every case: each export parses in the
 record shape, each cited attempt and line exists, and each expectation is
 complete. It does not run Claude, so it cannot judge the report itself.
+
+## Optional screening evaluation
+
+These seven cases remain valid unchanged: run them with screening off, with an
+unavailable provider, and with explicit opt-in. Coverage, incident counts,
+code/history checks, reasoning review and approval requirements must not change.
+
+`test/learn-screening.test.ts` adds offline human-labeled observation cases for
+all five classes and explicit uncertainty, duplicate sources, mixed incidents,
+thin acceptance evidence, missing transcripts, adversarial text and unavailable
+TypeSafe (including timeout, rate limit and invalid responses). Its mocked
+classification evaluation emits classification error count, helper latency and
+reported token usage as a test diagnostic. Mocked agreement is a boundary check,
+not measured model accuracy. See the [screening evaluation protocol](../screening.md)
+for the recorded baseline and separate representative human evaluation,
+including false positives/negatives, abstentions, latency and unknown usage/cost.

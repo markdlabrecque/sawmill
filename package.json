@@ -5,11 +5,13 @@
   "type": "module",
   "bin": {
     "mill": "dist/src/bin.js",
-    "mill-draft-screen": "dist/src/draft-screen.js"
+    "mill-draft-screen": "dist/src/draft-screen.js",
+    "mill-learn-screen": "dist/src/learn-screen.js"
   },
   "exports": {
     ".": "./dist/src/cli.js",
-    "./draft-screening": "./dist/src/draft-screening.js"
+    "./draft-screening": "./dist/src/draft-screening.js",
+    "./learn-screening": "./dist/src/learn-screening.js"
   },
   "files": [
     "dist/src",
