@@ -4,12 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
+import { stopScheduler } from '../src/scheduler.js';
 
 export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'tracker' | 'sleep'> = {}, prefix = 'sawmill-') {
   const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = join(root, 'main');
   const home = join(root, 'home');
+  t.after(async () => {
+    await stopScheduler(home);
+    await rm(root, { recursive: true, force: true });
+  });
   const remote = join(root, 'remote.git');
   await mkdir(cwd);
   await mkdir(home);

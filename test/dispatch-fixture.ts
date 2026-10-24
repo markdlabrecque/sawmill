@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { TestContext } from 'node:test';
 import type { RunSnapshot } from '../src/run-store.js';
+import { stopScheduler } from '../src/scheduler.js';
 import { millyard } from './helpers.js';
 
 const execute = promisify(execFile);
@@ -143,6 +144,7 @@ process.stdin.on('end', async () => {
     return json ? JSON.parse(result.stdout) : result.stdout;
   };
   t.after(async () => {
+    await stopScheduler(y.home);
     for (const name of await readdir(y.root)) if (name.startsWith('hold-')) await rm(join(y.root, name), { force: true });
     await writeFile(join(y.root, 'release'), 'yes');
     // Let every detached fixture worker finish before deleting its real worktree/database.
