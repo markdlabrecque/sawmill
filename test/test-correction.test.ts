@@ -8,6 +8,7 @@ import { runCli } from '../src/cli.js';
 import { validateOutcome, type Runtime, type RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+import { continueCommand } from './conflict-command.js';
 
 const MISTAKE = 'The test greps stdout wording that the ticket never promises.';
 const PRESERVES = 'The corrected test still asserts answer() returns 42.';
@@ -164,6 +165,71 @@ test('a correction that touches production code, unapproved tests, or uncommitte
     assert.ok(before);
   }
 });
+
+for (const mode of ['original', 'corrected', 'modified'] as const) {
+  test(`conflict repair preserves the ${mode} protected checkpoint by content across rewritten commit IDs`, async t => {
+    const y = await fixture(t);
+    let reviews = 0, repairs = 0;
+    let baseline = '', protectedContent = '', rebasedHead = '';
+    y.setScript(async (request, sink) => {
+      const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+      if (request.role === 'test-writers' && y.inputs.filter(r => r.role === 'test-writers').length > 1) {
+        await commitTest(y, request, CORRECTED);
+        return { outcome: { outcome: 'done', summary: 'Corrected the stdout-only expectation; answer assertion retained.' } };
+      }
+      if (request.role === 'reviewer') {
+        reviews++;
+        if (mode !== 'original' && reviews === 1) return { outcome: correction() } as never;
+        if (!baseline) {
+          baseline = git('rev-parse', mode === 'original' ? 'HEAD^' : 'HEAD');
+          protectedContent = await readFile(join(request.cwd, 'answer.test.cjs'), 'utf8');
+          await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
+          y.git('add', 'answer.cjs'); y.git('commit', '-m', 'Concurrent answer implementation'); y.git('push');
+        } else {
+          assert.equal(await readFile(join(request.cwd, 'answer.test.cjs'), 'utf8'), protectedContent);
+          assert.equal(mode === 'original' ? reviews : reviews - 1, 2, 'Independent review follows conflict repair');
+        }
+      }
+      if (request.role === 'implementer' && request.conflictBase) {
+        repairs++;
+        if (repairs > 1) return { outcome: { outcome: 'question', question: 'Protected test change needs explicit review.' } };
+        assert.throws(() => git('rebase', request.conflictBase!), /./, 'Exercise an actual conflicting rebase');
+        await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+        git('add', 'answer.cjs');
+        execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, env: y.env, stdio: 'pipe' });
+        rebasedHead = git('rev-parse', 'HEAD');
+        assert.throws(() => git('merge-base', '--is-ancestor', baseline, 'HEAD'), /./, 'Protected checkpoint commit ID really was rewritten');
+        assert.equal(await readFile(join(request.cwd, 'answer.test.cjs'), 'utf8'), protectedContent, 'Rebase preserved the accepted test bytes');
+        if (mode === 'modified') {
+          await writeFile(join(request.cwd, 'answer.test.cjs'), WEAKENED);
+          git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Remove protected assertion');
+        }
+        return { outcome: { outcome: 'done', summary: 'Resolved implementation conflict while replaying the existing commits.' } };
+      }
+      return y.normal(request, sink);
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    const row = (await y.status()).tickets[0];
+    assert.equal(repairs >= 1, true, 'Reached supported conflict repair');
+    assert.ok(rebasedHead);
+    if (mode === 'modified') {
+      assert.equal(result.code, 1, result.stdout);
+      assert.equal(row.state, 'logjam');
+      assert.equal(y.requests.length, 0, 'Changed protected tests cannot be published');
+      assert.equal(reviews, 2, 'No passing independent review silently accepts weakened tests');
+      assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`), protectedContent.trimEnd());
+    } else {
+      assert.equal(result.code, 0, result.stdout);
+      assert.equal(row.state, 'done');
+      assert.equal(repairs, 1, 'No manual approve-tests or answer is needed');
+      assert.equal(reviews, mode === 'original' ? 2 : 3);
+      assert.notEqual(row.team.testCommit, baseline);
+      assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`), protectedContent.trimEnd());
+      assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), protectedContent.trimEnd());
+      assert.equal(y.requests.length, 1);
+    }
+  });
+}
 
 test('a weakened correction is sent back, and a third correction request stops the ticket with a question', async t => {
   const y = await fixture(t);
