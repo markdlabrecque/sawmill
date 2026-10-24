@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseDocument } from 'yaml';
-import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests } from './verification.js';
+import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests, type RequiredChecks } from './verification.js';
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 export type Role = 'test-writers' | 'implementer' | 'reviewer';
@@ -17,6 +17,8 @@ export interface ProjectConfig {
   tests: { command: string; timeout: string; preflight?: string; focused?: FocusedTests } | 'none';
   /** Named verification commands roles may run besides the test command. */
   checks?: Checks;
+  /** Commands Mill runs on the final head before push, even with tests: none. `checks` stay advisory. */
+  required_checks?: RequiredChecks;
   ci: 'wait' | 'none';
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
@@ -73,6 +75,10 @@ const projectSchema = object({
     name_flag: { ...string, optional: true, check: value => nameFlag.test(String(value)), hint: 'expected a single flag such as --test-name-pattern' },
   }), optional: true } }), none: true, hint: 'set tests: none to opt out of tests' },
   checks: { ...object({ build: { ...literal, optional: true }, lint: { ...literal, optional: true }, typecheck: { ...literal, optional: true } }), optional: true },
+  required_checks: { ...object({
+    clean: { ...string, optional: true }, build: { ...string, optional: true }, lint: { ...string, optional: true }, typecheck: { ...string, optional: true },
+    timeout: { ...duration, default: '30m' },
+  }), optional: true },
   ci: choice('wait', 'none'),
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
   test_harness: { ...choice('ddev', 'docker', 'none'), hint: 'set test_harness: none to opt out of user testing' },
