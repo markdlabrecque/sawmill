@@ -8,7 +8,7 @@ import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipel
 
 /** PR discovery is separate from ticket reads; runs never refresh issue data beyond the first-start state check. */
 export class GitHubIntegration extends GitHubWriter implements IntegrationTracker {
-  constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd()) { super(trackerConfig, directory); }
+  constructor(private readonly trackerConfig: ProjectConfig['tracker'], private readonly directory = process.cwd(), private readonly policy?: ProjectConfig['ci_checks']) { super(trackerConfig, directory); }
 
   private async request(method: string, suffix: string, body?: object): Promise<unknown> {
     return githubRequest(this.trackerConfig, this.directory, method, `repos/${this.trackerConfig.repo}/${suffix}`, body);
@@ -66,24 +66,28 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     };
     const checks = await pages<CheckRun>('check-runs?filter=latest', 'check_runs');
     const statuses = await pages<CommitStatus>('status', 'statuses');
-    const observations: { state: 'pending' | 'passed' | 'failed'; detail: string; url?: string }[] = [];
+    const observations: { name: string; state: 'pending' | 'passed' | 'failed'; detail: string; url?: string }[] = [];
     for (const check of checks) {
       if (!check || check.head_sha !== commit || typeof check.name !== 'string' || !['queued', 'in_progress', 'completed', 'waiting', 'requested', 'pending'].includes(check.status)) throw new Error('GitHub returned an invalid check or mismatched head.');
       const state = check.status !== 'completed' ? 'pending' : ['success', 'skipped', 'neutral'].includes(check.conclusion ?? '') ? 'passed' : 'failed';
-      observations.push({ state, detail: [check.name + ': ' + (check.conclusion ?? check.status), check.output?.title, check.output?.summary, check.output?.text].filter(value => typeof value === 'string' && value).join('\n'), url: check.html_url || check.details_url });
+      observations.push({ name: check.name, state, detail: [check.name + ': ' + (check.conclusion ?? check.status), check.output?.title, check.output?.summary, check.output?.text].filter(value => typeof value === 'string' && value).join('\n'), url: check.html_url || check.details_url });
     }
     for (const status of statuses) {
       if (!status || typeof status.context !== 'string' || !['pending', 'success', 'failure', 'error'].includes(status.state)) throw new Error('GitHub returned an invalid commit status.');
-      observations.push({ state: status.state === 'success' ? 'passed' : status.state === 'pending' ? 'pending' : 'failed', detail: [status.context + ': ' + status.state, status.description].filter(Boolean).join('\n'), url: status.target_url });
+      observations.push({ name: status.context, state: status.state === 'success' ? 'passed' : status.state === 'pending' ? 'pending' : 'failed', detail: [status.context + ': ' + status.state, status.description].filter(Boolean).join('\n'), url: status.target_url });
     }
     const expectedStatus = statuses.some(row => ['failure', 'error'].includes(row.state)) ? 'failure' : !statuses.length || statuses.some(row => row.state === 'pending') ? 'pending' : 'success';
     if (combinedState !== expectedStatus) throw new Error('GitHub returned inconsistent commit statuses.');
-    const failed = observations.filter(row => row.state === 'failed');
-    const pending = observations.filter(row => row.state === 'pending');
-    const state = failed.length ? 'failed' : pending.length ? 'pending' : observations.length ? 'passed' : 'none';
+    // Every observation gates except declared advisory ones; each required name must also have reported, so another green check cannot stand in for it.
+    const advisory = new Set(this.policy?.advisory ?? []);
+    const gating = observations.filter(row => !advisory.has(row.name));
+    const absent: typeof observations = (this.policy?.required ?? []).filter(name => !gating.some(row => row.name === name)).map(name => ({ name, state: 'pending' as const, detail: `${name}: required check has not reported` }));
+    const failed = gating.filter(row => row.state === 'failed');
+    const pending = [...gating.filter(row => row.state === 'pending'), ...absent];
+    const state = failed.length ? 'failed' : pending.length ? 'pending' : gating.length ? 'passed' : 'none';
     const relevant = failed.length ? failed : pending.length ? pending : observations;
     return { headCommit: commit, state, diagnostics: relevant.map(row => row.detail).join('\n').slice(0, 65536), logUrl: relevant.find(row => row.url)?.url,
-      ...(state === 'failed' ? { jobs: await this.failedJobs(commit, checks, statuses) } : {}) };
+      ...(state === 'failed' ? { jobs: await this.failedJobs(commit, checks.filter(row => !advisory.has(row.name)), statuses.filter(row => !advisory.has(row.context))) } : {}) };
   }
 
   /** A check's log is used only when its Actions job ran on this commit in its run's current attempt. */
