@@ -281,7 +281,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     const append = Boolean(current && unfinished && !replace);
     if (!append && !replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
-    const old = !append ? db.prepare('SELECT * FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get() : undefined;
+    const old = !append ? db.prepare('SELECT id FROM run WHERE EXISTS (SELECT 1 FROM tickets)').get() : undefined;
     if (old) {
       mkdirSync(historyPath(cwd), { recursive: true });
       copyFileSync(runPath(cwd), join(historyPath(cwd), `${String(old.id)}.sqlite`));
@@ -316,7 +316,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
     if (assign) for (const ticket of tickets) insertWrite.run(ticket.number);
     db.exec('COMMIT');
-    return old?.pending_pick ? Number(old.pending_pick) : undefined;
+    // Appending preserves the pending pick; only a new run clears and reports it.
+    return !append && current?.pending_pick ? Number(current.pending_pick) : undefined;
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }
     throw error;
