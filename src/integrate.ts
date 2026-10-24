@@ -299,14 +299,13 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       const smoke = await smokeCases(cwd);
       if (smokeRequired(smoke, team, progress, head) && !(team.smoke?.evidence?.commit === head && team.smoke.cases.every(c => c.result === 'completed'))) {
         boundary();
-        if (project.runtime === 'codex') throw new Error('Codex browser capability is unsupported, so the shared smoke cases in .mill/smoke-cases.md cannot run.');
         if (!team.site) throw new Error('Shared smoke cases need the ticket\'s prepared site; none was recorded.');
         const review = await smokeHandoff(project, smoke, ticket.worktree!, number, team.site, options.home);
         const prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
         const ran = await runRole(cwd, project, tracker, number, caseRuntime(options.runtime ?? createRuntime(project.runtime), smoke), {
           role: 'reviewer', cwd: ticket.worktree!, home: options.home, ...project.roles.reviewer, prompt,
           handoff: `Shared smoke check for #${number}: ${ticket.title}${siteHandoff(team.site)}${review.handoff}`,
-          ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), browser: true,
+          ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), browser: true, browserUrl: review.url,
           timeoutMs: Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0),
         }, options);
         boundary();

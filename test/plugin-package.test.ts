@@ -10,12 +10,12 @@ import type { RunSnapshot } from '../src/run-store.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 
-test('installed package ships a discoverable draft plugin and its CLI selections work offline', async (t) => {
+test('packed package ships a discoverable draft plugin and its CLI selections work offline', async (t) => {
   const yard = await millyard(t);
   const repo = fileURLToPath(new URL('../../', import.meta.url));
   const install = join(yard.root, 'installed');
   await mkdir(install);
-  const env = { ...yard.env, npm_config_cache: join(yard.root, 'npm-cache'), npm_config_userconfig: '/dev/null' };
+  const env = { ...yard.env, npm_config_userconfig: '/dev/null' };
   const npm = (cwd: string, ...args: string[]) => execFileSync('npm', args, {
     cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -24,13 +24,13 @@ test('installed package ships a discoverable draft plugin and its CLI selections
     return join(install, result.filename);
   };
   const archive = pack(repo);
-  // Install every production dependency from disk, including Markdown's transitive
-  // dependencies, so the installed-package smoke remains strictly offline.
-  const lock = JSON.parse(await readFile(join(repo, 'package-lock.json'), 'utf8'));
-  const dependencies = Object.entries(lock.packages).filter(([path, entry]) => path && !(entry as { dev?: boolean }).dev)
-    .map(([path]) => pack(join(repo, path)));
-  npm(install, 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', archive, ...dependencies);
-  const installed = join(install, 'node_modules/@markdlabrecque/sawmill');
+  // Run the archived files with the repo's installed dependencies. This checks
+  // the package contents without asking npm to resolve duplicate transitive
+  // versions against an empty offline registry cache.
+  execFileSync('tar', ['-xzf', archive, '-C', install, '--strip-components=1']);
+  const { symlink } = await import('node:fs/promises');
+  await symlink(join(repo, 'node_modules'), join(install, 'node_modules'), 'dir');
+  const installed = install;
   const marketplace = JSON.parse(await readFile(join(installed, '.claude-plugin/marketplace.json'), 'utf8'));
   assert.equal(marketplace.name, 'sawmill');
   assert.equal(typeof marketplace.owner.name, 'string');
@@ -116,7 +116,7 @@ test('installed package ships a discoverable draft plugin and its CLI selections
   assert.deepEqual(await cli('run', 'status', '--json'), before);
   assert.equal((await cli('run', 'draft', '--label', 'sprint ready', '12', '--json')).code, 2);
   // Exercise the installed executable as well as the approved in-process adapter seam.
-  const text = execFileSync(join(install, 'node_modules/.bin/mill'), ['run', 'status'], {
+  const text = execFileSync(process.execPath, [join(installed, 'dist/src/bin.js'), 'run', 'status'], {
     cwd: yard.cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   });
   assert.match(text, /#12\s+Ticket 12\s+queued/);

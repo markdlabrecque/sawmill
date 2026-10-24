@@ -1,4 +1,3 @@
-import { CliError } from './errors.js';
 import { Parser, type Node } from 'commonmark';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -90,14 +89,14 @@ export async function browserHandoff(project: ProjectConfig, body: string, cwd: 
   const retained = stale || (completed.length ? `\n\nEarlier completed cases, retain these results and do not re-run:\n${JSON.stringify(completed)}` : '');
   if (!cases.length) return { browser: false, handoff: retained, cases, allCases, url: prior?.url, site, prior, owner: prior?.evidence?.owner ?? null };
   const { url, owner } = await ownedSite(project, cwd, number, site, home, signal);
-  return { browser: true, url, owner, cases, allCases, site, prior, handoff: `${retained}${casesHandoff(url, cases, 'Use chrome-devtools-axi to perform only the cases below.')}` };
+  return { browser: true, url, owner, cases, allCases, site, prior, handoff: `${retained}${casesHandoff(url, cases, project.runtime === 'codex' ? 'Use the mill-browser MCP tools to perform only the cases below.' : 'Run chrome-devtools-axi directly to perform only the cases below. Mill has checked the executable; do not probe PATH or the environment.')}` };
 }
 
 /** Shared smoke cases after integration moved the code: every case runs on the re-prepared site, nothing carries over. */
 export async function smokeHandoff(project: ProjectConfig, cases: TestCase[], cwd: string, number: number, site: PreparedSite, home?: string, signal?: AbortSignal): Promise<BrowserReview> {
   const { url, owner } = await ownedSite(project, cwd, number, site, home, signal);
   return { browser: true, url, owner, cases, allCases: cases, site, handoff: casesHandoff(url, cases,
-    `Integration moved #${number}'s code to ${site.commit}. Do not review the diff. Use chrome-devtools-axi to perform only the project's shared smoke cases below; a broken case is a bounce.`) };
+    `Integration moved #${number}'s code to ${site.commit}. Do not review the diff. ${project.runtime === 'codex' ? 'Use the mill-browser MCP tools to perform' : 'Run chrome-devtools-axi directly to perform'} only the project's shared smoke cases below; a broken case is a bounce.${project.runtime === 'codex' ? '' : ' Mill checked the executable; do not probe PATH or the environment.'}`) };
 }
 
 function casesHandoff(url: string, cases: TestCase[], instruction: string): string {
@@ -245,9 +244,7 @@ export function userTestingComment(result: UserTesting): string {
     ...(result.recommendations.length ? [`Recommendations:\n${result.recommendations.map(r => `- ${r}`).join('\n')}`] : [])].join('\n\n');
 }
 
-/** Refuse unsupported native capabilities before spending any role work. */
-export function requireBrowserCapability(project: ProjectConfig, ticket: { number: number; body: string }): void {
-  if (project.runtime === 'codex' && userTestSection(ticket.body).cases.length) {
-    throw new CliError(`#${ticket.number}: Codex browser capability is unsupported: native CLI settings cannot enforce the required per-command browser allowlist.`);
-  }
+/** Validate the case section before starting role work. */
+export function requireBrowserCapability(_project: ProjectConfig, ticket: { number: number; body: string }): void {
+  userTestSection(ticket.body);
 }

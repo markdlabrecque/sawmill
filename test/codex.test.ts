@@ -218,17 +218,22 @@ test('Codex cancellation preserves a started session and does not start a pre-ab
   }
 });
 
-test('Codex refuses inherited foreign model families and browser capability without launching', async t => {
-  for (const mode of ['foreign-model', 'browser']) {
+test('Codex refuses foreign models and invalid browser capability before launching', async t => {
+  for (const mode of ['foreign-model', 'missing-site', 'writer-browser', 'missing-chromium']) {
     const y = await fixture(t);
     const marker = join(y.root, 'invoked');
     await y.script(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad');`);
     if (mode === 'foreign-model') await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replaceAll('gpt-6-astra', 'claude-opus-5-5'));
     const { CodexRuntime } = await import('../src/codex-runtime.js');
-    const runtime = new CodexRuntime();
-    const result = await y.invoke(undefined, mode === 'browser' ? { runtime: { run(request, sink) { return runtime.run({ ...request, browser: true }, sink); } } } : {});
+    const runtime = new CodexRuntime(mode === 'missing-chromium' ? { env: { PATH: y.root } } : {});
+    const result = await y.invoke(undefined, mode === 'foreign-model' ? {} : { runtime: { run(request, sink) {
+      return runtime.run({ ...request, browser: true,
+        ...(mode === 'writer-browser' ? { role: 'implementer' as const } : {}),
+        ...(mode === 'missing-chromium' || mode === 'writer-browser' ? { browserUrl: 'http://127.0.0.1:8123/' } : {}),
+      }, sink);
+    } } });
     assert.equal(result.code, 1, result.stdout);
-    assert.match(JSON.parse(result.stdout).outcome.error, mode === 'browser' ? /browser capability is unsupported/ : /model family/);
+    assert.match(JSON.parse(result.stdout).outcome.error, mode === 'foreign-model' ? /model family/ : mode === 'missing-site' ? /prepared HTTP\(S\) site URL/ : mode === 'writer-browser' ? /only for the reviewer/ : /requires Chromium/);
     assert.equal(await readFile(marker).catch(() => undefined), undefined);
   }
 });

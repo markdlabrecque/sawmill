@@ -39,6 +39,7 @@ test('review receives Docker URL and exact cases and posts completed cases with 
   assert.equal((await y.cli('worktree', 'create', '16')).code, 0);
   const result = await y.invoke(['team', 'review', '16', '--json'], { runtime: { async run(request: RuntimeRequest) {
     assert.equal(request.browser, true);
+    assert.equal(request.browserUrl, 'http://localhost:8123/form');
     assert.match(request.handoff, /http:\/\/localhost:8123\/form/);
     assert.match(request.handoff, /Enter 42 and submit/);
     return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit answer', result: 'completed' }], recommendations: ['Submission is slow.', 'The button label is unclear.'] } };
@@ -287,28 +288,22 @@ test('standalone repair reviews only the fix commit but reruns every case, since
   assert.match(reports[1]!.body, /Open page: completed/);
 });
 
-test('Codex factory refuses browser cases explicitly without starting a vendor process', async t => {
+test('Codex reviews browser cases through its scoped MCP configuration', async t => {
   const y = await fixture(t);
   await y.cli('worktree', 'create', '16');
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('runtime: claude-code', 'runtime: codex').replaceAll('claude-opus-4-6', 'gpt-5.4'));
-  const marker = join(y.root, 'codex-started');
-  await writeFile(join(y.root, 'codex'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected'); process.exitCode = 1;\n`);
-  await chmod(join(y.root, 'codex'), 0o755);
-  await writeFile(join(y.root, 'gh'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'unexpected tracker call'); process.exitCode = 71;\n`);
-  await chmod(join(y.root, 'gh'), 0o755);
-  const previous = process.env.PATH;
-  process.env.PATH = `${y.root}:${previous ?? ''}`;
-  t.after(() => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; });
-  const result = await y.invoke(['team', 'review', '16', '--json']);
-  assert.equal(result.code, 1, result.stdout);
-  assert.match(JSON.parse(result.stdout).message, /Codex browser capability is unsupported/);
-  for (const args of [['team', 'run', '16', '--json'], ['run', 'once', '--json']]) {
-    const refused = await y.invoke(args, { tracker: undefined });
-    assert.equal(refused.code, 1, refused.stdout);
-    assert.match(refused.stdout, /Codex browser capability is unsupported/);
-  }
-  await assert.rejects(readFile(marker), { code: 'ENOENT' });
-  assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:user-testing]')));
+  const executable = join(y.root, 'codex');
+  const capture = join(y.root, 'codex-browser-call.json');
+  await writeFile(executable, `#!${process.execPath}\nconst fs=require('node:fs'); let prompt=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', x=>prompt+=x); process.stdin.on('end',()=>{fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({argv:process.argv.slice(2),prompt})); process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'browser-review'})+'\\n'+JSON.stringify({type:'turn.started'})+'\\n'+JSON.stringify({type:'item.completed',item:{type:'agent_message',text:${JSON.stringify('```mill-outcome\n{"outcome":"pass","cases":[{"case":"Open page","result":"completed"},{"case":"Submit answer","result":"completed"}]}\n```')}}})+'\\n'+JSON.stringify({type:'turn.completed'})+'\\n');});\n`);
+  await chmod(executable, 0o755);
+  const { CodexRuntime } = await import('../src/codex-runtime.js');
+  const runtime = new CodexRuntime({ executable });
+  const result = await y.invoke(['team', 'review', '16', '--json'], { runtime });
+  assert.equal(result.code, 0, result.stdout);
+  const call = JSON.parse(await readFile(capture, 'utf8'));
+  assert.match(call.prompt, /mill-browser MCP tools/);
+  assert.ok(call.argv.some((arg: string) => arg.includes('mcp_servers={mill_browser=') && arg.includes('http://localhost:8123/form')));
+  assert.ok(y.ticket.comments.some(c => c.body.startsWith('[sawmill:user-testing]')));
 });
 
 test('Claude refuses missing browser executable permission mappings before spawning', async t => {

@@ -528,7 +528,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             role, cwd: path, home: options.home, ...project.roles[role], prompt: prompt + verificationInstructions(verificationFrom(project), role),
             handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
-            ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
+            ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
           }, options);
           const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
