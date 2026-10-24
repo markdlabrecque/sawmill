@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { RunTicket } from '../run-store.js';
+import { readTicketLog, type RunTicket } from '../run-store.js';
 
 export interface Diagnosis {
   /** The stage the ticket stopped at, or its reason when no stage was recorded. */
@@ -76,28 +76,41 @@ function newestLog(millyard: string, number: number): string | null {
   } catch { return null; }
 }
 
+/** Errors the run log kept from the change that stopped the ticket on: a hook or tracker failure is recorded only there. */
+function stopLog(millyard: string, number: number): string[] {
+  try {
+    const entries = readTicketLog(millyard, number);
+    const start = entries.findLastIndex(({ event }) => (event.change as { state?: string } | undefined)?.state === 'logjam');
+    if (start < 0) return [];
+    // An environment stop may carry its failure as the report's details rather than its error.
+    return entries.slice(start).flatMap(({ event }) => {
+      const change = event.change as { reason?: string | null; report?: { error?: unknown; details?: unknown } } | undefined;
+      return [change?.report?.error, change?.reason === 'environment' ? change.report?.details : undefined, event.mirrorError];
+    }).filter((part): part is string => typeof part === 'string');
+  } catch { return []; }
+}
+
 /** What Mill recorded about this stop. Infrastructure attempts span the ticket's life, so one counts only when it failed into an environment stop. */
-function causes(ticket: RunTicket): string[] {
+function causes(ticket: RunTicket, logged: string[]): string[] {
   const { question, stop, repair, infrastructureAttempts, redFeedback } = ticket.team;
   const last = infrastructureAttempts?.at(-1);
   const infrastructure = ticket.reason === 'environment' && last?.status === 'failed' ? last.error : undefined;
-  return [...new Set([stop?.error, question?.error, ticket.worker?.result?.error, infrastructure, repair?.feedback, redFeedback]
+  return [...new Set([...logged, stop?.error, question?.error, ticket.worker?.result?.error, infrastructure, repair?.feedback, redFeedback]
     .filter((part): part is string => Boolean(part?.trim())))];
 }
 
-function evidence(ticket: RunTicket): string {
+function evidence(ticket: RunTicket, parts: string[]): string {
   const { question } = ticket.team;
   if (ticket.reason === 'question' && question) return `The ${question.role} asked: ${question.question}`;
-  const parts = causes(ticket);
   if (ticket.reason === 'stopped' && !parts.length) return `Stopped${ticket.stage ? ` at ${ticket.stage}` : ''} on request, with its work saved.`;
   return parts.join('\n\n') || `Logjam (${ticket.reason ?? 'unknown'})${ticket.stage ? ` at ${ticket.stage}` : ''}; nothing more is recorded. mill run log ${ticket.number} has every step.`;
 }
 
 /** A retry-cap stop keeps the check that failed integration; an environment stop names the project hook its error came from. */
-function failedCommand(ticket: RunTicket): string | null {
+function failedCommand(ticket: RunTicket, parts: string[]): string | null {
   if (ticket.reason === 'retry-cap') return ticket.team.repair?.command ?? null;
   if (ticket.reason !== 'environment') return null;
-  const hook = causes(ticket).map(part => /^(setup|teardown|prepare)\.sh\b/m.exec(part)?.[1]).find(Boolean);
+  const hook = parts.map(part => /^(setup|teardown|prepare)\.sh\b/m.exec(part)?.[1]).find(Boolean);
   return hook ? `.mill/${hook}.sh (${hook} hook)` : null;
 }
 
@@ -145,10 +158,11 @@ function nextStep(ticket: RunTicket): Diagnosis['next'] {
 export function diagnose(ticket: RunTicket, millyard: string): Diagnosis {
   const { team, integration } = ticket;
   const worktree = worktreeIdentity(ticket.worktree);
-  const owner = ownerOf(ticket);
+  const parts = causes(ticket, stopLog(millyard, ticket.number));
+  const command = failedCommand(ticket, parts), owner = ownerOf(ticket);
   return {
-    phase: ticket.stage ?? ticket.reason ?? 'unknown', reason: ticket.reason, command: failedCommand(ticket), owner: owner === null ? null : redact(owner),
-    excerpt: excerpt(evidence(ticket)), log: newestLog(millyard, ticket.number), attempt: attemptOf(ticket), lastProgress: ticket.updated,
+    phase: ticket.stage ?? ticket.reason ?? 'unknown', reason: ticket.reason, command: command === null ? null : redact(command), owner: owner === null ? null : redact(owner),
+    excerpt: excerpt(evidence(ticket, parts)), log: newestLog(millyard, ticket.number), attempt: attemptOf(ticket), lastProgress: ticket.updated,
     identities: {
       build: worktree.build, local: worktree.local,
       reviewed: team.reviewedHead ?? integration.reviewedHead ?? null,

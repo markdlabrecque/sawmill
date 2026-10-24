@@ -76,6 +76,13 @@ test('a required build that fails blocks delivery with its output even though un
   assert.notEqual(y.ticket.state, 'closed');
 });
 
+test('a failed required check is named with its script and exit code, so a stop can show it', async t => {
+  const y = await fixture(t, { tests: passingTests, required: required('echo THEME-BUILD-BROKEN; exit 4') });
+  const result = await y.integrate();
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(JSON.parse(result.stdout).command, 'echo THEME-BUILD-BROKEN; exit 4 (required check build, exit 4)');
+});
+
 test('required checks still run when tests are off and a failure still blocks', async t => {
   const y = await fixture(t, { tests: noTests, required: required('echo THEME-BUILD-BROKEN; exit 4') });
   const result = await y.integrate();
