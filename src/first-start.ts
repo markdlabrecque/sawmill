@@ -6,12 +6,12 @@ export type FirstStart = { status: 'start' | 'skipped' } | { status: 'lookup-fai
 
 /** The one exception to the frozen run: just before a ticket's first start, its open/closed
  * state is read again. A ticket closed since drafting is skipped; its drafted title, body and
- * dependencies are untouched. A run drafted with --include-closed starts it anyway. Tickets
+ * dependencies are untouched. A ticket drafted with --include-closed starts anyway. Tickets
  * that already started, and adapters without a state read, are not checked. */
 export async function checkFirstStart(cwd: string, number: number, tracker: () => Pick<TicketWriter, 'ticketState'>): Promise<FirstStart> {
   const snapshot = readRun(cwd);
   const ticket = snapshot.tickets.find(row => row.number === number);
-  if (!ticket || ticket.stage !== null || ticket.state !== 'queued' || snapshot.run.includeClosed) return { status: 'start' };
+  if (!ticket || ticket.stage !== null || ticket.state !== 'queued' || (ticket.includeClosed ?? snapshot.run.includeClosed)) return { status: 'start' };
   let state: 'open' | 'closed';
   try {
     const reader = tracker();
