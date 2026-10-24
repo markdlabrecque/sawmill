@@ -1,5 +1,8 @@
 import { writeSync } from 'node:fs';
 import { conflictContinueCommand } from './runtime.js';
+import { authorizeVerification, literalCommand } from './verification.js';
+
+export { literalCommand };
 
 /** Native Pi extension API subset. No SDK or vendor process is embedded in Sawmill. */
 interface Context { model?: { provider: string; id: string } }
@@ -42,6 +45,8 @@ export default function policy(pi: PiAPI) {
     // The exact configured test command is trusted project code, including its
     // transitive effects. This is deliberately not a read-only or OS sandbox.
     if (!browser && request.testCommand !== undefined && command === request.testCommand) allowed = true;
+    // Declared checks and in-scope focused tests are the same trusted project configuration.
+    if (!browser && authorizeVerification(request.verification, command)) allowed = true;
     if (args[0] === 'git') {
       const subcommand = args[1];
       const rest = args.slice(2);
@@ -65,23 +70,4 @@ export default function policy(pi: PiAPI) {
     // Re-encode literal argv so accepted quoting cannot introduce shell syntax.
     event.input.command = args.map(token => `'${token.replaceAll("'", "'\\''")}'`).join(' ');
   });
-}
-
-/** Small literal-argv grammar, intentionally excluding shell programs/expansion. */
-export function literalCommand(command: unknown): string[] | undefined {
-  if (typeof command !== 'string' || !command.trim() || /[\n\r\0$`\\]/.test(command)) return;
-  const tokens: string[] = [];
-  let value = '';
-  let quote = '';
-  let active = false;
-  for (const ch of command.trim()) {
-    if (quote) { if (ch === quote) quote = ''; else value += ch; active = true; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; active = true; continue; }
-    if (/\s/.test(ch)) { if (active) { tokens.push(value); value = ''; active = false; } continue; }
-    if (!/[A-Za-z0-9_./:@%+=,-]/.test(ch)) return;
-    value += ch; active = true;
-  }
-  if (quote) return;
-  if (active) tokens.push(value);
-  return tokens.length ? tokens : undefined;
 }

@@ -332,6 +332,26 @@ Before any role starts on a new ticket worktree, Mill checks the workspace once:
 
 A failed check puts the ticket in `logjam` with reason `environment` and one tracker comment naming the cause and the fix command; it is never retried. Fix it, then `mill run answer <ticket>`. A passing check posts nothing. When the project is Sawmill itself and the running `mill` is older than `origin/<integration>`, `mill worktree create` prints a warning but carries on.
 
+### Declared checks and focused tests
+
+By default a role's Bash may run only the exact test command. A project can also declare named checks and a focused-test runner. For this Node project:
+
+```yaml
+tests:
+  command: npm test
+  focused:
+    command: node --test
+    scope: dist/test
+    name_flag: --test-name-pattern
+checks:
+  build: npm run build
+  typecheck: npx tsc --noEmit
+```
+
+`checks` accepts `build`, `lint` and `typecheck`. Each value is one command with literal arguments, and the role may run it exactly as written. With `focused`, a role may run `node --test dist/test/a.test.js`, or the same with more paths under `dist/test` and one `--test-name-pattern 'adds two'`. Other flags, paths outside the scope, `..`, shell syntax and extra commands are denied. Here the focused runner runs compiled tests, so run the build check first. Every role gets a "Declared checks" section in its prompt that lists only the declared commands, and Claude Code and Pi grant exactly those. Codex gets the same list but keeps its sandbox, which has no command allowlist. Claude Code matches the focused rules with its own `*` wildcard, so Pi enforces scope more strictly. Leave both keys out to keep the old behaviour.
+
+These commands run trusted project code, the same as the test command. They supplement the full suite and never replace it: Mill's red check, the green run and the run before merge still use `tests.command`. A failing focused test or check counts as an ordinary test failure, not a broken tool.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.

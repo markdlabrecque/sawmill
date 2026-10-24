@@ -19,7 +19,7 @@ When the handoff has a "Test correction" section, the reviewer found a mistake i
 
 ## Your tools
 
-Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, and the exact test command from the handoff, with no extra arguments. Everything else is denied.
+Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, the exact test command from the handoff, with no extra arguments, and the commands in "Declared checks" when this prompt ends with that section. Everything else is denied.
 
 - Look with `Read`, `Glob` and `Grep`, not `cat`, `sed`, `ls` or `grep` in Bash.
 - Change files with `Write` and `Edit`, never a heredoc or `>` redirect.

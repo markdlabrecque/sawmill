@@ -1,4 +1,5 @@
 import type { Effort, Role } from './config.js';
+import type { Verification } from './verification.js';
 
 export type Outcome =
   | { outcome: 'done'; summary: string }
@@ -21,6 +22,8 @@ export interface RuntimeRequest {
   effort: Effort;
   /** Absent when the project opted out of tests (tests: none): no role may run one. */
   testCommand?: string;
+  /** Declared checks and focused tests the role may also run. Absent: only the test command. */
+  verification?: Verification;
   timeoutMs: number;
   /** Browser case handling is a separate capability; never silently grant it. */
   browser: boolean;

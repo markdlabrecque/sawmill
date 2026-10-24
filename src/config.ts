@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseDocument } from 'yaml';
+import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests } from './verification.js';
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 export type Role = 'test-writers' | 'implementer' | 'reviewer';
@@ -13,7 +14,9 @@ export interface ProjectConfig {
   roles: Record<Role, { model: string; effort: Effort }>;
   role_timeout: string;
   /** none: the project has no tests, on purpose. No red check, no test run before merge. */
-  tests: { command: string; timeout: string; preflight?: string } | 'none';
+  tests: { command: string; timeout: string; preflight?: string; focused?: FocusedTests } | 'none';
+  /** Named verification commands roles may run besides the test command. */
+  checks?: Checks;
   ci: 'wait' | 'none';
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
@@ -50,6 +53,7 @@ const choice = (...choices: string[]): Rule => ({ type: 'string', choices });
 const object = (fields: Record<string, Rule>): Rule => ({ type: 'object', fields });
 const duration: Rule = { type: 'string', check: value => /^[1-9]\d*(s|m|h)$/.test(String(value)), hint: 'expected a positive duration with s, m, or h suffix' };
 const integer = (value: number, minimum: number): Rule => ({ type: 'number', default: value, check: value => Number.isSafeInteger(value) && Number(value) >= minimum, hint: `expected an integer >= ${minimum}` });
+const literal: Rule = { type: 'string', check: value => simpleCommand.test(String(value)), hint: 'expected one command with literal arguments, no shell syntax' };
 const role = object({ model: string, effort: choice('low', 'medium', 'high', 'max') });
 const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } });
 const projectSchema = object({
@@ -63,7 +67,12 @@ const projectSchema = object({
   runtime: choice('claude-code', 'pi', 'codex'),
   roles: object({ 'test-writers': role, implementer: role, reviewer: role }),
   role_timeout: { ...duration, default: '60m' },
-  tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true } }), none: true, hint: 'set tests: none to opt out of tests' },
+  tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true }, focused: { ...object({
+    command: literal,
+    scope: { ...string, check: value => testScope(String(value)), hint: 'expected a relative path inside the worktree, without . or .. segments' },
+    name_flag: { ...string, optional: true, check: value => nameFlag.test(String(value)), hint: 'expected a single flag such as --test-name-pattern' },
+  }), optional: true } }), none: true, hint: 'set tests: none to opt out of tests' },
+  checks: { ...object({ build: { ...literal, optional: true }, lint: { ...literal, optional: true }, typecheck: { ...literal, optional: true } }), optional: true },
   ci: choice('wait', 'none'),
   merge_method: { ...choice('squash', 'merge'), default: 'squash' },
   test_harness: { ...choice('ddev', 'docker', 'none'), hint: 'set test_harness: none to opt out of user testing' },
