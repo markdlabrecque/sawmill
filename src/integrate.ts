@@ -1,4 +1,4 @@
-import { removeWorktree } from './worktrees.js';
+import { prepareSite, preparedSite, removeWorktree } from './worktrees.js';
 import { workerVariables } from './direct-child.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { execFile, spawn } from 'node:child_process';
@@ -180,6 +180,21 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.rebasedHead = head;
       team.checkpointHead = head;
       await save({ team });
+      // A site last prepared at another commit, as after a rebase that moved the code, is prepared again
+      // before tests. Preparation never reseeds; a failure is an environment logjam that a rerun resumes here.
+      if (team.site?.commit !== head) {
+        boundary();
+        const site = await prepareSite(cwd, project, number, ticket.worktree!, options);
+        if (site.status !== 'ok') {
+          await transition(cwd, project, tracker, number, {
+            state: 'logjam', reason: 'environment',
+            report: { stage: 'infrastructure', details: 'Site preparation after rebase failed.', error: site.message, reason: 'environment', reachedStage: 'prepare' },
+          }, [], options);
+          return result('infrastructure', site.message);
+        }
+        team.site = preparedSite(site);
+        await save({ team });
+      }
       // tests: none skips the local run on purpose; the rebased head goes straight on.
       if (project.tests !== 'none') {
         await advance('tests');

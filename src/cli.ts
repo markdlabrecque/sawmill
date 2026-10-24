@@ -14,7 +14,7 @@ import { GitHubIntegration } from './github-integration.js';
 import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
+import { createWorktree, prepareWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
 import { waiveItem } from './waive.js';
@@ -199,6 +199,18 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         const result = await gcWorktrees(cwd, config.project, { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
         emit(result, [`Removed ${result.removed.length} worktrees.`, ...result.skipped.map(row => `${ref(row.ticket)}: ${row.message}`)].join('\n'));
+        return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'worktree' && positional[1] === 'prepare') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) {
+          const message = usage('worktree prepare');
+          emit({ status: 'usage-error', message }, message);
+          return 2;
+        }
+        const result = await prepareWorktree(cwd, config.project, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
+        emit(result, result.status === 'ok'
+          ? [`Prepared ${ref(result.ticket)} at ${result.commit}`, `Environment: ${result.environment}`, `URL: ${result.url ?? '(none reported)'}`, `Ready: ${result.ready ?? 'no prepare hook'}`].join('\n')
+          : result.message!);
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'worktree' && ['create', 'remove'].includes(positional[1] ?? '')) {

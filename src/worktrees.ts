@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { CliError } from './errors.js';
-import { readRun, runPath, type RunTicket } from './run-store.js';
+import { readRun, runPath, type PreparedSite, type RunTicket } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import type { MachineConfig, ProjectConfig } from './config.js';
@@ -72,18 +73,75 @@ async function deleteMergedBranch(cwd: string, project: ProjectConfig, branch: s
   return true;
 }
 
+/** A ticket's environment name and the millyard directory that holds its state. */
+function environmentOf(cwd: string, project: ProjectConfig, number: number) {
+  return { environment: `${number}-${project.name}`, stateDir: join(cwd, '.mill', 'env', String(number)) };
+}
+
+async function samePath(a: string, b: string) {
+  if (a === b) return true;
+  try { return await realpath(a) === await realpath(b); } catch { return false; }
+}
+
+/**
+ * The state directory records the ticket and worktree that own it. Anything else is refused before a hook
+ * uses or tears it down; `claim` records this ticket as owner of an unclaimed directory.
+ */
+async function ownState(cwd: string, project: ProjectConfig, number: number, path: string, claim: boolean) {
+  const env = environmentOf(cwd, project, number), file = join(env.stateDir, 'owner.json');
+  const text = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  const refuse = (owner: string) => new CliError(`Environment state ${env.stateDir} belongs to ${owner}, not ticket ${number} at ${path}; refusing to use or tear it down.\nFix: if that owner is gone, remove ${env.stateDir} and its environment ${env.environment} by hand, then retry.`);
+  if (text !== undefined) {
+    let owner: { ticket?: unknown; worktree?: unknown };
+    try { owner = JSON.parse(text); } catch { throw refuse(`an unreadable owner record (${file})`); }
+    if (owner?.ticket !== number || typeof owner.worktree !== 'string' || !await samePath(owner.worktree, path)) throw refuse(`ticket ${String(owner?.ticket)} at ${String(owner?.worktree)}`);
+  } else if (claim) {
+    await mkdir(env.stateDir, { recursive: true });
+    await writeFile(file, JSON.stringify({ ticket: number, worktree: path, environment: env.environment }) + '\n');
+  }
+  return env;
+}
+
+/** After teardown: the ticket's state goes with its worktree. */
+async function dropState(cwd: string, project: ProjectConfig, number: number) {
+  await rm(environmentOf(cwd, project, number).stateDir, { recursive: true, force: true });
+}
+
 async function hook(cwd: string, project: ProjectConfig, number: number, path: string, name: 'setup' | 'teardown', options: WorktreeOptions) {
   const script = join(cwd, '.mill', `${name}.sh`);
   if (!existsSync(script)) return;
+  const { environment, stateDir } = await ownState(cwd, project, number, path, name === 'setup');
   const home = options.home ?? homedir();
   try { await execute('bash', [script, path, String(number)], {
     cwd: join(cwd, '.mill'), encoding: 'utf8',
-    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd },
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd,
+      MILL_ENV: environment, MILL_STATE_DIR: stateDir },
   }); } catch (error) { throw new CliError(`${name}.sh failed: ${failure(error)}`); }
 }
 
 /** A workspace that cannot work: stop once, before any role, with the fix. Never retried. */
 class PreflightError extends CliError {}
+
+const sha256 = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
+
+/** `.mill/fixtures.json` lists the local inputs setup needs, by millyard-relative path and SHA-256. */
+async function checkFixtures(cwd: string, number: number) {
+  const list = join(cwd, '.mill', 'fixtures.json');
+  if (!existsSync(list)) return;
+  const resume = `then mill run answer ${number}`;
+  let fixtures: unknown;
+  try { fixtures = JSON.parse(await readFile(list, 'utf8')); }
+  catch (error) { throw new PreflightError(`.mill/fixtures.json is not valid JSON: ${failure(error)}`); }
+  if (!Array.isArray(fixtures) || !fixtures.every(fixture => typeof fixture?.path === 'string' && typeof fixture?.sha256 === 'string')) {
+    throw new PreflightError('.mill/fixtures.json must be a list of {"path": "<millyard-relative path>", "sha256": "<hex digest>"}.');
+  }
+  for (const { path, sha256: expected } of fixtures as { path: string; sha256: string }[]) {
+    const file = resolve(cwd, path);
+    if (!existsSync(file)) throw new PreflightError(`Required fixture ${path} is missing from the millyard.\nFix: put the sanitized fixture at ${file} (sha256 ${expected}), ${resume}.`);
+    const actual = sha256(await readFile(file));
+    if (actual !== expected.toLowerCase()) throw new PreflightError(`Required fixture ${path} has changed: .mill/fixtures.json expects sha256 ${expected}, the file has ${actual}.\nFix: restore the expected fixture, or record its new hash in .mill/fixtures.json, ${resume}.`);
+  }
+}
 
 /** The new ticket branch is cut from the local integration branch; refuse it when origin has moved on. */
 async function checkBase(cwd: string, project: ProjectConfig, number: number) {
@@ -95,6 +153,54 @@ async function checkBase(cwd: string, project: ProjectConfig, number: number) {
   const [ahead, behind] = (await git(cwd, 'rev-list', '--left-right', '--count', `refs/heads/${branch}...${remote}`)).split(/\s+/).map(Number);
   if (ahead && behind) throw new PreflightError(`Local ${branch} has commits that aren't on origin/${branch}, and is ${behind} commit(s) behind it.\nFix: put local ${branch} back in line with origin/${branch} by hand (for example \`git rebase origin/${branch}\` in ${cwd}), ${resume}.`);
   if (behind) throw new PreflightError(`Base branch ${branch} is ${behind} commit(s) behind origin/${branch}.\nFix: run \`git pull --ff-only origin ${branch}\` in ${cwd}, ${resume}.`);
+}
+
+export interface Preparation extends PreparedSite {
+  status: 'ok' | 'failed' | 'not-ready';
+  ticket: number;
+  path: string;
+  message?: string;
+}
+
+/** The identity and readiness a run records for a prepared site. */
+export function preparedSite({ commit, script, environment, stateDir, url, ready }: Preparation): PreparedSite {
+  return { commit, script, environment, stateDir, url, ready };
+}
+
+/** The reviewer's line about the site it checks. */
+export function siteHandoff(site: PreparedSite): string {
+  return `\n\nPrepared site: ${site.url ?? '(no URL reported)'} at ${site.commit}, environment ${site.environment}, ` +
+    `prepare script ${site.script ?? '(none)'}, ready: ${site.ready ?? 'not reported'}.`;
+}
+
+/**
+ * Runs .mill/prepare.sh to bring the ticket's site into agreement with the worktree's current commit.
+ * Setup seeds once; prepare must be idempotent and never reseed. Its last stdout line is {"url", "ready"}.
+ */
+export async function prepareSite(cwd: string, project: ProjectConfig, number: number, path: string, options: WorktreeOptions = {}): Promise<Preparation> {
+  const script = join(cwd, '.mill', 'prepare.sh');
+  const { environment, stateDir } = environmentOf(cwd, project, number);
+  const identity = { ticket: number, path, commit: await git(path, 'rev-parse', 'HEAD'), script: existsSync(script) ? sha256(await readFile(script)) : null, environment, stateDir };
+  try { await ownState(cwd, project, number, path, Boolean(identity.script)); }
+  catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: failure(error) }; }
+  if (!identity.script) return { status: 'ok', ...identity, url: null, ready: null };
+  const home = options.home ?? homedir();
+  let stdout: string;
+  try {
+    ({ stdout } = await execute('bash', [script, path, String(number)], {
+      cwd: join(cwd, '.mill'), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd,
+        MILL_COMMIT: identity.commit, MILL_ENV: environment, MILL_STATE_DIR: stateDir },
+    }));
+  } catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh failed: ${failure(error)}` }; }
+  let site: { url?: unknown; ready?: unknown } | undefined;
+  try { site = JSON.parse(stdout.trim().split('\n').at(-1) ?? ''); } catch { site = undefined; }
+  if (!site || typeof site !== 'object' || typeof site.ready !== 'boolean' || (site.url !== undefined && typeof site.url !== 'string')) {
+    return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh must end its output with a line like {"url": "https://...", "ready": true}.\n${stdout}` };
+  }
+  const url = (site.url as string | undefined) ?? null;
+  if (!site.ready) return { status: 'not-ready', ...identity, url, ready: false, message: `prepare.sh reported the site${url ? ` at ${url}` : ''} is not ready.\n${stdout}` };
+  return { status: 'ok', ...identity, url, ready: true };
 }
 
 /** After setup: repair missing Node dependencies once, then check the test command can start. */
@@ -159,7 +265,12 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   if (existing && await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
   if (existing) {
     if (ticket && !ticket.provisioned && ticket.state !== 'logjam') {
-      try { await hook(cwd, project, number, existing.path, 'setup', options); }
+      try {
+        await checkFixtures(cwd, number);
+        await hook(cwd, project, number, existing.path, 'setup', options);
+        const prepared = await prepareSite(cwd, project, number, existing.path, options);
+        if (prepared.status !== 'ok') throw new CliError(prepared.message!);
+      }
       catch (error) {
         await transition(cwd, project, tracker!, number, {
           state: 'logjam', reason: 'environment', worktree: existing.path, branch, provisioned: false,
@@ -180,6 +291,8 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   let created = false;
   const warnings: string[] = [];
   try {
+    await checkFixtures(cwd, number);
+    await ownState(cwd, project, number, path, false);
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
     else {
       await checkBase(cwd, project, number);
@@ -191,6 +304,8 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
     await hook(cwd, project, number, path, 'setup', options);
     await checkWorkspace(project, number, path);
+    const prepared = await prepareSite(cwd, project, number, path, options);
+    if (prepared.status !== 'ok') throw new CliError(prepared.message!);
     await markBuild(path, options.root ?? packageRoot, false);
   } catch (error) {
     let message = failure(error);
@@ -199,6 +314,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
         await hook(cwd, project, number, path, 'teardown', options);
         await git(cwd, 'worktree', 'remove', '--force', path);
         created = false;
+        await dropState(cwd, project, number);
         await deleteMergedBranch(cwd, project, branch);
       } catch (cleanupError) { message += `\nCleanup failed: ${failure(cleanupError)}`; }
     }
@@ -214,6 +330,24 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     report: { stage: 'worktree-created', details: `Worktree: ${path}\nBranch: ${branch}` },
   }, [], options);
   return { status: ok && ticket?.state !== 'logjam' ? 'ok' as const : 'logjam' as const, ticket: number, path, branch, reused: false, ...(warnings.length ? { warnings } : {}) };
+}
+
+/** Prepare the ticket's existing site at its current commit; a drafted ticket that fails goes to environment logjam. */
+export async function prepareWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {
+  cwd = resolve(cwd);
+  const ticket = member(cwd, project, number);
+  const tracker = ticket ? writer(options) : undefined;
+  const branch = `mill/${number}`;
+  if (branch === project.integration) throw new CliError('The integration branch cannot also be the ticket branch.', 2);
+  const existing = (await worktrees(cwd)).find(tree => tree.branch === `refs/heads/${branch}`);
+  if (!existing || !existsSync(existing.path)) throw new CliError(`${branch} has no worktree to prepare; create it with mill worktree create ${number}.`);
+  if (await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
+  const result = await prepareSite(cwd, project, number, existing.path, options);
+  if (result.status !== 'ok' && tracker) await transition(cwd, project, tracker, number, {
+    state: 'logjam', reason: 'environment',
+    report: { stage: 'infrastructure', details: 'Site preparation failed.', error: result.message, reason: 'environment', reachedStage: 'prepare' },
+  }, [], options);
+  return result;
 }
 
 export async function removeWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {
@@ -234,9 +368,11 @@ export async function removeWorktree(cwd: string, project: ProjectConfig, number
   if (existing) {
     if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before removal.`);
     if (await git(existing.path, 'status', '--porcelain', '--untracked-files=all')) throw new CliError(`Worktree ${existing.path} is dirty; preserve or commit its work before removal.`);
+    await ownState(cwd, project, number, existing.path, false);
     await hook(cwd, project, number, existing.path, 'teardown', options);
     if (options.mergedHead && (await git(existing.path, 'rev-parse', 'HEAD') !== options.mergedHead || await git(existing.path, 'symbolic-ref', '--short', 'HEAD') !== branch)) throw new CliError('Local ticket branch contains newer unmerged work; retained for recovery.');
     await git(cwd, 'worktree', 'remove', existing.path);
+    await dropState(cwd, project, number);
   }
   const branchDeleted = await deleteMergedBranch(cwd, project, branch, ticket);
   const ok = !tracker || await transition(cwd, project, tracker, number, { worktree: null, provisioned: false, branch: branchDeleted ? null : ticket!.branch }, [], options);
@@ -255,8 +391,10 @@ export async function discardWorktree(cwd: string, project: ProjectConfig, numbe
     else {
       if (await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
       if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before reset.`);
+      await ownState(cwd, project, number, existing.path, false);
       await hook(cwd, project, number, existing.path, 'teardown', options);
       await git(cwd, 'worktree', 'remove', '--force', existing.path);
+      await dropState(cwd, project, number);
     }
   }
   const branches: string[] = [];

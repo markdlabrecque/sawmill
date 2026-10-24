@@ -24,7 +24,7 @@ import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } f
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
-import { createWorktree } from './worktrees.js';
+import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { verificationFrom, verificationInstructions } from './verification.js';
 import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
@@ -164,7 +164,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     },
       result => result.outcome === 'infrastructure' ? result.message ?? 'Integration failed.' : undefined,
       result => ({ integration: result }), result => result.outcome === 'stopped' ||
-        progress.next === 'reviewer' || Boolean(current().team.stop && current().state === 'logjam'));
+        progress.next === 'reviewer' || Boolean(current().team.stop && current().state === 'logjam') ||
+        // A site that cannot be prepared waits for a person; retrying would not fix it.
+        (current().state === 'logjam' && current().reason === 'environment'));
     const integrationStop = (result: IntegrationResult): TeamResult | undefined => {
       const row = current();
       if (result.outcome !== 'stopped' && !(row.team.stop && row.state === 'logjam')) return;
@@ -411,6 +413,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (correcting && !correcting.from) await startCorrection(correcting);
         stage = role;
         await save({ state: 'working', stage });
+        if (role === 'reviewer') {
+          // Review checks the site prepared at the head under review, and the run records which site that was.
+          const site = await prepareSite(cwd, project, number, path, options);
+          if (site.status !== 'ok') return await stop(infrastructure(site.message!));
+          progress.site = preparedSite(site);
+          await save({});
+        }
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
         const entry = progress.activeRole;
         const beforeRole = recovery && entry?.role === role && entry.bounces === current().bounces ? entry.beforeHead : await git(path, 'rev-parse', 'HEAD');
@@ -419,7 +428,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
         // Plain text, so the saved CI log paths are readable as written rather than JSON-escaped.
         const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
-        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure;
+        const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
+        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site;
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});
