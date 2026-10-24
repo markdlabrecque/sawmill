@@ -24,5 +24,8 @@ export async function approveTests(cwd: string, project: ProjectConfig, number: 
   if (changed.length) throw new CliError(`Commit or discard these files in ${path} before approving the tests:\n${changed.join('\n')}`);
   const commit = (await git(path, 'rev-parse', 'HEAD')).trim();
   const by = (await git(path, 'var', 'GIT_COMMITTER_IDENT')).trim().replace(/ \d+ [+-]\d{4}$/, '');
-  return { status: 'ok', ticket: number, ...approveTestsRow(cwd, project, number, commit, by) };
+  // The approved history also replaces the writer commits, so a later rebase check looks for these.
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', commit, ...ticket.team.testBase ? [`^${ticket.team.testBase}`] : [], `^refs/heads/${project.integration}`))
+    .split('\n').filter(Boolean);
+  return { status: 'ok', ticket: number, ...approveTestsRow(cwd, project, number, commit, by, commits) };
 }

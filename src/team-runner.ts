@@ -454,6 +454,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           progress.testFiles = [...files];
           progress.redPending = true;
         }
+        const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
+        if (conflictRepair) {
+          // Rebase rewrites SHAs. Require each protected patch, in order, before the separate
+          // fix commit, then compare the tests against the rebased copies, not the old ones.
+          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
+          await remapRebasedWriters(path, progress, project.integration);
+          progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
+        }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');
           if (stopped) return stopped;
@@ -461,15 +470,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Role left uncommitted files; work retained for recovery.');
         if (role === 'test-writers' && (!progress.testCommits?.length || !progress.testFiles?.length)) throw new Error('Test writers must commit their test files before implementation.');
-        const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
-        if (conflictRepair) {
-          // Rebase rewrites SHAs. Require each writer patch, in order, before
-          // the separate fix commit; never replace the original baselines.
-          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
-          await checkRebasedWriters(path, progress);
-          progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
-        } else if (role !== 'test-writers' && progress.testCommit) {
+        if (!conflictRepair && role !== 'test-writers' && progress.testCommit) {
           try { await git(path, 'merge-base', '--is-ancestor', progress.checkpointHead ?? progress.testCommit!, 'HEAD'); }
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
@@ -549,7 +550,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
   });
 }
 
-async function checkRebasedWriters(path: string, progress: TeamProgress): Promise<void> {
+/** Rebase rewrites SHAs, and a conflict can fold new base lines into a protected file. Find each
+ * protected commit's rebased copy, by subject and in order, and make it the new baseline. A copy
+ * whose patch changed must differ only by lines the new base brought. */
+async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<void> {
   const patchId = async (commit: string) => {
     const patch = (await execute('git', ['show', '--format=', '--binary', commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 })).stdout;
     return new Promise<string>((resolve, reject) => {
@@ -558,13 +562,48 @@ async function checkRebasedWriters(path: string, progress: TeamProgress): Promis
       child.stdin!.end(patch);
     });
   };
-  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', `${progress.testBase}..HEAD^`)).split('\n').filter(Boolean);
-  const expected = await Promise.all((progress.testCommits ?? []).map(patchId));
+  const subject = (commit: string) => git(path, 'log', '-1', '--format=%s', commit);
+  const rewritten = () => new Error('Role rewrote the test-writer checkpoint history; work retained.');
+  const writers = progress.testCommits ?? [];
+  if (!writers.length) throw rewritten();
+  // An approved baseline that is not itself a writer commit comes after them in history.
+  const originals = progress.testCommit && !writers.includes(progress.testCommit) ? [...writers, progress.testCommit] : writers;
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD^', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
+  const copies = new Map<string, string>();
   let next = 0;
-  for (const commit of commits) {
-    if (next < expected.length && await patchId(commit) === expected[next]) next++;
+  for (const original of originals) {
+    const wanted = await subject(original);
+    while (next < commits.length && await subject(commits[next]!) !== wanted) next++;
+    const copy = commits[next++];
+    if (!copy) throw rewritten();
+    if (copy !== original && await patchId(copy) !== await patchId(original) && !await baseExplains(path, original, copy, progress.testFiles ?? [])) throw rewritten();
+    copies.set(original, copy);
   }
-  if (!expected.length || next !== expected.length) throw new Error('Role rewrote the test-writer checkpoint history; work retained.');
+  progress.testCommits = writers.map(commit => copies.get(commit)!);
+  if (progress.testCommit) progress.testCommit = copies.get(progress.testCommit)!;
+}
+
+/** True when, counting each occurrence, every protected file in `copy` keeps the lines of the base
+ * it was replayed onto (less those `original` removed) plus the lines `original` added, and holds
+ * nothing beyond those. A resolution that drops a base or pre-existing line is not explained. */
+async function baseExplains(path: string, original: string, copy: string, files: string[]): Promise<boolean> {
+  const lines = async (commit: string, file: string) => {
+    const counts = new Map<string, number>();
+    for (const line of (await execute('git', ['cat-file', 'blob', `${commit}:${file}`], { cwd: path, maxBuffer: 64 * 1024 * 1024 })
+      .then(result => result.stdout, () => '')).split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+    return counts;
+  };
+  for (const file of files) {
+    const [before, after, base, merged] = await Promise.all([lines(`${original}^`, file), lines(original, file), lines(`${copy}^`, file), lines(copy, file)]);
+    const count = (counts: Map<string, number>, line: string) => counts.get(line) ?? 0;
+    for (const line of new Set([...before.keys(), ...after.keys(), ...base.keys(), ...merged.keys()])) {
+      const added = Math.max(0, count(after, line) - count(before, line));
+      const removed = Math.max(0, count(before, line) - count(after, line));
+      const kept = Math.max(0, count(base, line) - removed) + added;
+      if (count(merged, line) < kept || count(merged, line) > count(base, line) + added) return false;
+    }
+  }
+  return true;
 }
 function integrated(result: IntegrationResult): TeamResult {
   return { outcome: result.outcome === 'merged' ? 'passed' : 'infrastructure', ticket: result.ticket, stage: 'integrate',

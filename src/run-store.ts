@@ -45,7 +45,7 @@ export interface TeamProgress {
   reviewedHead?: string;
   /** Set only for a passing review of this committed head. */
   approvedHead?: string;
-  /** Ancestry anchor after a verified rebase; original writer SHAs stay intact. */
+  /** Ancestry anchor after a verified rebase; the protected commits then name their rebased copies. */
   checkpointHead?: string;
   repair?: RepairContext;
   /** A reviewer-requested correction of protected tests, pending until a fresh review passes it. */

@@ -360,7 +360,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
 
 /** A person moves the protected-tests baseline to a commit they checked. The ticket stays in
  * logjam; answering it resumes at review. The log keeps who approved which commit, and when. */
-export function approveTestsRow(cwd: string, project: ProjectConfig, number: number, commit: string, by: string) {
+export function approveTestsRow(cwd: string, project: ProjectConfig, number: number, commit: string, by: string, commits: string[] = []) {
   checkTracker(cwd, project);
   return transaction(cwd, db => {
     const ticket = requireTicket(db, number);
@@ -373,6 +373,7 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     // A person's approval supersedes any pending reviewer-requested correction.
     delete team.correction;
     team.testCommit = commit;
+    if (commits.length) team.testCommits = commits;
     team.next = 'reviewer';
     // The bounces were spent on the tests the person has now approved.
     update(db, number, { team, bounces: 0 });

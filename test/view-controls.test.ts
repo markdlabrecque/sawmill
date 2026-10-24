@@ -40,6 +40,7 @@ const tracker = {
 function sql(cwd: string, statements: string) {
   const db = new DatabaseSync(join(cwd, '.mill/run.sqlite'));
   try {
+    db.exec('PRAGMA busy_timeout = 5000');
     // A fresh draft has not been through Mill's lazy migrations yet.
     const columns = (table: string) => db.prepare(`PRAGMA table_info(${table})`).all().map(column => String(column.name));
     for (const [column, type] of [['completion', 'TEXT'], ['integration', 'TEXT'], ['team', 'TEXT'], ['worker', 'TEXT'], ['stop_requested', 'INTEGER NOT NULL DEFAULT 0'], ['provisioned', 'INTEGER NOT NULL DEFAULT 0'], ['assignment', 'TEXT']] as const) {
@@ -52,7 +53,10 @@ function sql(cwd: string, statements: string) {
 
 function rows(cwd: string, query: string) {
   const db = new DatabaseSync(join(cwd, '.mill/run.sqlite'));
-  try { return db.prepare(query).all(); } finally { db.close(); }
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    return db.prepare(query).all();
+  } finally { db.close(); }
 }
 
 async function board(t: TestContext, seeded: string) {
