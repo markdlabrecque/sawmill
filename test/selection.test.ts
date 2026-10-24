@@ -263,7 +263,7 @@ test('conflicting and malformed selectors report actionable usage before any tra
 });
 
 for (const selector of [['--label', 'batch'], ['--spec', '40']]) {
-  test(`${selector[0]} preserves live-run protection and allows explicit replacement`, async (t) => {
+  test(`${selector[0]} appends to live runs without allowing replacement`, async (t) => {
     const tracker = new SelectionTracker([ticket(1), ticket(2, { labels: ['batch'] }), ticket(40)], { 40: [2] });
     const yard = await configured(t, tracker);
     for (const state of ['working', 'logjam']) {
@@ -275,12 +275,17 @@ for (const selector of [['--label', 'batch'], ['--spec', '40']]) {
       const before = await yard.cli('run', 'status', '--json');
       const refused = await yard.cli('run', 'draft', ...selector, '--json');
       assert.equal(refused.code, 1, refused.stdout);
-      assert.match(refused.stdout, /working.*logjam.*--replace/);
+      assert.match(refused.stdout, /offline/i);
       assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), JSON.parse(before.stdout));
       tracker.offline = false;
+      const appended = await yard.cli('run', 'draft', ...selector, '--json');
+      assert.equal(appended.code, 0, appended.stdout);
+      const snapshot = JSON.parse(appended.stdout);
+      assert.deepEqual(snapshot.tickets.map((row: Ticket) => row.number), [1, 2]);
+      assert.equal(snapshot.tickets[0].state, state);
       const replaced = await yard.cli('run', 'draft', ...selector, '--replace', '--json');
-      assert.equal(replaced.code, 0, replaced.stdout);
-      assert.deepEqual(JSON.parse(replaced.stdout).tickets.map((row: Ticket) => row.number), [2]);
+      assert.notEqual(replaced.code, 0, replaced.stdout);
+      assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), snapshot);
     }
   });
 }

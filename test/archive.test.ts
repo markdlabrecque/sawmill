@@ -48,25 +48,28 @@ function setStates(yard: Awaited<ReturnType<typeof setup>>, state: string, numbe
 
 const history = async (yard: Awaited<ReturnType<typeof setup>>) => readdir(join(yard.cwd, '.mill/history')).catch(() => [] as string[]);
 
-test('drafting a second run keeps the first in .mill/history', async (t) => {
+test('drafting again preserves unfinished membership without archiving or replacing the run', async (t) => {
   const yard = await setup(t);
   assert.equal((await yard.cli('run', 'draft', '1', '2', '--json')).code, 0);
   const first = (await board(yard)).projects[0]!.runId;
   assert.equal((await yard.cli('run', 'draft', '1', '--json')).code, 0);
-  assert.deepEqual(await history(yard), [`${first}.sqlite`]);
-  assert.notEqual((await board(yard)).projects[0]!.runId, first);
+  assert.deepEqual(await history(yard), []);
+  const current = (await board(yard)).projects[0]!;
+  assert.equal(current.runId, first);
+  assert.deepEqual(current.tickets.map(ticket => ticket.number), [1, 2]);
 });
 
-test('a run replaced with --replace before it finished is archived as it was', async (t) => {
+test('explicit replacement cannot endanger a working run or move it into archive', async (t) => {
   const yard = await setup(t);
   assert.equal((await yard.cli('run', 'draft', '1', '2', '--json')).code, 0);
   setStates(yard, 'working', 1);
   const first = (await board(yard)).projects[0]!.runId;
-  assert.equal((await yard.cli('run', 'draft', '2', '--replace', '--json')).code, 0);
-  assert.deepEqual(await history(yard), [`${first}.sqlite`]);
+  assert.notEqual((await yard.cli('run', 'draft', '2', '--replace', '--json')).code, 0);
+  assert.deepEqual(await history(yard), []);
   const snapshot = await board(yard);
-  const old = snapshot.archive.find(project => project.name === 'alpha')!.runs.find(run => run.runId === first)!;
-  assert.deepEqual(old.tickets.map(ticket => ticket.number), [1, 2]);
+  assert.deepEqual(snapshot.archive, []);
+  assert.equal(snapshot.projects[0]!.runId, first);
+  assert.deepEqual(snapshot.projects[0]!.tickets.map(ticket => ticket.number), [1, 2]);
 });
 
 test('a complete run is in archive and not in projects, even while it is the current run file', async (t) => {
