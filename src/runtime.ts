@@ -45,8 +45,11 @@ export interface RuntimeResult {
 /** External runtime boundary. Implementations must settle only after child cleanup. */
 export interface Runtime { run(request: RuntimeRequest, sink: RuntimeSink): Promise<RuntimeResult> }
 export const infrastructure = (error: string): Outcome => ({ outcome: 'infrastructure', error });
-/** The one conflict-repair continuation. `auto` picks a comment character no message line starts with, so `#<ticket>:` subjects survive. */
-export const conflictContinueCommand = 'git -c core.commentChar=auto -c core.editor=true rebase --continue';
+/**
+ * The one conflict-repair continuation. The "editor" restores the replayed commit's exact message
+ * (dropping Git's `# Conflicts:` hint) and verbatim cleanup keeps `#<ticket>:` lines Git would strip as comments.
+ */
+export const conflictContinueCommand = 'git -c "core.editor=git log -1 --no-show-signature --format=%B REBASE_HEAD >" -c commit.cleanup=verbatim rebase --continue';
 
 /** Only call this with authoritative final assistant text, never with the raw stream. */
 export function parseOutcome(text: string, role: Role): Outcome {
