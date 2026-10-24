@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { readBuildIdentity, sourceState, stampBuild, type BuildIdentity } from './build-identity.js';
+import { loadMachineConfig, milliseconds, updateDrainDefault } from './config.js';
 import { processAlive } from './process-ownership.js';
 import { ensureScheduler, holdDispatch, notifyScheduler, releaseDispatch, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
 import { listSlots } from './slots.js';
@@ -38,9 +39,14 @@ export interface UpdateOptions {
   exec?: Exec;
   /** Progress lines while the update waits on workers. */
   progress?: (text: string) => void;
+  /** Cancels the drain before promotion; the installation stays as it was. */
+  signal?: AbortSignal;
 }
 
 const poll = 250;
+
+/** The drain ended before every working ticket finished: by its deadline or by cancellation. */
+class DrainStopped extends Error {}
 
 /** Copies the files the checkout would commit, edits included, leaving out `.git` and ignored output. Reads Git, never writes it. */
 async function copySource(source: string, staging: string) {
@@ -106,10 +112,15 @@ export async function updateMill(source: string, options: UpdateOptions): Promis
   try {
     // Workers read role prompts at every stage, so none may span the swap: wait until each has finished its ticket.
     await stopScheduler(home);
+    const drain = (await loadMachineConfig(home))?.update_drain_timeout ?? updateDrainDefault;
+    const ends = Date.now() + milliseconds(drain);
     for (let waiting = liveWorkers(home), told = 0; waiting.length; waiting = liveWorkers(home)) {
-      if (waiting.length !== told) progress(`Waiting for ${waiting.length} working ticket(s) to finish on the current build: ${waiting.map(slot => `${slot.owner!.millyard} #${slot.owner!.ticket}`).join(', ')}.`);
+      const tickets = waiting.map(slot => `${slot.owner!.millyard} #${slot.owner!.ticket}`).join(', ');
+      if (options.signal?.aborted) throw new DrainStopped(`The update was cancelled while it waited for working tickets to drain: ${tickets}.`);
+      if (Date.now() >= ends) throw new DrainStopped(`Waiting for working tickets to drain timed out after ${drain} (update_drain_timeout); still working: ${tickets}.`);
+      if (waiting.length !== told) progress(`Waiting for ${waiting.length} working ticket(s) to finish on the current build: ${tickets}.`);
       told = waiting.length;
-      await sleep(poll);
+      await sleep(Math.min(poll, Math.max(0, ends - Date.now())));
     }
     // A mill run during the wait may have started a scheduler; it admitted nothing, but runs the old code.
     await stopScheduler(home);
@@ -122,6 +133,7 @@ export async function updateMill(source: string, options: UpdateOptions): Promis
     await rm(staging, { recursive: true, force: true });
     releaseDispatch(home);
     if (before.available) await ensureScheduler(home, daemon).catch(() => {});
+    if (error instanceof DrainStopped) return report('failed', `${error.message}\nThe installed mill is unchanged, dispatch is released and working tickets carry on. Run mill update ${source} again once they finish, or raise update_drain_timeout in ~/.config/sawmill/config.yaml.`);
     return report('failed', `Activating the new build failed; the installed mill is unchanged.\n${error instanceof Error ? error.message : String(error)}`);
   }
   releaseDispatch(home);

@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
+import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type PhaseRecord, type PhaseWait, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { operationMarker, reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, TicketWriter } from './tracker.js';
 
@@ -107,6 +107,8 @@ function transaction<T>(cwd: string, work: (db: DatabaseSync) => T): T {
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'stop_requested')) db.exec('ALTER TABLE tickets ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'provisioned')) db.exec('ALTER TABLE tickets ADD COLUMN provisioned INTEGER NOT NULL DEFAULT 0');
     if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'assignment')) db.exec('ALTER TABLE tickets ADD COLUMN assignment TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'wait')) db.exec('ALTER TABLE tickets ADD COLUMN wait TEXT');
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(column => column.name === 'phases')) db.exec('ALTER TABLE tickets ADD COLUMN phases TEXT');
     for (const column of ['loop_control', 'activated', 'stopped', 'stopped_tickets']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
@@ -493,6 +495,15 @@ export function resetRow(cwd: string, project: ProjectConfig, number: number): v
     const comments = (JSON.parse(String(ticket.comments)) as { body: string }[]).filter(comment => !agentComment(comment.body));
     update(db, number, { state: 'queued', reason: null, stage: null, bounces: 0, sessionIds: {}, worktree: null, provisioned: false, branch: null, integration: {}, team: {} });
     db.prepare('UPDATE tickets SET comments = ?, worker = NULL, stage_started = NULL, stop_requested = 0 WHERE number = ?').run(JSON.stringify(comments), number);
+  });
+}
+
+/** Local evidence for status: the phase a ticket waits on now, and each finished one. Never changes its state. */
+export function recordWait(cwd: string, number: number, wait: PhaseWait | null, finished?: PhaseRecord): void {
+  transaction(cwd, db => {
+    const row = requireTicket(db, number);
+    const phases = finished ? JSON.stringify([...row.phases ? JSON.parse(String(row.phases)) as PhaseRecord[] : [], finished].slice(-50)) : null;
+    db.prepare('UPDATE tickets SET wait = ?, phases = COALESCE(?, phases) WHERE number = ?').run(wait ? JSON.stringify(wait) : null, phases, number);
   });
 }
 

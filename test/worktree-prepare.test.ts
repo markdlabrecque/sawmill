@@ -163,6 +163,55 @@ test('a drafted ticket whose preparation fails goes to environment logjam', asyn
   assert.match((await yard.cli('run', 'log', '7')).stdout, /migration blew up/);
 });
 
+test('a hung preparation shows as a site wait, is killed at its own deadline and resumes once fixed', async t => {
+  const tracker = new Tracker(7);
+  const yard = await siteYard(t, tracker);
+  assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
+  assert.equal((await yard.cli('worktree', 'create', '7')).code, 0);
+  await writeFile(yard.projectConfig, `${await readFile(yard.projectConfig, 'utf8')}\nphase_timeouts:\n  prepare: 1m\n  site: 5m\n`);
+  const row = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  const original = await readFile(join(yard.cwd, '.mill/prepare.sh'), 'utf8');
+
+  // While prepare.sh runs, status names the wait under its own deadline.
+  await writeFile(join(yard.cwd, '.mill/prepare.sh'), `while [ ! -f "$MILL_MILLYARD/../release-prepare" ]; do sleep 0.05; done\n${original}`);
+  const preparing = yard.cli('worktree', 'prepare', '7', '--json');
+  let waiting;
+  for (let i = 0; i < 300 && !waiting; i++) {
+    const wait = (await row()).wait;
+    if (wait?.phase === 'site') waiting = wait;
+    else await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.ok(waiting, 'status reports the site wait');
+  assert.equal(waiting.deadline, '5m');
+  await writeFile(join(yard.root, 'release-prepare'), 'go');
+  assert.equal((await preparing).code, 0);
+  assert.equal((await row()).wait ?? null, null);
+
+  await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8')).replace('site: 5m', 'site: 1s'));
+  await writeFile(join(yard.cwd, '.mill/prepare.sh'), 'echo $$ > "$MILL_MILLYARD/../prepare-pid"\nexec sleep 60\n');
+  const hung = await yard.cli('worktree', 'prepare', '7', '--json');
+  assert.equal(hung.code, 1, hung.stdout);
+  assert.match(hung.stdout, /prepare\.sh timed out after 1s/);
+  assert.match(hung.stdout, /phase_timeouts\.site/);
+  assert.match(hung.stdout, /mill run answer 7/);
+  const pid = Number(await readFile(join(yard.root, 'prepare-pid'), 'utf8'));
+  let gone = false;
+  for (let i = 0; i < 100 && !gone; i++) {
+    try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 20)); } catch { gone = true; }
+  }
+  assert.ok(gone, 'the prepare process is killed');
+  const stopped = await row();
+  assert.equal(stopped.state, 'logjam');
+  assert.equal(stopped.reason, 'environment');
+  assert.equal(stopped.phases.at(-1).outcome, 'timed-out');
+
+  await writeFile(join(yard.cwd, '.mill/prepare.sh'), original);
+  assert.equal((await yard.cli('run', 'answer', '7')).code, 0);
+  const resumed = await yard.cli('worktree', 'prepare', '7', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout).ready, true);
+});
+
 test('prepare refuses a ticket that has no worktree and a project with no prepare hook still reports identity', async t => {
   const yard = await siteYard(t);
   const absent = await yard.cli('worktree', 'prepare', '9');

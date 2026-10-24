@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import type { Role, ProjectConfig } from './config.js';
+import type { Phase, Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
 import { defaultProofPlan, proofPlan, type ProofPlan, type ProofPlanRevision } from './proof-plan.js';
@@ -145,6 +145,10 @@ export interface WorkerOwnership {
   result?: import('./team-runner.js').TeamResult;
 }
 export interface OwnedProcess { pid: number; processStart?: string; group: boolean }
+/** A delivery phase in progress: what the ticket waits on, since when and for how long at most. */
+export interface PhaseWait { phase: Phase; ticket: number; reason: string; deadline: string; started: string; pid: number; elapsedMs?: number }
+/** A finished phase. `concurrent` is the machine slots held when it started, null when unknown. */
+export interface PhaseRecord { phase: Phase; reason: string; deadline: string; started: string; ms: number; outcome: 'ok' | 'failed' | 'timed-out'; concurrent: number | null }
 /** Draft-time tracker assignment; `pending` waits for mill run answer, `refused` was dropped. */
 export type Assignment = AssignResult | { status: 'pending' | 'refused'; error: string };
 export interface RunTicket extends Omit<Ticket, 'state'> {
@@ -175,6 +179,10 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   proofPlan?: ProofPlan;
   /** Path changes made by redrafting over earlier runs, oldest first. */
   proofPlanRevisions?: ProofPlanRevision[];
+  /** Present only while a delivery phase runs. */
+  wait?: PhaseWait;
+  /** The latest finished delivery phases, oldest first. */
+  phases?: PhaseRecord[];
 }
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
@@ -292,6 +300,8 @@ export function readRun(cwd: string): RunSnapshot {
 
 const noRunMessage = 'No drafted run; use mill run draft <numbers...>.';
 
+const elapsed = (wait: PhaseWait): PhaseWait => ({ ...wait, elapsedMs: Math.max(0, Date.now() - Date.parse(wait.started)) });
+
 /** Opens the run for writing without ever creating it. SQLite's `mode=rw` refuses a missing
  * file, so a run deleted after it was read, such as a millyard removed under the scheduler,
  * is reported instead of recreated empty. Only drafting creates a run. */
@@ -332,6 +342,8 @@ export function readRunFile(file: string): RunSnapshot {
       // A run drafted before proof plans existed ran every ticket test-first.
       proofPlan: row.proof_plan ? JSON.parse(String(row.proof_plan)) as ProofPlan : defaultProofPlan,
       ...(row.proof_plan_revisions ? { proofPlanRevisions: JSON.parse(String(row.proof_plan_revisions)) as ProofPlanRevision[] } : {}),
+      ...(row.wait ? { wait: elapsed(JSON.parse(String(row.wait)) as PhaseWait) } : {}),
+      ...(row.phases ? { phases: JSON.parse(String(row.phases)) as PhaseRecord[] } : {}),
     }));
     const states = new Map(tickets.map(ticket => [ticket.number, ticket.completion ? 'done' : ticket.state]));
     for (const ticket of tickets) {
@@ -361,6 +373,10 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     if (ticket.state === 'blocked') { detail = ticket.blockers.map(number => `#${number}`).join(', '); linkedDetail = ticket.blockers.map(ref).join(', '); }
     if (ticket.state === 'logjam') detail = ticket.reason ?? '';
     if (ticket.state === 'working') detail = `${ticket.stage ?? 'unknown'}; round ${ticket.bounces + 1}; bounces ${ticket.bounces}; ${ticket.timeInStageSeconds ?? 0}s in stage${ticket.stopRequested ? '; stop requested' : ''}`;
+    if (ticket.wait) {
+      const wait = `waiting on ${ticket.wait.phase} (${ticket.wait.reason}) for ${Math.floor((ticket.wait.elapsedMs ?? 0) / 1000)}s of ${ticket.wait.deadline}`;
+      detail = detail ? `${detail}; ${wait}` : wait;
+    }
     linked.push([ref(ticket.number), undefined, undefined, linkedDetail]);
     return [`#${ticket.number}`, ticket.title, ticket.state, detail];
   });

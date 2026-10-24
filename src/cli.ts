@@ -117,7 +117,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit({ status: 'usage-error', message }, message);
         return 2;
       }
-      const report = await updateMill(resolve(invokedIn, positional[1]!), { root, home, exec: options.exec, progress: json ? undefined : text => stdout(text + '\n') });
+      const report = await updateMill(resolve(invokedIn, positional[1]!), { root, home, exec: options.exec, signal: options.signal, progress: json ? undefined : text => stdout(text + '\n') });
       const { source, installed, scheduler } = report;
       emit(report, [report.status === 'updated' ? `Updated mill at ${root}.` : `Update failed; mill at ${root} is unchanged.`,
         `Source: ${source.path}${source.revision ? ` at ${source.revision.slice(0, 7)}${source.dirty ? ' with uncommitted edits' : ''}` : ''}`,
@@ -397,6 +397,16 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     }
     const built = await build(cwd, home, args.includes('--force'));
     if (!built.written) {
+      // An existing config is checked, never overwritten: a valid one passes and a wrong value is a configuration error.
+      const { issues } = await loadConfig(cwd, home);
+      if (!issues.length) {
+        emit({ status: 'unchanged', issues, notes: [] }, 'Project config already exists and is valid; use --force to overwrite it.');
+        return 0;
+      }
+      if (issues.some(issue => issue.problem !== 'missing')) {
+        emit({ status: 'configuration-error', issues }, issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n'));
+        return 2;
+      }
       const message = 'Project config already exists; use --force to overwrite it.';
       emit({ status: 'refused', message }, message);
       return 1;
