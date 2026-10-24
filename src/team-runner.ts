@@ -194,6 +194,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       }
       checkStop(cwd, number);
       const tree = await createWorktree(cwd, project, machine, number, { ...options, writer: () => tracker });
+      // A worker's stderr is its log, where a resumed worktree's build change stays visible.
+      for (const warning of tree.warnings ?? []) process.stderr.write(`Warning: ${warning}\n`);
       guard();
       const path = tree.path;
       checkStop(cwd, number);

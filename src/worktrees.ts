@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { CliError } from './errors.js';
 import { readRun, runPath, type RunTicket } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
@@ -31,6 +31,8 @@ export interface WorktreeOptions extends MirrorOptions {
   home?: string;
   mergedHead?: string;
   writer?: () => TicketWriter;
+  /** Package root of the running mill, whose build identity worktrees record. */
+  root?: string;
 }
 
 function member(cwd: string, project: ProjectConfig, number: number) {
@@ -116,15 +118,33 @@ async function checkWorkspace(project: ProjectConfig, number: number, path: stri
   catch { throw new PreflightError(`The test command cannot run: ${program} was not found in the worktree.\nFix: install ${program} or set it up in .mill/setup.sh, ${resume}.`); }
 }
 
-/** Warn, never fail, when this project is Sawmill itself and the running mill is older than origin. */
-async function millBehind(cwd: string, project: ProjectConfig) {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-  if (!existsSync(join(root, '.git'))) return undefined;
+/** Warn, never fail, when this project is Sawmill itself and the running mill was built from a revision older than origin. */
+async function millBehind(cwd: string, project: ProjectConfig, root: string) {
+  const head = readBuildIdentity(root)?.revision;
+  if (!head) return undefined;
   try {
-    const head = await git(root, 'rev-parse', 'HEAD'), remote = `refs/remotes/origin/${project.integration}`;
+    const remote = `refs/remotes/origin/${project.integration}`;
     await git(cwd, 'merge-base', '--is-ancestor', head, remote);
     const behind = Number(await git(cwd, 'rev-list', '--count', `${head}..${remote}`));
-    return behind ? `The running mill (${head.slice(0, 7)}) is ${behind} commit(s) behind origin/${project.integration}; rebuild it with \`git pull && npm ci && npm run build\` in ${root}.` : undefined;
+    return behind ? `The running mill (${head.slice(0, 7)}) is ${behind} commit(s) behind origin/${project.integration}; update it with \`mill update <checkout>\` from a checkout of the current ${project.integration}.` : undefined;
+  } catch { return undefined; }
+}
+
+/** Kept in the worktree's Git admin directory, out of its tracked files: the build that last worked in it. */
+async function buildMark(path: string) {
+  return join(await git(path, 'rev-parse', '--absolute-git-dir'), 'sawmill-build');
+}
+
+/** Records this build on the worktree and warns when an earlier, different build set it up. */
+async function markBuild(path: string, root: string, reused: boolean): Promise<string | undefined> {
+  const current = readBuildIdentity(root);
+  if (!current) return undefined;
+  try {
+    const mark = await buildMark(path);
+    const previous = reused ? await readFile(mark, 'utf8').then(text => text.trim(), () => undefined) : undefined;
+    await writeFile(mark, current.id + '\n');
+    return previous && previous !== current.id
+      ? `This worktree was last worked on by build ${previous}; this mill is ${describeBuild(current)}. Work resumes on the new build.` : undefined;
   } catch { return undefined; }
 }
 
@@ -154,7 +174,8 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
       state: ticket?.state === 'queued' || ticket?.state === 'blocked' ? 'working' : undefined,
       ...(ticket?.stage ? {} : { stage: 'worktree-created', report: { stage: 'worktree-created' as const, details: `Reused worktree: ${existing.path}\nBranch: ${branch}` } }),
     }, [], options);
-    return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing.path, branch, reused: true };
+    const warning = await markBuild(existing.path, options.root ?? packageRoot, true);
+    return { status: ok ? 'ok' as const : 'logjam' as const, ticket: number, path: existing.path, branch, reused: true, ...(warning ? { warnings: [warning] } : {}) };
   }
   let created = false;
   const warnings: string[] = [];
@@ -162,7 +183,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
     else {
       await checkBase(cwd, project, number);
-      const warning = await millBehind(cwd, project);
+      const warning = await millBehind(cwd, project, options.root ?? packageRoot);
       if (warning) warnings.push(warning);
       await git(cwd, 'worktree', 'add', '-b', branch, path, `refs/heads/${project.integration}`);
     }
@@ -170,6 +191,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
     await hook(cwd, project, number, path, 'setup', options);
     await checkWorkspace(project, number, path);
+    await markBuild(path, options.root ?? packageRoot, false);
   } catch (error) {
     let message = failure(error);
     if (created) {

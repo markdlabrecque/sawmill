@@ -2,7 +2,9 @@ import { runTeam } from './team-runner.js';
 import { dispatchOnce, dispatchPreflight } from './dispatch.js';
 import { resumeRun, runLoop } from './run-loop.js';
 import { lockHeld } from './run-lock.js';
-import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler } from './scheduler.js';
+import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
+import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
+import { updateMill, type Exec } from './update.js';
 import { listMillyards, registerMillyard } from './registry.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
@@ -10,6 +12,7 @@ import type { Runtime } from './runtime.js';
 import { GitHubIntegration } from './github-integration.js';
 import { integrate } from './integrate.js';
 import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
@@ -32,6 +35,10 @@ import { readView } from './view/model.js';
 import { serveView } from './view/server.js';
 
 export interface CliOptions {
+  /** The installed package root this mill runs from, and the installation mill update replaces. */
+  root?: string;
+  /** Runs the installer steps of mill update. */
+  exec?: Exec;
   runtime?: Runtime;
   signal?: AbortSignal;
   cwd?: string;
@@ -52,11 +59,15 @@ export function ticketWriter(options: CliOptions, project: ProjectConfig, cwd: s
 }
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<number> {
-  const { cwd: invokedIn = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text) } = options;
+  const { cwd: invokedIn = process.cwd(), home = homedir(), stdout = (text) => process.stdout.write(text), root = packageRoot } = options;
   const json = args.includes('--json');
   // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
   const emit = (value: object, message: string) => stdout((json ? JSON.stringify(value) : message) + '\n');
+  const current = readBuildIdentity(root);
+  // A scheduler loaded from other code than this mill keeps running that code until it restarts.
+  const mismatch = (scheduler: SchedulerStatus) => scheduler.available && current && scheduler.build !== current.id
+    ? [`Warning: the scheduler runs ${scheduler.build ? `build ${scheduler.build}` : 'an unstamped build'}, but this mill is ${describeBuild(current)}. Put them on one build with mill update <checkout>, or mill scheduler stop and then mill run.`] : [];
   try {
     const positional = args.filter(arg => arg !== '--json');
     if (positional.includes('--help') || positional.includes('-h')) {
@@ -71,8 +82,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       return 0;
     }
     if (positional.length === 1 && positional[0] === '--version') {
-      const current = version();
-      emit({ version: current }, current);
+      const executable = join(root, 'dist/src/bin.js');
+      const number = version(root);
+      emit({ version: number, executable, build: current ?? null }, [`mill ${number}, ${describeBuild(current)}`, `Executable: ${executable}`].join('\n'));
       return 0;
     }
     if (!findCommand(positional)) {
@@ -96,6 +108,22 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       await serveView(home, port, { stdout, signal: options.signal, tracker: options.tracker, sleep: options.sleep });
       return 0;
     }
+    if (positional[0] === 'update') {
+      // Machine-wide: it replaces this installation and coordinates with the shared scheduler.
+      if (positional.length !== 2) {
+        const message = usage('update');
+        emit({ status: 'usage-error', message }, message);
+        return 2;
+      }
+      const report = await updateMill(resolve(invokedIn, positional[1]!), { root, home, exec: options.exec, progress: json ? undefined : text => stdout(text + '\n') });
+      const { source, installed, scheduler } = report;
+      emit(report, [report.status === 'updated' ? `Updated mill at ${root}.` : `Update failed; mill at ${root} is unchanged.`,
+        `Source: ${source.path}${source.revision ? ` at ${source.revision.slice(0, 7)}${source.dirty ? ' with uncommitted edits' : ''}` : ''}`,
+        `Installed: ${describeBuild(installed ?? undefined)}`,
+        `Scheduler: ${scheduler.available ? `running (pid ${scheduler.pid}, ${scheduler.build ? `build ${scheduler.build}` : 'unstamped build'})` : 'not running'}`,
+        ...(report.message ? [report.message] : [])].join('\n'));
+      return report.status === 'updated' ? 0 : 1;
+    }
     if (positional[0] === 'scheduler') {
       // Machine-wide like board: one scheduler serves every registered millyard.
       if (positional.length !== 2) {
@@ -116,8 +144,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         try { return { millyard, lifecycle: readRun(millyard).run.lifecycle }; }
         catch (error) { return { millyard, error: error instanceof Error ? error.message : String(error) }; }
       });
-      emit({ scheduler, runs }, [scheduler.available ? `Scheduler running (pid ${scheduler.pid}) since ${scheduler.started}.` : 'Scheduler not running; mill run starts it.',
-        `Log: ${scheduler.log}`, ...runs.map(run => `${run.millyard}: ${'error' in run ? run.error : run.lifecycle}`)].join('\n'));
+      emit({ scheduler, runs }, [scheduler.available ? `Scheduler running (pid ${scheduler.pid}, ${scheduler.build ? `build ${scheduler.build}` : 'unstamped build'}) since ${scheduler.started}.` : 'Scheduler not running; mill run starts it.',
+        ...mismatch(scheduler), `Log: ${scheduler.log}`, ...runs.map(run => `${run.millyard}: ${'error' in run ? run.error : run.lifecycle}`)].join('\n'));
       return 0;
     }
     const cwd = positional[0] === 'build' ? invokedIn : resolveMillyard(invokedIn);
@@ -182,7 +210,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           emit(result, `${result.status === 'ok' ? 'Removed worktree' : 'Tracker logjam for'} ${ref(result.ticket)}: ${result.path ?? '(none)'}`);
           return result.status === 'ok' ? 0 : 1;
         }
-        const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
+        const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, root, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
         emit(result, [result.status === 'ok' ? result.path : `Ticket in logjam: ${result.path}`, ...('warnings' in result ? result.warnings ?? [] : []).map(warning => `Warning: ${warning}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
@@ -194,7 +222,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         const snapshot = view(readRun(cwd));
         const { scheduler } = snapshot;
-        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid})` : 'not running'}.`, table(snapshot)].join('\n'));
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot)].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
@@ -222,7 +250,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         notifyScheduler(home);
         emit({ status: 'started', activated, lifecycle: run.lifecycle, ...scheduler }, [state,
-          `The shared scheduler (pid ${scheduler.pid}) ${scheduler.launched ? 'started and' : 'already'} runs it alongside every other active run on this machine.`, `Log: ${scheduler.log}`,
+          `The shared scheduler (pid ${scheduler.pid}) ${scheduler.launched ? 'started and' : 'already'} runs it alongside every other active run on this machine.`, ...mismatch(schedulerStatus(home)), `Log: ${scheduler.log}`,
           "See progress with 'mill run status' or 'mill team tail <n>'; stop a ticket with 'mill run stop <n>', or the whole run with 'mill run stop'."].join('\n'));
         return 0;
       }
@@ -306,7 +334,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           ? [`The run is ${snapshot.run.lifecycle}; the ticket waits until you start the run with mill run.`] : [];
         emit({ ...snapshot, status: ok ? 'ok' : 'logjam', ...(resumed ? { resumed } : {}) }, [table(snapshot), ...waiting,
           ...(!resumed ? [] : 'error' in resumed ? [`The shared scheduler did not start: ${resumed.error}\nStart it with mill run.`]
-            : [`The shared scheduler (pid ${resumed.pid}) picks the ticket up.`, `Log: ${resumed.log}`])].join('\n'));
+            : [`The shared scheduler (pid ${resumed.pid}) picks the ticket up.`, ...mismatch(schedulerStatus(home)), `Log: ${resumed.log}`])].join('\n'));
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {

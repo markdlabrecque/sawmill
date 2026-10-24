@@ -18,7 +18,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node dist/src/stamp-build.js",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js && node --test dist/test/process-permissions.js",
     "prepack": "npm run build"
