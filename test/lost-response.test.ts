@@ -105,16 +105,18 @@ async function fixture(t: TestContext) {
 
 test('a merge saves its identity and intended target before the host is asked', async t => {
   const y = await fixture(t);
-  const head = y.tracker.head('mill/9');
+  let head = '';
   let saved: Record<string, unknown> | undefined;
   y.tracker.mergeBehavior = async real => {
-    saved = (await y.status()).tickets[0].integration.operation;
+    head = y.tracker.head('mill/9');
+    saved =(await y.status()).tickets[0].integration.operation;
     return real();
   };
   assert.equal((await y.cli('integrate', '9')).code, 0);
   assert.ok(saved, 'operation was saved before the merge call');
   assert.equal(saved.kind, 'merge');
   assert.equal(saved.changeRequestId, 42);
+  assert.match(head, /^[a-f\d]{40}$/);
   assert.equal(saved.sourceHead, head);
   assert.equal(saved.targetBranch, 'integration');
   assert.equal(typeof saved.id, 'string'); assert.ok((saved.id as string).length > 0);
