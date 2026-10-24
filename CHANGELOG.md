@@ -1,0 +1,76 @@
+## 0.2.0 - 2026-10-23
+
+- #124: Let roles run declared verification commands and focused tests
+- #123: Recover orphan slot reservations without stealing live capacity
+- #122: Identify the running build and update Mill from a chosen checkout
+- #121: Keep closed tickets out of new runs and first dispatch
+- #120: Preserve ticket-prefixed commit messages during conflict repair
+- #119: Give repair agents the failed CI job logs
+- #115: Stop flagging a ticket's tests as tampered after a merge clash
+- #114: Let answering a ticket at its retry limit give it another try
+- #109: Stop a timing check failing CI when the machine is busy
+- #103: Stop mill refusing to run over processes it cannot read
+- #102: Let mill run from any worktree of the project
+- #100: Allow a repair to contain multiple commits
+- #99: Keep all active runs moving with one shared scheduler
+- #97: Let reviewers send test corrections back to test writers
+- #93: Control runs from the web board
+- #92: Open tracker tickets from the web board
+- #91: Write down the rules for working around a Mill run
+- #90: Rerun a failed test run once before it stops a ticket
+- #89: Check a ticket's workspace before any agent starts
+- #88: Show agents the real test failures instead of cut-off output
+- #87: Let a person approve a corrected test without editing Mill's files by hand
+- #85: Let a project with no tests opt out of test checks
+- #84: Stop posting Mill's step-by-step progress on tickets
+- #77: Add a command to reset a ticket and start it fresh
+
+## 0.1.0 - 2026-10-22
+
+- #76: Stop the test guard from blocking tickets rebased onto main
+- #74: Add a searchable Archive of past runs to the board
+- #73: Rename mill view to mill board
+- #72: Let mill move a project's millyard to another worktree
+- #69: Stop retrying a merge catch-up that can never work
+- #67: Make mill run go to the background by default
+- #54: Send tests that already pass back to the test writers
+- #53: Let a stopped 'not reproduced' ticket go back to the final tests
+- #50: Always create setup and teardown scripts when building a millyard
+- #49: Make ticket numbers in mill's output clickable links
+- #48: Assign tickets to the person who drafts the run
+- #46: Four tests pass in a ticket worktree but fail in the final test run
+- #45: Save-my-work push fails after a rebase, so stopped work isn't backed up
+- #44: Let mill commands run from inside a ticket's worktree
+- #43: Let mill run in the background so the terminal stays free
+- #40: Pilot: write a slow file that can be stopped mid-run
+- #38: Pilot: add the second line once the first is merged
+- #37: Pilot: add the first line of a two-step file
+- #36: Add --help that lists every mill command
+- #34: Document installation and quickstart in README
+- #33: Open the live view from a phone over Tailscale
+- #32: Animate stage changes and make the live view fit a phone
+- #30: Remember every project that has a run, so the live view can find it
+- #28: Pick terminal or web for the live work view
+- #27: Live animated view of all running mill work, on desktop and phone
+- #23: Run GitLab tickets through draft and MR integration
+- #22: Run the same ticket flow with Codex
+- #21: Run the same ticket flow with Pi
+- #20: Draft runs through the Sawmill Claude Code plugin
+- #19: Stop a working ticket at a stage boundary
+- #18: Keep a run moving and recover after a crash
+- #17: Dispatch ready tickets in one pass
+- #16: Review user test cases in the ticket site
+- #15: Retry infrastructure without spending repair rounds
+- #14: Save questions and resume from a CLI answer
+- #13: Repair review and integration failures within the cap
+- #12: Run a ticket from failing tests to a merged change
+- #11: Review a worktree with Claude Code and follow its log
+- #10: Gate integration on CI for the exact PR head
+- #9: Integrate approved work through a GitHub PR
+- #8: Provision DDEV ticket sites from house hooks
+- #7: Create, reuse, and retire ticket worktrees
+- #6: Recover tracker writes and finish tickets by hand
+- #5: Select a run by label or spec issue
+- #4: Draft explicit GitHub tickets into an offline run
+- #3: Build and validate a millyard
+- #1: Spec: Sawmill software factory
