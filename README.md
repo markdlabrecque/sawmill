@@ -413,7 +413,7 @@ mill-results: {"version":1,"status":"ok","collected":12,"scenarios":[{"id":"Answ
 - Each scenario has a stable `id` and `status` `pass` or `fail`. A failure's `kind` is `assertion` (the default), `error` or `compile`. Optional `message` and `artifact` point at the details.
 - A deliberate compile or type failure sets `kind: "compile"`, the `expectedDiagnostic` it was written to produce (such as `TS2339`) and the `diagnostic` it got. Mill never guesses it from stderr.
 
-Without the line, Mill reads `node --test` output (spec or TAP reporter) the same way: each test name is a scenario, an `AssertionError` is an assertion and anything else thrown is an error. Skipped and todo tests are left out.
+Without the line, Mill reads `node --test` output (spec or TAP reporter) the same way: each test name is a scenario, an `AssertionError` is an assertion and anything else thrown is an error. Skipped and todo tests are left out. A test file that fails as a whole (a plain script that is not written with `node:test`, or a file that does not load) is one scenario named after the file. Node reports only "test failed" for it, so Mill cannot tell an assertion from an error there and counts it as an assertion. Write `node:test` tests for the stricter check.
 
 For PHPUnit, copy [`examples/phpunit/mill-junit.mjs`](examples/phpunit/mill-junit.mjs) into the project (say, as `.mill/mill-junit.mjs`) and wrap the runner. `{report}` becomes a temporary JUnit file outside the worktree:
 

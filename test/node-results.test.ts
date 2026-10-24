@@ -85,6 +85,46 @@ not ok 4 - todo # TODO
 # pass 1
 # fail 3
 `;
+// node --test on a plain assert script: the file fails as a whole and Node says only 'test failed'.
+const wholeFile = `AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+0 !== 42
+
+Node.js v24.20.0
+✖ answer.test.cjs (15.165362ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+
+✖ failing tests:
+
+test at answer.test.cjs:1:1
+✖ answer.test.cjs (15.165362ms)
+  'test failed'
+`;
+const wholeFileTap = `TAP version 13
+# Subtest: answer.test.cjs
+not ok 1 - answer.test.cjs
+  ---
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# fail 1
+`;
+
+test('a test file that fails as a whole is one scenario with no kind, since Node does not say why', () => {
+  for (const output of [wholeFile, wholeFileTap]) {
+    const results = nodeResults(output)!;
+    assert.deepEqual(results.scenarios.map(s => [s.id, s.status, s.kind]), [['answer.test.cjs', 'fail', undefined]]);
+    assert.equal(redEvidence(undefined, results).valid, true, 'A failure with no kind counts as an assertion');
+  }
+});
+
 const scenarios = (output: string) => nodeResults(output)!.scenarios.map(s => [s.id, s.status, s.kind ?? '']).sort();
 
 test('node test output becomes scenarios: leaves only, assertion or error, no skips, todos or parents', () => {

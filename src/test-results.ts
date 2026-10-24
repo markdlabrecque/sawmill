@@ -157,8 +157,13 @@ export function greenEvidence(red: Evidence, after: StructuredResults): Evidence
   return { valid: true, scenarios: red.scenarios };
 }
 
-/** A node:test failure is an assertion only when the runner says so; anything else it threw is an error. */
-const failureKind = (block: string[]): Scenario['kind'] => block.some(text => /AssertionError|ERR_ASSERTION/.test(text)) ? 'assertion' : 'error';
+/**
+ * A node:test failure is an assertion only when the runner says so; anything else it threw is an error. A test
+ * file that failed as a whole (a plain script, or one that did not load) says only 'test failed': no kind, as
+ * Node does not report why.
+ */
+const failureKind = (block: string[]): Pick<Scenario, 'kind'> => block.some(text => /AssertionError|ERR_ASSERTION/.test(text)) ? { kind: 'assertion' }
+  : block.some(text => /^\s*(?:error: )?'test failed'$/.test(text)) ? {} : { kind: 'error' };
 const blockAfter = (all: string[], i: number, depth: number) => {
   const block: string[] = [];
   for (const text of all.slice(i + 1)) {
@@ -191,7 +196,7 @@ export function nodeResults(output: string): StructuredResults | undefined {
     for (const [id, blocks] of failed) {
       const message = blocks[0]?.[0]!.trim();
       if (!message || blocks.some(block => subtests.test(block[0]!.trim()))) continue;
-      found.set(id, { id, status: 'fail', kind: failureKind(blocks.flat()), message });
+      found.set(id, { id, status: 'fail', ...failureKind(blocks.flat()), message });
     }
   } else if (/^\s*# fail \d+$/m.test(output) && /^\s*(?:not )?ok \d+/m.test(output)) {
     counts = /^\s*# tests (\d+)$/gm;
@@ -200,7 +205,7 @@ export function nodeResults(output: string): StructuredResults | undefined {
       if (!match || match[4]) return;
       if (!match[2]) return add({ id: match[3]!, status: 'pass' });
       const block = blockAfter(all, i, match[1]!.length);
-      if (!block.some(text => /^\s*failureType: '?subtestsFailed'?$/.test(text))) add({ id: match[3]!, status: 'fail', kind: failureKind(block) });
+      if (!block.some(text => /^\s*failureType: '?subtestsFailed'?$/.test(text))) add({ id: match[3]!, status: 'fail', ...failureKind(block) });
     });
   } else return undefined;
   const collected = [...output.matchAll(counts)].reduce((sum, match) => sum + Number(match[1]), 0);
