@@ -2,7 +2,7 @@ import { runTeam } from './team-runner.js';
 import { dispatchOnce, dispatchPreflight } from './dispatch.js';
 import { resumeRun, runLoop } from './run-loop.js';
 import { lockHeld } from './run-lock.js';
-import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
+import { ensureExecutionScheduler, requireSchedulerConfiguration, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
 import { describeUnresolved, listSlots, unresolvedSlots } from './slots.js';
@@ -303,20 +303,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
+        requireSchedulerConfiguration(home);
         // An integrating ticket holds the checkout for as long as CI takes; the scheduler preflights once it is free.
         if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project);
+        const scheduler = await ensureExecutionScheduler(home);
         const activated = activateRun(cwd);
         await registerMillyard(home, cwd);
         const { run } = readRun(cwd);
         const state = activated ? 'Activated the run.' : `The run is already ${run.lifecycle}${run.loop?.pausedReason && run.lifecycle === 'paused' ? `: ${run.loop.pausedReason}` : '.'}`;
-        let scheduler: Awaited<ReturnType<typeof ensureScheduler>>;
-        try { scheduler = await ensureScheduler(home); }
-        catch (error) {
-          // Activation is durable; the next mill run or scheduler start picks the run up.
-          const message = error instanceof Error ? error.message : String(error);
-          emit({ status: 'scheduler-unavailable', activated, lifecycle: run.lifecycle, message }, `${state}\nThe shared scheduler did not start: ${message}\nThe run stays active; start the scheduler with mill run.`);
-          return 1;
-        }
         notifyScheduler(home);
         emit({ status: 'started', activated, lifecycle: run.lifecycle, ...scheduler }, [state,
           `The shared scheduler (pid ${scheduler.pid}) ${scheduler.launched ? 'started and' : 'already'} runs it alongside every other active run on this machine.`, ...mismatch(schedulerStatus(home)), `Log: ${scheduler.log}`,
@@ -406,6 +400,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (words.length < 3 || words.length > (positional[1] === 'answer' ? 4 : 3) || (words[3] !== undefined && !words[3].trim()) || !/^[1-9]\d*$/.test(words[2]!) || !Number.isSafeInteger(Number(words[2]))) {
           emit({ status: 'usage-error', message }, message);
           return 2;
+        }
+        if (positional[1] === 'answer' && readRun(cwd).run.lifecycle === 'active') {
+          requireSchedulerConfiguration(home);
+          if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home);
         }
         const writer = ticketWriter(options, config.project, cwd);
         const ok = positional[1] === 'answer'

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { CliError } from './errors.js';
+import { requireTypeSafeKey } from './typesafe.js';
 import { processAlive } from './process-ownership.js';
 import { processStart } from './slots.js';
 
@@ -19,7 +20,7 @@ export const wakePath = (home: string) => join(schedulerPath(home), 'wake');
 const holdPath = (home: string) => join(schedulerPath(home), 'update-hold.json');
 
 /** `build` is the build id the scheduler loaded, when its installation was stamped. */
-export interface SchedulerOwner { pid: number; processStart?: string; token: string; started: string; build?: string }
+export interface SchedulerOwner { pid: number; processStart?: string; token: string; started: string; build?: string; typeSafeKeyAvailable?: boolean }
 export interface SchedulerStatus { available: boolean; pid?: number; started?: string; build?: string; log: string }
 
 /** Reads without creating anything; an unreadable owner file counts as no scheduler. */
@@ -97,6 +98,25 @@ export function dispatchHeld(home: string): boolean {
     const holder = JSON.parse(readFileSync(holdPath(home), 'utf8')) as { pid: number; processStart?: string };
     return processAlive(holder.pid, holder.processStart);
   } catch { return false; }
+}
+
+/** The daemon's environment is fixed at startup. Its live ownership record attests
+ * only availability, never the key. Older daemons without an attestation are not ready.
+ * This bounded local read must precede activation, answers and integration-lock waits. */
+export function requireSchedulerConfiguration(home: string): void {
+  requireTypeSafeKey();
+  const owner = readScheduler(home);
+  if (owner && processAlive(owner.pid, owner.processStart) && owner.typeSafeKeyAvailable !== true) {
+    throw new CliError('The shared scheduler cannot start work: TYPESAFE_API_KEY is missing from its execution environment. Set/export TYPESAFE_API_KEY, run mill scheduler stop, then mill run to restart it. Other projects share this scheduler; do not restart it until safe.', 2);
+  }
+}
+
+/** Start/readiness boundary for callers that will launch work, not administration. */
+export async function ensureExecutionScheduler(home: string) {
+  requireSchedulerConfiguration(home);
+  const scheduler = await ensureScheduler(home);
+  requireSchedulerConfiguration(home);
+  return scheduler;
 }
 
 /** Returns the live scheduler, starting a detached one if none holds ownership. Concurrent

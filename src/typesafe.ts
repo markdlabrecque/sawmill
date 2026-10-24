@@ -1,3 +1,17 @@
+import { CliError } from './errors.js';
+
+/** Execution startup is mandatory even when optional screening is disabled.
+ * Presence only: never authenticate, return, or record the credential here. */
+export function requireTypeSafeKey(): void {
+  if (!process.env.TYPESAFE_API_KEY?.trim()) {
+    throw new CliError('TYPESAFE_API_KEY is required to start work. Set/export TYPESAFE_API_KEY in the execution environment, then retry.', 2);
+  }
+}
+
+export function typeSafeKeyAvailable(): boolean {
+  return Boolean(process.env.TYPESAFE_API_KEY?.trim());
+}
+
 export const jevModel = 'jev-1.14.0';
 export interface Evidence { id: string; source: string; text: string; truncated?: boolean }
 export interface ChoiceQuestion {

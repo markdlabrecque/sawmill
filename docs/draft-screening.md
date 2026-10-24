@@ -66,6 +66,14 @@ AbortSignal. The helper also imposes a wall-clock timeout, even if an injected
 classifier ignores cancellation. Configuration permits 1–60,000 ms; the default
 is 10,000 ms. Timed-out work is aborted and ignored.
 
+**Execution startup takes precedence over optional missing-key fallbacks.** The
+shared configuration in `src/typesafe.ts` requires a nonblank `TYPESAFE_API_KEY`
+before execution, even with screening disabled. Missing startup credentials are
+a configuration error, not infrastructure retries or permission to run without
+TypeSafe. Drafting and these advisory helpers retain their optional behavior;
+service-error and review/merge policies are unchanged. See
+[execution environment and scheduler recovery](operating-mill.md#before-you-start-a-run).
+
 The shared client in `src/typesafe.ts` has a reusable choice/evidence boundary;
 callers must prepare bounded, redacted evidence and validate answers. It does
 not load the SDK until called. There are no live API calls in automated tests.

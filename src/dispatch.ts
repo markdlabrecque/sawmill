@@ -1,3 +1,4 @@
+import { requireTypeSafeKey } from './typesafe.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -43,6 +44,7 @@ export function workerEvents(snapshot: RunSnapshot): WorkerEvent[] {
  * project a turn; `wait: false` skips a project whose integration lock is held. */
 export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true,
   options: { limit?: number; wait?: boolean } = {}): Promise<DispatchResult> {
+  requireTypeSafeKey();
   cwd = await realpath(cwd);
   const snapshot = await dispatchPreflight(cwd, project, options.wait);
   const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false, unresolved: [] };
@@ -87,6 +89,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
 }
 
 export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true): Promise<RunSnapshot> {
+  requireTypeSafeKey();
   readRun(cwd);
   await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), wait);
   const snapshot = readRun(cwd);

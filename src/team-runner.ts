@@ -1,3 +1,4 @@
+import { requireTypeSafeKey } from './typesafe.js';
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { requireBrowserCapability } from './user-testing.js';
@@ -55,6 +56,7 @@ export interface TeamResult {
 /** One bounded ticket team. Owns the lock; runRole must not acquire it again. */
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
+  requireTypeSafeKey();
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;

@@ -1,3 +1,4 @@
+import { requireTypeSafeKey } from './typesafe.js';
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { requireBrowserCapability } from './user-testing.js';
@@ -26,6 +27,7 @@ import { verificationFrom, verificationInstructions } from './verification.js';
 const execute = promisify(execFile);
 export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal; acceptanceScreening?: AcceptanceScreeningOptions }
 export async function reviewTicket(cwd: string, project: ProjectConfig, writer: TicketWriter, number: number, options: ReviewOptions = {}) {
+  requireTypeSafeKey();
   return withRoleLock(cwd, number, () => review(cwd, project, writer, number, options));
 }
 async function review(cwd: string, project: ProjectConfig, writer: TicketWriter, number: number, options: ReviewOptions) {
