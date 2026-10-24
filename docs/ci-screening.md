@@ -154,86 +154,154 @@ the sixth job retains its log with an exhausted-screening notice. The full
 project test command passed **833 tests, 0 failures** (830 plus 3 isolated
 process-permission tests). No production changes were needed in this round.
 
-### Repair-agent effort evaluation: blocked, not waived
+### Repair-agent effort evaluation: completed offline pilot
 
-The operator has authorized a small paired **offline repair-agent** evaluation.
-Human repair participants are not required. This supersedes the earlier request
-for human sessions; it does not waive AC5. **AC5 remains unresolved:** completed
-pairs **0**, started arms **0**. No repair-effort benefit has been measured.
+On 2026-10-24 the operator ran the authorized paired repair-agent pilot:
+**2 completed pairs, 4 completed arms, no incomplete or timed-out arms**.
+This supplies measured repair-effort evidence for AC5, not an acceptance waiver
+or evidence of broad savings. Human repair participants were not required.
+The earlier zero-session execution blocker is superseded by these runs.
 
-The precise execution blocker in this implementer session is the tool surface:
-there is no independent-agent/session-launch tool, and the permitted shell
-commands are limited to Git inspection/checkpoints, the project test command,
-and declared build/typecheck/focused-test checks. They do not permit launching
-repair-agent CLIs, an evaluation driver, or isolated benchmark worktrees.
-No agent-launch command was attempted outside that allowlist. Running the
-mocked tests again cannot produce independent repair sessions. Nor can this
-already-informed implementer stand in for both arms: it has read the diagnoses,
-expected answers and fixes. No production access or credentials are needed to
-resolve this blocker; an isolated evaluation runner with independent sessions
-and permission to launch it is needed.
+#### Reproducible setup and evidence
 
-#### Frozen setup for a follow-up run (not executed)
+The operator's generator is `/tmp/sawmill-172-eval.mjs`; the auditor is
+`/tmp/sawmill-172-audit.mjs`. Original artifacts are under
+`/tmp/sawmill-172-repair-eval-k6V9oh/`: `manifest.json`, `audit.json`,
+`{code,dependency}/{ordinary,screened}-trace.jsonl`, corresponding stderr files,
+`{code,dependency}/base/` (frozen source and full log), each arm's directory
+(repaired source, log and handoff), and each case's `screened-handoff.txt`.
+These are local temporary artifacts, not durable repository attachments; the
+measurements and input identities below preserve the report if they expire.
+The implementer inspected the supplied manifest, audit and generator rather
+than rerunning or inventing independent sessions.
 
-Freeze the evaluation implementation at
-`0f608b0950dee45cf4ddeef55cb386fb7405f87c`. Before launching any arm, save a case
-manifest containing the broken source revision/archive and hash, task, full
-logs and hashes, job/attempt/tested revision, expected cause and verification
-command. Keep known causes/fixes and scoring material outside agent access.
-The invoice/registry examples above are log-only contract fixtures: they do
-not contain a runnable broken invoice application and must not be presented as
-verified repair benchmarks without supplying that source and a known fix.
+The screening implementation was frozen at
+`0f608b0950dee45cf4ddeef55cb386fb7405f87c`. These are new runnable synthetic
+cases based on the contract fixtures, not repairs of an existing invoice app:
 
-Use these IDs to track representative candidate cases from the existing
-fixtures; none currently has an executed arm:
+| Case ID (artifact directory) | Broken `invoice.mjs` | Known cause / verified fix | Test input / expected amount |
+| --- | --- | --- | --- |
+| RE-CODE (`code`) | `export function amount(invoice) { return invoice.total(); }` | TypeError: numeric property called as a function; return `invoice.total` | `{total:42}` / `42` |
+| RE-DEPS (`dependency`) | `import { amount } from 'invoice-engine'; export { amount };` | ERR_MODULE_NOT_FOUND: bare package import instead of existing local module; import `./lib/invoice-engine.mjs` | `{total:17}` / `17` |
 
-| Case ID | Fixture basis / expected cause | First arm |
+For reproduction, each file above ends in a newline. RE-DEPS also contains
+`lib/invoice-engine.mjs` with
+`export function amount(invoice) { return invoice.total; }` and a final newline.
+Both cases use the exact compact `package.json`
+`{"private":true,"type":"module","scripts":{"test":"node test.mjs"}}`
+(no final newline). Each `test.mjs` is the following single line plus newline,
+substituting `42` or `17` for both occurrences of `N`:
+
+```js
+import assert from 'node:assert/strict'; import {amount} from './invoice.mjs'; assert.equal(amount({total:N}),N);
+```
+
+Generate the full log once per broken case by running `npm test` and joining
+200 copies of `routine CI progress`, stdout, stderr, and 200 copies of
+`routine CI cleanup` with newlines. Copy that frozen source and saved
+`ci-full.log` to two fresh directories; never copy a repair between arms.
+The source identity is SHA-256 of sorted `[filename, contents]` entries mapped
+to `filename + '\n' + contents` and joined with `\n`; it excludes logs/handoffs.
+Logs and handoffs use SHA-256 of their exact bytes. Both arms had identical
+source/log hashes within each case:
+
+| Case | Frozen source SHA-256 | Full log SHA-256 |
 | --- | --- | --- |
-| RE-CODE | Application TypeError / wrong `invoice.total` call | ordinary |
-| RE-DEPS | Missing `invoice-engine` / missing dependency | screened |
-| RE-AUTH | HTTP 401 / registry authentication failure | ordinary |
-| RE-MIXED | Unit TypeError plus install ECONNRESET / both causes | screened |
+| RE-CODE | `6190373bc8ccba4a23ad6f01820b3894d4b23865a361572cd49d49ed191e3d64` | `a35883e7d6c1d898c0852d7ea331c9643123942f23921f18d0a9f171944d8c28` |
+| RE-DEPS | `5e1b940157f5db48d91040244eb7bdd875c33dd6444f483a40c9fc69fdc54a03` | `423a29a16bf879909bcd86e77a595a6da734b92cde3deef073d812cc5433c794` |
 
-Supply a runnable, offline reproduction and known fix for each candidate before
-using it. Authentication/network cases must use local fake services and dummy
-credentials, not real registry access. If evidence is deliberately missing,
-score a correct request for that evidence separately from a verified fix.
+The ordinary handoff was exactly the following line plus newline, substituting
+the source hash for `HASH`:
 
-For each completed case, start two fresh, independent sessions from identical
-isolated copies of its broken revision, with the same task, model **and effort**,
-code/full-log access and a fixed 10-minute budget. Record the exact model/effort
-and runner version before starting; do not substitute a different model in one
-arm. Vary only the ordinary versus screened handoff. Alternate launch order as
-above; never reuse a session, patch, cache or transcript between arms. Preserve
-both handoffs and screening evidence identities. Scripted screening would
-measure that fixed advisory handoff's utility, not live Jev accuracy.
+```text
+CI job unit failed on frozen revision HASH. The saved full log is ci-full.log. Repair the failure and run npm test to verify. State the cause in your final answer. Stay inside this directory.
+```
 
-#### Raw measurement status
+Only the screened handoff differed: append a newline, the actual
+`ciScreeningNote`, and another newline. Generate the note using job
+`{name:'unit', logId:'91', source:'offline run 12 attempt 2'}`, source hash as
+tested revision, full log, and injected options `enabled:true`, dummy
+`apiKey:'fixture-only'`, `model:'jev-test-pinned'`,
+`questionVersion:'ci-screen-v1'`, `maxEvidenceChars:1200`. The scripted classifier
+returns the known case label with probability 1 and selects candidate IDs
+matching `/TypeError|ERR_MODULE_NOT_FOUND|Cannot find package/`.
+This is an oracle-like fixed screening treatment, **not live Jev accuracy**.
+Both notes selected the useful diagnostic at saved lines **210–214** (2/2).
+Their evidence identities were
+`62aab12ae5b4a36cb1c5a3b89e257a2c30ab069268b84aa3204a8a89c52df452`
+(RE-CODE) and
+`04c50dceb9082f4091dd26b9e520c3f16000f619d1d64867912d14eddd6df125`
+(RE-DEPS). Both arms retained full-log access.
 
-No session transcripts or repair patches exist for these candidate arms. In the
-table, `O/S` means ordinary/screened; unknown is not zero or a timeout.
+Each arm used a separate fresh Pi session and session directory, the same
+`openai/gpt-6.1-sol` model at **low** effort, the same task and code access,
+and a **600-second** cap. The generator launched this command in each arm's
+directory (`SESSION_DIR` differs per arm):
 
-| Case ID | Session IDs O/S | First correct cause, seconds O/S | Investigation/tool steps O/S | Verified fix, seconds O/S | Repair rounds O/S | Misses/regressions O/S |
-| --- | --- | --- | --- | --- | --- | --- |
-| RE-CODE | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
-| RE-DEPS | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
-| RE-AUTH | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
-| RE-MIXED | not started / not started | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown | unknown / unknown |
+```text
+timeout 600s pi --print --mode json --model openai/gpt-6.1-sol --thinking low --no-context-files --no-skills --no-extensions --no-mcp --no-approve --session-dir SESSION_DIR 'Read handoff.txt and repair the CI failure.'
+```
 
-When execution is available, retain timestamped tool transcripts, the first
-correct cause statement, patches and verification outputs. Count investigation
-tool calls through that statement; separately count full-log reads and all tool
-calls through verification. A repair round is a proposed patch followed by
-verification. Report wrong-cause edits, missed causes and regressions even when
-a later patch succeeds. Record elapsed time from handoff delivery, excluding
-screening preparation but reporting its latency separately. Mark budget exits
-as censored at 600 seconds, not successful fixes. Compare paired differences
-only for measured pairs and show incomplete arms alongside them.
+Launch order was RE-CODE ordinary, RE-DEPS screened, RE-CODE screened,
+RE-DEPS ordinary: ordinary first for code, screened first for dependency.
+No repair session received the other arm's patch/transcript or scoring material.
+No production systems or CI/service credentials were used; screening was
+scripted and the failures/fixes needed no external dependencies or services.
+Repair-agent inference used the configured model provider, not a local model.
+The manifest records runner `pi`, but not its package version or Node/npm
+versions; this limits exact historical reproduction. Trace sessions use schema
+version 3 and report the selected model/low effort. Regenerated logs contain
+runtime-specific stack traces and temporary paths, so their hashes can differ.
 
-This four-case design is a small synthetic pilot, not a powered accuracy or
-savings estimate; it cannot establish performance on real CI. Extend it with
-noise, truncation, missing evidence, injection and service-failure cases before
-making broader claims. Existing deterministic/mock excerpt-selection results
-remain separate from repair effort. No savings, live model accuracy or
-confidence calibration is claimed, and this document is not acceptance proof
-for the unexecuted evaluation.
+#### Raw measurements
+
+`O/S` means ordinary/screened; all times are seconds. The auditor measures from
+the first user-message timestamp, excluding process startup and screening
+preparation. First explicit correct cause is the timestamp of the first
+assistant message stating the known cause, not inferred internal discovery.
+**In three arms this statement appeared only in the final answer after test
+verification**; it must not be interpreted as actual discovery time. Assistant
+message timestamps also precede completion of streamed text.
+Verified-fix time is the successful in-session `npm test` tool-result timestamp.
+CLI wall time includes startup and final-answer completion but excludes the
+operator's separate verification and preparation; screening latency was not
+measured, so these are not end-to-end screening-benefit times.
+
+| Case | First explicit cause O/S | Verified fix O/S | CLI wall O/S | Investigation calls O/S | Log accesses O/S | All tool calls O/S | Repair rounds O/S | Misses / wrong-cause edits / observed regressions O/S |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RE-CODE | 21.183 / 17.727 | 21.182 / 17.727 | 25.443 / 20.872 | 5 / 5 | 2 / 1 | 8 / 8 | 1 / 1 | 0/0/0 / 0/0/0 |
+| RE-DEPS | 37.194 / 15.132 | 37.193 / 24.784 | 41.860 / 28.993 | 7 / 7 | 2 / 1 | 10 / 10 | 1 / 1 | 0/0/0 / 0/0/0 |
+
+Investigation calls count tool invocations before the first edit, excluding the
+initial handoff read (not calls through the final cause statement). They include
+listing/search calls and, in RE-DEPS screened, a no-op shell call. Log accesses
+count reads/searches of `ci-full.log`, including partial reads, not necessarily
+complete-file reads. All tool calls include the handoff read, edit and test.
+Each arm made one edit followed by one successful verification: one repair
+round. All four CLI exits were **0**, and the operator independently reran
+`npm test` successfully in all four repaired directories. No wrong-cause edits,
+missed known causes or repeated rounds were observed; regression coverage is
+limited to the supplied assertion, not a comprehensive application suite.
+
+| Case / arm | Independent session ID | Handoff SHA-256 |
+| --- | --- | --- |
+| RE-CODE ordinary | `01a16f9c-d5fb-760f-b753-350b7177bfb2` | `00a5054223eba78da78530f6f551e0a9d2525b89dc1e62d4e076bdc0ad193450` |
+| RE-CODE screened | `01a16f9d-ab18-7740-8a03-969f024ef2e3` | `1e8a3506871be53d6790fbd51889d779e6ff588521e9fc1a12c3a87e209ce3f5` |
+| RE-DEPS ordinary | `01a16f9d-fce3-727b-a89a-be5e5e9c0b59` | `b42e1e8ce1c8c0b2074a8770390ef37136759ae1c2b6ce7a13c4903d2216c057` |
+| RE-DEPS screened | `01a16f9d-399a-7603-a2f9-cad8b2a9687c` | `8f82f3d4a94c30d119ed9a43db3679bf8295eb5da90f236b5f9f439043a5f6fe` |
+
+#### Interpretation and limits
+
+These two observations had earlier verified fixes and one fewer log access in
+the screened arms, but **no reduction in investigation calls or repair rounds**.
+With one pair per trivial synthetic case, no repetitions or statistical power,
+provider/runtime timing variation and oracle-like selection, they cannot
+establish production savings, causality, live classifier accuracy or confidence
+calibration. Source/full-log access was not sandbox-enforced beyond separate
+working directories and the stay-local instruction. No human effort was measured.
+RE-AUTH and RE-MIXED from the earlier proposed design were not run; neither were
+paired truncation, missing-log, injection or service-failure repairs. Those
+categories remain covered by automated contract tests, not paired effort data.
+The deterministic/mock excerpt-selection baseline above remains separate.
+This is a small completed observational pilot, not a waiver of AC5 or a claim
+that every CI failure category has measured repair savings.
