@@ -401,6 +401,20 @@ Reason: Copy-only change; the existing checks cover rendering.
 
 `mill run draft` refuses a path other than `test-first` or `existing-checks`, or a plan with no reason. It stores the plan with the ticket, and `mill run status` shows a declared plan before work starts. An `existing-checks` ticket starts at the implementer, with no test writers. Review, the final test run and required checks still run and still block. The merge report names the plan and its reason. Roles cannot change a drafted plan. To change one, edit the ticket and draft again, with a reason that names the coverage that remains or the gap. When the new draft changes a ticket's path from the run it replaces, the ticket keeps a revision with the earlier path, the new path and the new reason. `mill run status` and the merge report show every revision.
 
+### Structured test results
+
+A failing test command does not prove a new test caught the missing behaviour: a missing autoloader, a collection error or zero tests fail too. To give Mill's red check real evidence, wrap the test command so it prints one line anywhere in its output:
+
+```
+mill-results: {"version":1,"status":"ok","collected":12,"scenarios":[{"id":"AnswerTest::testAnswer","status":"fail","kind":"assertion","message":"Failed asserting that 0 matches expected 42."}]}
+```
+
+- `status` is `ok`, `bootstrap-error` or `collection-error`. `collected` is the number of tests the runner found.
+- Each scenario has a stable `id` and `status` `pass` or `fail`. A failure's `kind` is `assertion` (the default), `error` or `compile`. Optional `message` and `artifact` point at the details.
+- A deliberate compile or type failure sets `kind: "compile"`, the `expectedDiagnostic` it was written to produce (such as `TS2339`) and the `diagnostic` it got. Mill never guesses it from stderr.
+
+When the run fails and prints this line, the red check accepts it only when tests were collected, the status is `ok` and every failing new scenario failed an assertion or matched its declared diagnostic. A malformed line, a bootstrap or collection error or zero tests is an environment problem and stops the ticket. A scenario that errored or missed its diagnostic goes back to the test-writers, like tests that already pass. Without the line, Mill reads Node test output as before. The final green run and the protected-test correction workflow are unchanged.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.

@@ -11,7 +11,7 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
-import { noTests, reportTestRun, testRunProblem } from './test-results.js';
+import { noTests, parseStructuredResults, redEvidence, reportTestRun, testRunProblem } from './test-results.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
 import { checkMillyard } from './millyard.js';
@@ -32,6 +32,7 @@ import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, wri
 const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
+const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;
 const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
@@ -281,8 +282,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const head = await git(path, 'rev-parse', 'HEAD');
         // A timeout or killed run is not green.
         // Nor is a command that could not run: red means named failing tests, or output Mill cannot parse.
+        // A wrapper's malformed results, bootstrap or collection error, or zero tests are environment problems too.
+        const structured = (run: Awaited<ReturnType<typeof tests>>) => run.code ? parseStructuredResults(run.output) : undefined;
+        const environment = (run: Awaited<ReturnType<typeof tests>>) => {
+          const parsed = structured(run);
+          if (!parsed?.ok) return parsed?.problem;
+          return parsed.results.status !== 'ok' || !parsed.results.collected ? redEvidence(undefined, parsed.results).problem : undefined;
+        };
         const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${config.timeout}.\n${run.output}`
-          : run.code === null ? `Tests were killed.\n${run.output}` : testRunProblem(run) && `${testRunProblem(run)}\n${run.output}`;
+          : run.code === null ? `Tests were killed.\n${run.output}` : (testRunProblem(run) ?? environment(run)) && `${testRunProblem(run) ?? environment(run)}\n${run.output}`;
         const tested = await retryInfrastructure(() => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true })),
           unusable, () => ({}));
         checkStop(cwd, number);
@@ -292,14 +300,17 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
         latest = { head, handoff: report.handoff };
         delete progress.redPending;
-        if (tested.code !== 0) { delete progress.redFeedback; return false; }
+        // With structured results, red must name new scenarios that failed for the intended reason.
+        const parsed = structured(tested), evidence = parsed?.ok ? redEvidence(undefined, parsed.results) : undefined;
+        if (tested.code !== 0 && evidence?.valid !== false) { delete progress.redFeedback; return false; }
+        const feedback = evidence?.problem ? `${evidence.problem} ${notMeaningful}` : notRed;
         const checks = progress.redChecks ?? 0;
-        progress.redFeedback = notRed;
+        progress.redFeedback = feedback;
         // The rerun records a fresh baseline, so a legitimate rewrite is not tampering.
         delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
         resume = progress.next = 'test-writers';
         if (checks >= redCheckCap) {
-          const details = `The tests passed without any new code after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
+          const details = `${evidence?.problem ? `The tests did not fail meaningfully (${evidence.problem})` : 'The tests passed without any new code'} after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
           if (!await transition(cwd, project, tracker, number, {
             state: 'logjam', reason: 'tests-not-red', stage, team: progress,
             report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage, round: checks + 1 },
@@ -307,7 +318,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
         }
         progress.redChecks = checks + 1;
-        await save({ report: { stage: 'tests-not-red', details: `${notRed}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
+        await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
         return true;
       };
       /** Mill's own test result for the next role, rerun once a role has moved HEAD. The first test-writers round has none. */
