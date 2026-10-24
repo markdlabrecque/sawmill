@@ -550,7 +550,7 @@ Before push, the final gate checks each ticket case, and each smoke case that is
 
 Codex browser cases require Chromium on `PATH`; its browser tool limits requests to the prepared site's origin. See [Codex](docs/codex-runtime.md), [Pi](docs/pi-runtime.md), and [GitLab](docs/gitlab.md) for backend setup, permission limits, and evidence. GitLab spec membership uses a first-line `Part of #<spec>` convention; it is not native work-item hierarchy selection.
 
-An optional [draft plugin](plugins/sawmill/README.md) provides `/sawmill:draft` in Claude Code. The `mill` CLI works independently of that plugin. Project-opted-in [draft screening](docs/draft-screening.md) can add bounded, redacted Jev judgments to that review; it is off by default, advisory only, and never required by the scheduler.
+An optional [draft plugin](plugins/sawmill/README.md) provides `/sawmill:draft` in Claude Code. The `mill` CLI works independently of that plugin. Project-opted-in [draft screening](docs/draft-screening.md) can add bounded, redacted Jev judgments to that review; it is off by default, advisory only, and never required by the scheduler. Optional [acceptance evidence screening](docs/acceptance-screening.md) similarly adds advisory findings to team and standalone code review, without changing acceptance or merge gates.
 
 ## Development
 

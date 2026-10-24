@@ -1,4 +1,5 @@
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
+import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { createRuntime } from './runtime-factory.js';
@@ -23,7 +24,7 @@ import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, typ
 import { verificationFrom, verificationInstructions } from './verification.js';
 
 const execute = promisify(execFile);
-export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
+export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal; acceptanceScreening?: AcceptanceScreeningOptions }
 export async function reviewTicket(cwd: string, project: ProjectConfig, writer: TicketWriter, number: number, options: ReviewOptions = {}) {
   return withRoleLock(cwd, number, () => review(cwd, project, writer, number, options));
 }
@@ -69,6 +70,7 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let head = '';
   let committed = false;
   let latest = '';
+  let observed: AcceptanceObservation | undefined;
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
@@ -78,7 +80,9 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
       const run = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
       if ((await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim() !== head ||
         (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim() !== status) throw new Error('Tests changed the ticket worktree or HEAD.');
-      latest = `\n\n${(await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout)).handoff}`;
+      const report = await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout);
+      latest = `\n\n${report.handoff}`;
+      if (committed) observed = { revision: head, run, artifact: report.file };
     }
     const site = await prepareSite(cwd, project, number, ticket.worktree, options);
     if (site.status !== 'ok') throw new Error(site.message);
@@ -99,6 +103,10 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
     effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}${acceptanceHandoff(acceptance)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
     ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, browserUrl: browser.url, signal: options.signal,
   }, options);
+  if (result.outcome.outcome === 'pass' || result.outcome.outcome === 'bounce') {
+    const diagnostics = await acceptanceDiagnostics(cwd, ticket.worktree, head, acceptance, result.outcome.acceptance, observed, options.acceptanceScreening);
+    if (diagnostics.length) result.diagnostics = [...result.diagnostics ?? [], ...diagnostics];
+  }
   // The same checklist decides every round; an unmet item is a bounce, never a pass.
   const refused = result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
   if (refused) result.outcome = refused;
