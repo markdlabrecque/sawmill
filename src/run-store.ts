@@ -35,7 +35,10 @@ export interface IntegrationProgress {
 export interface TeamProgress {
   next?: Role | 'integrate';
   recovery?: { stage: string };
-  activeRole?: { role: Role; beforeHead: string; bounces: number };
+  activeRole?: { role: Role; beforeHead: string; bounces: number; selectionId?: string };
+  /** Selection snapshots are retained for every invocation, including failures and reused decisions. */
+  selections?: import('./model-routing.js').ModelSelection[];
+  invocations?: { role: Role; round: number; selectionId?: string; execution: import('./model-routing.js').ExecutionMeasurement }[];
   /** Cooperative boundary checkpoint; retained through answer until work resumes. */
   stop?: { stage: string; resume: Role | 'integrate'; preserved: boolean; wipHead?: string; error?: string };
   testBase?: string;

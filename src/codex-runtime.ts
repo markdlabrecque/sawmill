@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { infrastructure, parseOutcome, RuntimeUsage, selectionUnavailable, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 import { authorizeVerification, type Verification } from './verification.js';
 
 const execute = promisify(execFile);
@@ -115,6 +115,8 @@ export class CodexRuntime implements Runtime {
     let active = false;
     let terminal = false;
     let lastError: string | undefined;
+    let selectionRejected = false;
+    const usage = new RuntimeUsage();
     const toolResults = new Set<string>();
     const toolErrors = new Map<string, number>();
     const record = (line: string, stop: (message: string) => void) => {
@@ -153,9 +155,14 @@ export class CodexRuntime implements Runtime {
         }
         if (event.type === 'turn.completed') {
           if (!active) { stop('Invalid Codex terminal sequence.'); return; }
+          usage.add(event.usage?.input_tokens, event.usage?.output_tokens);
           active = false; terminal = true; lastError = undefined;
         }
-        if (event.type === 'turn.failed') stop(runtimeFailure(JSON.stringify(event.error ?? event), 'provider'));
+        if (event.type === 'turn.failed') {
+          const detail = JSON.stringify(event.error ?? event);
+          selectionRejected ||= selectionUnavailable(detail);
+          stop(runtimeFailure(detail, 'provider'));
+        }
         // Error events may be transient. A later completed turn can recover them.
         if (event.type === 'error') {
           lastError = JSON.stringify(event);
@@ -168,9 +175,13 @@ export class CodexRuntime implements Runtime {
       env: { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config`, ...(request.home !== homedir() ? { CODEX_HOME: `${request.home}/.codex` } : {}) } : {}), ...this.options.env }, label: 'Codex', deadline, stdoutLine: record });
     const { code, signal, stderr } = child;
     failure ??= child.failure;
-    if (lastError) failure ??= runtimeFailure(lastError, 'provider');
+    if (lastError) {
+      selectionRejected ||= selectionUnavailable(lastError);
+      failure ??= runtimeFailure(lastError, 'provider');
+    }
+    if (code !== 0 && !sessionId) selectionRejected ||= selectionUnavailable(stderr);
     if (code !== 0) failure ??= runtimeFailure(`exited ${code ?? signal}: ${stderr.trim()}`, sessionId ? 'process' : 'startup');
     if (!sessionId || !terminal || finalText === undefined) failure ??= `Codex ended without a successful terminal completion and final agent message. ${stderr.trim()}`;
-    return { outcome: failure ? infrastructure(failure) : parseOutcome(finalText!, request.role), sessionId, diagnostics };
+    return { outcome: failure ? infrastructure(failure) : parseOutcome(finalText!, request.role), sessionId, diagnostics, ...usage.result(), ...(selectionRejected ? { selectionRejected: true } : {}) };
   }
 }

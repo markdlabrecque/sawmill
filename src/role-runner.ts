@@ -41,6 +41,7 @@ export async function runRole(cwd: string, project: ProjectConfig, writer: Ticke
     if (!ids.includes(id)) pending.push(transition(cwd, project, writer, number, { sessionIds: { ...ticket.sessionIds, [request.role]: [...ids, id] } }, [], options));
   };
   let result: RuntimeResult;
+  const started = performance.now();
   try {
     checkStop(cwd, number);
     result = await runtime.run(request, { stdout: chunk => { writeSync(out, chunk); }, stderr: chunk => { writeSync(err, chunk); }, session, process: child => recordChild(cwd, number, child) });
@@ -48,6 +49,7 @@ export async function runRole(cwd: string, project: ProjectConfig, writer: Ticke
     if (result.sessionId) session(result.sessionId);
   } catch (error) { result = { outcome: infrastructure(error instanceof Error ? error.message : String(error)) }; }
   finally { closeSync(out); closeSync(err); }
+  result.durationMs = performance.now() - started;
   const mirrored = (await Promise.all(pending)).every(Boolean);
   await saveMetadata({ ...metadata, running: false, finished: new Date().toISOString(), ...result });
   return { ...result, round, log, stderrLog, mirrored };

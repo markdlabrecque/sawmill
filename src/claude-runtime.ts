@@ -1,7 +1,7 @@
 import { directChild } from './direct-child.js';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
-import { conflictContinueCommand, infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { conflictContinueCommand, infrastructure, parseOutcome, RuntimeUsage, selectionUnavailable, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 import { authorizeVerification, claudeVerificationRules, nameFlag, simpleCommand, testScope } from './verification.js';
 
 /** Direct Claude stream-json adapter. Fixture-tested against SDK 0.3.308 projections. */
@@ -42,6 +42,14 @@ export class ClaudeCodeRuntime implements Runtime {
     let sessionId: string | undefined;
     let effectiveModel: string | undefined;
     let effectiveEffort: string | undefined;
+    let selectionRejected = false;
+    const messages = new RuntimeUsage();
+    let totals: RuntimeUsage | undefined;
+    const measuredMessages = new Set<string>();
+    const measure = (target: RuntimeUsage, usage: any) => {
+      const inputs = [usage?.input_tokens, usage?.cache_read_input_tokens ?? 0, usage?.cache_creation_input_tokens ?? 0];
+      target.add(inputs.every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) ? inputs.reduce((a, b) => a + b, 0) : undefined, usage?.output_tokens);
+    };
     const toolCalls = new Map<string, { name: string; command?: string }>();
     const toolErrors = new Map<string, number>();
     const record = (line: string, stop: (message: string) => void) => {
@@ -57,6 +65,10 @@ export class ClaudeCodeRuntime implements Runtime {
           if (effectiveEffort !== undefined && effectiveEffort !== request.effort) stop(`Claude effort mismatch: requested ${request.effort}, reported ${effectiveEffort}.`);
         }
         if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+          if (typeof event.message.id !== 'string' || !measuredMessages.has(event.message.id)) {
+            if (typeof event.message.id === 'string') measuredMessages.add(event.message.id);
+            measure(messages, event.message.usage);
+          }
           for (const block of event.message.content) if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
             toolCalls.set(block.id, { name: block.name, command: block.input?.command });
           }
@@ -76,8 +88,14 @@ export class ClaudeCodeRuntime implements Runtime {
             if (count >= 4) stop(`Repeated tool error (${tool.name}, ${count} attempts): ${content}`);
           }
         }
-        if (event.type === 'assistant' && event.error) stop(`Claude assistant failure: ${String(event.error)}`);
+        if (event.type === 'assistant' && event.error) {
+          selectionRejected ||= selectionUnavailable(String(event.error));
+          stop(`Claude assistant failure: ${String(event.error)}`);
+        }
         if (event.type === 'result') {
+          if (event.usage) { totals = new RuntimeUsage(); measure(totals, event.usage); }
+          // total_cost_usd is a tariff estimate, including on subscriptions, not a billed amount.
+          selectionRejected ||= selectionUnavailable(JSON.stringify(event.errors ?? []));
           if (event.subtype !== 'success' || event.is_error !== false || typeof event.result !== 'string') stop(`Claude terminal failure: ${JSON.stringify(event.errors ?? event.subtype)}`);
           else resultText = event.result;
         }
@@ -88,7 +106,10 @@ export class ClaudeCodeRuntime implements Runtime {
     const { code, signal, stderr } = child;
     failure ??= child.failure;
     if (code !== 0) failure ??= `Claude exited ${code ?? signal}: ${stderr.trim()}`;
-    if (!effectiveModel) failure ??= 'Claude ended without system/init model metadata.';
-    return { outcome: failure ? infrastructure(failure) : resultText === undefined ? infrastructure(`Claude ended without a final result. ${stderr.trim()}`) : parseOutcome(resultText, request.role), sessionId, effectiveModel, effectiveEffort, diagnostics: effectiveEffort === undefined ? ['Claude did not report effective effort; only the requested CLI flag is verified.'] : [] };
+    if (!effectiveModel) {
+      failure ??= 'Claude ended without system/init model metadata.';
+      if (code !== 0) selectionRejected ||= selectionUnavailable(stderr);
+    }
+    return { outcome: failure ? infrastructure(failure) : resultText === undefined ? infrastructure(`Claude ended without a final result. ${stderr.trim()}`) : parseOutcome(resultText, request.role), sessionId, effectiveModel, effectiveEffort, ...(totals ?? messages).result(), ...(selectionRejected ? { selectionRejected: true } : {}), diagnostics: effectiveEffort === undefined ? ['Claude did not report effective effort; only the requested CLI flag is verified.'] : [] };
   }
 }

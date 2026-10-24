@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { literalCommand } from './pi-policy.js';
-import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { infrastructure, parseOutcome, RuntimeUsage, selectionUnavailable, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 import { authorizeVerification } from './verification.js';
 
 /** Direct Pi 1.4.0 JSON-mode adapter. Protocol fixtures are source-derived. */
@@ -50,6 +50,8 @@ export class PiRuntime implements Runtime {
     let ready = false;
     let effectiveModel: string | undefined;
     let effectiveEffort: string | undefined;
+    const usage = new RuntimeUsage();
+    const measuredMessages = new Set<string>();
     const toolCalls = new Map<string, { name: string; command?: string }>();
     const toolResults = new Set<string>();
     const toolErrors = new Map<string, number>();
@@ -74,6 +76,15 @@ export class PiRuntime implements Runtime {
           if (!active) { stop('Pi assistant message outside an active run.'); return; }
           messageOpen = false;
           const message = event.message;
+          // message_end is authoritative; agent_end repeats these messages and must not
+          // be counted again. A message ID also guards duplicate provider records.
+          if (typeof message.id !== 'string' || !measuredMessages.has(message.id)) {
+            if (typeof message.id === 'string') measuredMessages.add(message.id);
+            const counts = message.usage;
+            const input = counts && [counts.input, counts.cacheRead, counts.cacheWrite].every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)
+              ? counts.input + counts.cacheRead + counts.cacheWrite : undefined;
+            usage.add(input, counts?.output);
+          }
           finalText = Array.isArray(message.content) ? message.content.filter((block: any) => block.type === 'text' && typeof block.text === 'string').map((block: any) => block.text).join('') : undefined;
           finalStop = message.stopReason;
           assistantError = message.errorMessage;
@@ -142,7 +153,10 @@ export class PiRuntime implements Runtime {
     if (retryPending || retryError) failure ??= retryError ?? 'Pi ended with an unsettled retry.';
     if (finalStop !== 'stop') failure ??= finalStop === 'error' ? providerFailure(assistantError ?? 'Assistant error')
       : finalStop === 'length' ? 'Pi terminal assistant response truncated at the output limit.' : `Pi terminal assistant failure: ${String(finalStop)}. ${assistantError ?? ''}`;
+    const selectionRejected = Boolean((!ready && selectionUnavailable(stderr)) ||
+      (finalStop === 'error' && assistantError && selectionUnavailable(assistantError)) || (retryError && selectionUnavailable(retryError)));
     return { outcome: failure ? infrastructure(failure) : parseOutcome(finalText ?? '', request.role), sessionId, effectiveModel, effectiveEffort,
+      ...usage.result(), ...(selectionRejected ? { selectionRejected: true } : {}),
       diagnostics: ['Pi command rules run in a native extension; they are not an OS sandbox.',
         'The extension verifies the selected model and Pi thinking level. Provider-native model/effort metadata is checked when present; absent metadata remains unverified.'] };
   }

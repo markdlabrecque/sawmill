@@ -56,9 +56,16 @@ export interface Attempt {
   phaseDurations: Unknown;
 }
 
-export interface RecordExport { schema: number; attempts: Attempt[]; totals: { attempts: number; tickets: number; merged: number; manual: number; stopped: number; inProgress: number } }
+/** Additive dispatch telemetry on live exports. `Attempt` remains the compact schema-1
+ * summary contract used by historical, human-labeled evaluation fixtures. */
+export interface RoutingAttempt extends Attempt {
+  selections: import('./model-routing.js').ModelSelection[];
+  invocations: NonNullable<import('./run-store.js').TeamProgress['invocations']>;
+}
 
-type Summary = Pick<Attempt, 'ended' | 'heads' | 'completion' | 'policy' | 'environment' | 'results'> & { findings: Omit<Findings, 'humanActions'> };
+export interface RecordExport { schema: number; attempts: RoutingAttempt[]; totals: { attempts: number; tickets: number; merged: number; manual: number; stopped: number; inProgress: number } }
+
+type Summary = Pick<RoutingAttempt, 'ended' | 'heads' | 'completion' | 'policy' | 'environment' | 'results' | 'selections' | 'invocations'> & { findings: Omit<Findings, 'humanActions'> };
 
 const secretPatterns: [RegExp, string][] = [
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, '[redacted]'],
@@ -206,6 +213,8 @@ function summarize(cwd: string, row: RunTicket, events: LogEvent[]): Summary {
       reviewApproved: team.approvedHead ?? null,
     },
     findings,
+    selections: team.selections ?? [],
+    invocations: team.invocations ?? [],
   };
 }
 
@@ -262,9 +271,10 @@ export function exportRecords(cwd: string): RecordExport {
       heads: summary.heads ?? { source: null, base: null, delivered: null, mergeCommit: null },
       completion: summary.completion ?? { kind: 'in-progress', reason: null, stage: null },
       policy: summary.policy ?? { proofPlan: unknown }, environment: summary.environment ?? { node: unknown, mill: unknown }, results: summary.results ?? {},
+      selections: summary.selections ?? [], invocations: summary.invocations ?? [],
       findings, cost: unknown, humanMinutes: row.minutes === null ? unknown : Number(row.minutes),
       escapedDefects: row.defects === null ? unknown : JSON.parse(String(row.defects)) as string[], phaseDurations: unknown,
-    } satisfies Attempt;
+    } satisfies RoutingAttempt;
   });
   const count = (kind: Attempt['completion']['kind']) => attempts.filter(attempt => attempt.completion.kind === kind).length;
   return { schema: recordSchema, attempts, totals: { attempts: attempts.length, tickets: new Set(attempts.map(attempt => attempt.ticket)).size,
@@ -272,6 +282,98 @@ export function exportRecords(cwd: string): RecordExport {
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/** Observed subtotal plus completeness: a missing measurement is never silently a zero. */
+function measurements(values: (number | null | undefined | Unknown)[], emptyIsZero = false) {
+  const known = values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+  const observed = known.length || emptyIsZero ? known.reduce((a, b) => a + b, 0) : unknown;
+  return { observed, total: known.length === values.length && (values.length || emptyIsZero) ? observed : unknown,
+    known: known.length, missing: values.length - known.length };
+}
+
+/** Whole-ticket observations, including every retained attempt and role (not just the routed
+ * invocation). Cohorts describe executions, never an executed counterfactual or causal savings. */
+function routingAnalysis(attempts: RoutingAttempt[]) {
+  const groups = new Map<string, RoutingAttempt[]>();
+  for (const attempt of attempts) {
+    const key = JSON.stringify([attempt.project, attempt.ticket]);
+    groups.set(key, [...(groups.get(key) ?? []), attempt]);
+  }
+  const deliveries = [...groups.values()].map(group => {
+    const first = group[0]!, last = group.at(-1)!;
+    const selections = group.flatMap(a => a.selections);
+    const invocations = group.flatMap(a => a.invocations);
+    const newDecisions = selections.filter(s => !s.reusedFrom && s.disposition !== 'reused');
+    // Legacy records predate `called`; their preflight failures did not contact Jev.
+    const calls = newDecisions.filter(s => s.jev.called ?? !['missing-routing-policy', 'unsupported-provider-or-family'].includes(s.fallbackReason ?? ''));
+    const cohort = selections.some(s => s.disposition === 'applied' || (s.disposition === 'reused' && s.resolved && !s.fallbackReason))
+      ? 'routed' : selections.length ? 'baseline-only' : 'fixed-profile';
+    const recordedIds = new Set(invocations.map(i => i.selectionId));
+    const unmeasuredInvocations = selections.filter(s => !recordedIds.has(s.id)).length;
+    const unmeasuredAttempts = group.filter(a => !a.invocations.length).length;
+    // A crash can persist the decision before an invocation result. Historical attempts
+    // without invocation telemetry cannot be treated as free completed work either.
+    const missing = Array<null>(unmeasuredInvocations + group.filter(a => !a.invocations.length && !a.selections.length).length).fill(null);
+    const roleDurationMs = measurements([...invocations.map(i => i.execution.durationMs), ...missing]);
+    const jevLatencyMs = measurements(calls.map(s => s.jev.latencyMs), true);
+    const roleUsage = {
+      inputTokens: measurements([...invocations.map(i => i.execution.usage?.inputTokens), ...missing]),
+      outputTokens: measurements([...invocations.map(i => i.execution.usage?.outputTokens), ...missing]),
+    };
+    const jevUsage = {
+      inputTokens: measurements(calls.map(s => s.jev.usage?.input_tokens), true),
+      outputTokens: measurements(calls.map(s => s.jev.usage?.output_tokens), true),
+    };
+    const roleBilledUsd = measurements([...invocations.map(i => i.execution.cost), ...missing]);
+    const jevBilledUsd = measurements(calls.map(s => s.jev.cost), true);
+    const total = (a: number | Unknown, b: number | Unknown) => a === unknown || b === unknown ? unknown : a + b;
+    const reviewBounces = group.reduce((n, a) => n + a.findings.reviewBounces, 0);
+    const otherRepairs = group.reduce((n, a) => n + Object.values(a.findings.repairBounces).reduce((x, y) => x + y, 0), 0);
+    const notedDefects = group.filter(a => a.escapedDefects !== unknown);
+    return {
+      project: first.project, ticket: first.ticket, attempts: group.map(a => a.id), cohort,
+      completion: last.completion.kind,
+      // Elapsed wall time contains waits, and is deliberately not counted as human effort.
+      elapsedMs: last.ended ? Date.parse(last.ended) - Date.parse(first.started) : unknown,
+      invocations: invocations.length, unmeasuredInvocations, unmeasuredAttempts, newDecisions: newDecisions.length,
+      appliedDecisions: newDecisions.filter(s => s.disposition === 'applied').length,
+      reusedDecisions: selections.filter(s => s.reusedFrom || s.disposition === 'reused').length,
+      baselineDecisions: newDecisions.filter(s => s.disposition === 'baseline').length,
+      jevCalls: calls.length, executionMismatches: invocations.filter(i => i.execution.mismatch).length,
+      configurations: selections.map(s => ({ selectionId: s.id, attempt: s.attempt, role: s.role, invocation: s.invocation,
+        baseline: s.baseline, policyVersion: s.policyVersion, recommendation: s.recommendation && { model: s.recommendation.model, effort: s.recommendation.effort },
+        resolved: s.resolved, requested: s.execution.requested, actual: s.execution.actual,
+        disposition: s.disposition, reusedFrom: s.reusedFrom ?? null, fallbackReason: s.fallbackReason ?? null })),
+      roleDurationMs, jevLatencyMs,
+      serviceEffortMs: { observed: total(roleDurationMs.observed, jevLatencyMs.observed), total: total(roleDurationMs.total, jevLatencyMs.total) },
+      roleUsage, jevUsage, roleBilledUsd, jevBilledUsd,
+      billedUsd: { observed: total(roleBilledUsd.observed, jevBilledUsd.observed), total: total(roleBilledUsd.total, jevBilledUsd.total) },
+      humanMinutes: measurements(group.map(a => a.humanMinutes)),
+      repairRounds: reviewBounces + otherRepairs, reviewBounces, otherRepairs,
+      testCorrections: group.reduce((n, a) => n + a.findings.testCorrections, 0),
+      infrastructureRetries: group.reduce((n, a) => n + a.findings.infrastructureRetries, 0),
+      escapedDefects: { observed: notedDefects.length ? new Set(notedDefects.flatMap(a => a.escapedDefects as string[])).size : unknown,
+        knownAttempts: notedDefects.length, missingAttempts: group.length - notedDefects.length },
+    };
+  });
+  const cohorts = ['routed', 'baseline-only', 'fixed-profile'].map(name => {
+    const members = deliveries.filter(d => d.cohort === name);
+    return { name, deliveries: members.length, merged: members.filter(d => d.completion === 'merged').length,
+      attempts: members.reduce((n, d) => n + d.attempts.length, 0),
+      repairRounds: members.reduce((n, d) => n + d.repairRounds, 0),
+      infrastructureRetries: members.reduce((n, d) => n + d.infrastructureRetries, 0),
+      serviceEffortMs: measurements(members.map(d => d.serviceEffortMs.total)),
+      humanMinutes: measurements(members.map(d => d.humanMinutes.total)),
+      escapedDefects: measurements(members.map(d => d.escapedDefects.missingAttempts ? unknown : d.escapedDefects.observed)),
+      roleInputTokens: measurements(members.map(d => d.roleUsage.inputTokens.total)),
+      roleOutputTokens: measurements(members.map(d => d.roleUsage.outputTokens.total)),
+      jevInputTokens: measurements(members.map(d => d.jevUsage.inputTokens.total)),
+      jevOutputTokens: measurements(members.map(d => d.jevUsage.outputTokens.total)),
+      billedUsd: measurements(members.map(d => d.billedUsd.total)) };
+  });
+  return { comparison: 'Observational whole deliveries; contemporaneous baselines are counterfactual configurations, not observed executions.',
+    capacitySavings: unknown, billedSavings: unknown, deliveries, cohorts };
+}
 
 /** A short comparison across every retained attempt. A figure no attempt supplied is unknown, never zero. */
 export function reportRecords(cwd: string): { data: object; text: string } {
@@ -286,7 +388,8 @@ export function reportRecords(cwd: string): { data: object; text: string } {
   const findings = { reviewBounces: sum('reviewBounces'), testCorrections: sum('testCorrections'), flakes: sum('flakes'), environmentFailures: sum('environmentFailures'),
     infrastructureRetries: sum('infrastructureRetries'), testsNotRed: sum('testsNotRed'), repairBounces: repairs, humanActions: sum('humanActions') };
   const coverage = (known: number) => known === attempts.length ? '' : ` (unknown for ${known ? `${attempts.length - known} of ${attempts.length}` : 'every'} attempt${attempts.length === 1 ? '' : 's'})`;
-  const data = { schema: exported.schema, totals, findings, humanMinutes: minutes, humanMinutesKnown: noted.length, escapedDefects: defects, escapedDefectsKnown: linked.length, cost: unknown, phaseDurations: unknown };
+  const routing = routingAnalysis(attempts);
+  const data = { schema: exported.schema, routing, totals, findings, humanMinutes: minutes, humanMinutesKnown: noted.length, escapedDefects: defects, escapedDefectsKnown: linked.length, cost: unknown, phaseDurations: unknown };
   const tickets = [...new Set(attempts.map(attempt => attempt.ticket))];
   const text = [
     `${plural(totals.attempts, 'attempt')} across ${plural(totals.tickets, 'ticket')}: ${totals.merged} merged, ${totals.manual} manual, ${totals.stopped} stopped, ${totals.inProgress} in progress.`,
@@ -295,6 +398,18 @@ export function reportRecords(cwd: string): { data: object; text: string } {
     `Human minutes: ${minutes === unknown ? 'unknown' : `${minutes}${coverage(noted.length)}`}.`,
     `Escaped defects: ${defects === unknown ? 'unknown' : `${defects}${coverage(linked.length)}`}.`,
     'Cost: unknown. Phase durations: unknown.',
+    ...(attempts.some(attempt => attempt.selections.length) ? [
+      'Routing baselines are contemporaneous counterfactual configurations, not observed baseline executions. No causal quality or savings comparison is established.',
+      `Routing: ${attempts.reduce((n, a) => n + a.selections.filter(s => s.disposition === 'applied').length, 0)} applied decisions; ` +
+      `${attempts.reduce((n, a) => n + a.selections.filter(s => s.disposition === 'reused').length, 0)} reused invocations. ` +
+      'Compare whole deliveries, including Jev usage, all role invocations, repairs, review bounces and escaped defects. Capacity and billed costs are separate; unreported measurements are unknown.',
+      ...routing.deliveries.map(d => `  #${d.ticket} ${d.cohort}: ${d.attempts.length} attempts, ${d.invocations} invocations, ${d.reusedDecisions} reused decisions; ` +
+        `service effort ${d.serviceEffortMs.total} ms (observed ${d.serviceEffortMs.observed} ms: roles ${d.roleDurationMs.observed}, Jev ${d.jevLatencyMs.observed}); ` +
+        `repairs ${d.repairRounds}, defects ${d.escapedDefects.missingAttempts ? unknown : d.escapedDefects.observed}, human minutes ${d.humanMinutes.total}; ` +
+        `role tokens in/out ${d.roleUsage.inputTokens.total}/${d.roleUsage.outputTokens.total}, Jev tokens in/out ${d.jevUsage.inputTokens.total}/${d.jevUsage.outputTokens.total}, billed USD ${d.billedUsd.total}.`),
+      ...routing.cohorts.filter(c => c.deliveries).map(c => `  ${c.name}: ${c.deliveries} deliveries, ${c.merged} merged, ${c.repairRounds} repairs; ` +
+        `service effort ${c.serviceEffortMs.total} ms, human minutes ${c.humanMinutes.total}, defects ${c.escapedDefects.total}, billed USD ${c.billedUsd.total}.`),
+    ] : []),
     ...tickets.flatMap(ticket => [`#${ticket}: ${plural(attempts.filter(attempt => attempt.ticket === ticket).length, 'attempt')}`,
       ...attempts.filter(attempt => attempt.ticket === ticket).map(attempt => `  ${attempt.id.slice(0, 8)} ${attempt.completion.kind}${attempt.completion.reason ? ` (${attempt.completion.reason})` : ''}` +
         `${attempt.previous ? ` after ${attempt.previous.slice(0, 8)}` : ''}, started ${attempt.started}, ended ${attempt.ended ?? 'not yet'}; ` +

@@ -47,6 +47,8 @@ export interface CliOptions {
   /** Runs the installer steps of mill update. */
   exec?: Exec;
   runtime?: Runtime;
+  /** Offline transport seam; selection validation and persistence always run normally. */
+  typeSafeChoices?: typeof import('./typesafe.js').typeSafeChoices;
   signal?: AbortSignal;
   cwd?: string;
   home?: string;

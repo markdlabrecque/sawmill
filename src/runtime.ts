@@ -1,4 +1,4 @@
-import type { Effort, Role } from './config.js';
+import type { Effort, ProjectConfig, Role } from './config.js';
 import { acceptanceResults, type AcceptanceResult } from './acceptance.js';
 import type { Verification } from './verification.js';
 
@@ -54,7 +54,50 @@ export interface RuntimeResult {
   effectiveModel?: string;
   effectiveEffort?: string;
   diagnostics?: string[];
+  /** Explicit model/effort availability rejection, not a generic provider or authentication error. */
+  selectionRejected?: boolean;
+  /** Measured at the invocation boundary, not estimated from the requested profile. */
+  durationMs?: number;
+  usage?: { inputTokens: number | null; outputTokens: number | null };
+  /** Provider-reported billed USD only; subscriptions and missing usage remain unknown. */
+  cost?: number;
 }
+/** Conservative, verified routing catalog. Defaults remain unrestricted by this catalog;
+ * adding a new routed model requires verifying its literal runtime effort contract first. */
+export function supportedRoutingSelection(runtime: ProjectConfig['runtime'], selection: { model: string; effort: Effort }): boolean {
+  const model = selection.model.replace(/^(?:openai|anthropic)\//, '');
+  const gpt = ['gpt-6.1', 'gpt-6.1-sol'].includes(model);
+  const claude = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
+    'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1'].includes(model);
+  if (!['low', 'medium', 'high'].includes(selection.effort) && !(runtime === 'claude-code' && claude && selection.effort === 'max')) return false;
+  return runtime === 'pi' ? (selection.model === `openai/${model}` && gpt) || (selection.model === `anthropic/${model}` && claude)
+    : runtime === 'codex' ? selection.model === model && gpt : selection.model === model && claude;
+}
+
+/** Only explicit vendor availability/setting diagnostics authorize retrying the baseline.
+ * Transport, permissions, tool errors and credential failures must not masquerade as rejection. */
+export function selectionUnavailable(detail: string): boolean {
+  return /\b(?:model_not_found|unsupported_model|unsupported_reasoning_effort|invalid_model|invalid_effort)\b/i.test(detail) ||
+    /(?:model[^\n]{0,100}(?:not found|does not exist|not available|unavailable|not supported|does not support|unsupported|not have access)|(?:unsupported|unknown|invalid)[^\n]{0,30}(?:model|reasoning effort|thinking level)|(?:reasoning effort|thinking level)[^\n]{0,80}(?:not supported|unsupported|invalid))/i.test(detail);
+}
+
+/** Aggregate reported invocation usage, keeping missing dimensions unknown. No tariff estimates:
+ * CLI pricing estimates (including subscription-backed cost.total/total_cost_usd) are not bills. */
+export class RuntimeUsage {
+  private samples = 0;
+  private input: number | null = 0;
+  private output: number | null = 0;
+  add(input: unknown, output: unknown): void {
+    const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+    this.samples++;
+    this.input = this.input !== null && count(input) && count(this.input + input) ? this.input + input : null;
+    this.output = this.output !== null && count(output) && count(this.output + output) ? this.output + output : null;
+  }
+  result(): Pick<RuntimeResult, 'usage'> {
+    return this.samples ? { usage: { inputTokens: this.input, outputTokens: this.output } } : {};
+  }
+}
+
 /** External runtime boundary. Implementations must settle only after child cleanup. */
 export interface Runtime { run(request: RuntimeRequest, sink: RuntimeSink): Promise<RuntimeResult> }
 export const infrastructure = (error: string): Outcome => ({ outcome: 'infrastructure', error });
