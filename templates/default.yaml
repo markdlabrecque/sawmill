@@ -101,6 +101,16 @@ tests:
 # round. none: merge on green local tests.
 ci: none
 
+# Optional, GitHub with ci: wait only. Names the hosted checks (check runs or
+# commit status contexts) that must each report on the exact head before Mill
+# merges: an absent or pending one waits, any failed run of that name fails,
+# and skipped or neutral counts as passed. A failure of an advisory check never
+# blocks. Every other check still gates as before. GitLab keeps its own
+# pipeline rules, so this key is refused there.
+# ci_checks:
+#   required: [phpunit]
+#   advisory: [docs]
+
 # How mill integrate merges the PR or MR through the tracker: squash or merge.
 merge_method: squash
 
