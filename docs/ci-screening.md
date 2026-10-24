@@ -132,6 +132,28 @@ These are deterministic/mock measurements, not measured semantic performance.
 The focused run took 110 ms overall; its timeout fixture took 33 ms with a 30 ms
 deadline. These include local test overhead and are not live service latency.
 
+### Authorized regression proof
+
+Test commit `631c4dd` adds nine cases without changing existing assertions:
+seven provider-framed deterministic results (exits 126/127, structured failure,
+bootstrap failure, malformed report, Node TAP and Node spec), one ambiguous
+provider-framed excerpt with unchanged saved-line provenance, and one six-job
+screening-timeout case. All service responses are mocked.
+
+For red proof, `src/ci-screening.ts` and `src/ci-logs.ts` were temporarily restored
+to their exact contents at `8f6137b` (verified by an empty diff against that
+revision), then built. `node --test dist/test/ci-screening.test.js` reported
+**11 passed, 8 failed**: all seven deterministic cases invoked inference, and
+the timeout case lost the sixth download. No existing case failed.
+
+After restoring the committed fixes (`7da8be3`, `9f9f959`) byte-for-byte and
+rebuilding, the same focused command reported **19 passed, 0 failed**.
+The timeout fixture advances mocked time through five 60-second timeouts:
+all six logs are saved before screening, all five requests are aborted, and
+the sixth job retains its log with an exhausted-screening notice. The full
+project test command passed **833 tests, 0 failures** (830 plus 3 isolated
+process-permission tests). No production changes were needed in this round.
+
 **AC5 remains unresolved:** no consented paired repair sessions have been
 measured (sample size **0**). The mock excerpt-selection baseline does not
 satisfy the repair-effort requirement. A human user must supply/approve
