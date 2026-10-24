@@ -10,6 +10,7 @@ import type { ProjectConfig } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
+import { ciLogReport } from './ci-logs.js';
 import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { logRerunRow, rerunCount, transition, type MirrorOptions, type Transition } from './transitions.js';
@@ -210,7 +211,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         return progress.pipeline;
       };
       const ciFailed = async () => {
-        const detail = [`CI failed for ${head}.`, progress.pipeline!.diagnostics, progress.pipeline!.logUrl].filter(Boolean).join('\n');
+        // A log download failure is reported with the job; it never hides the failed CI result.
+        const logs = await ciLogReport(cwd, number, tracker, progress.pipeline!).catch(error => `CI job logs unavailable: ${message(error)}`);
+        const detail = [`CI failed for ${head}.`, progress.pipeline!.diagnostics, progress.pipeline!.logUrl, logs].filter(Boolean).join('\n');
         await advance('ci-failed', { report: { stage: 'ci-failed', details: detail, changeRequestUrl: progress.changeRequest!.url } });
         return result('ci-failed', detail);
       };
