@@ -162,7 +162,8 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
 
   async getJobLog(job: CiJob, limits: LogLimits): Promise<JobLog> {
     if (!job.logId || !/^\d+$/.test(job.logId)) throw new Error('GitHub job logs need a verified job id.');
-    const args = ['api', `repos/${this.trackerConfig.repo}/actions/jobs/${job.logId}/logs`, '--method', 'GET'];
+    // Raw output bypasses gh's terminal-escape guard without buffering the log.
+    const args = ['api', `repos/${this.trackerConfig.repo}/actions/jobs/${job.logId}/logs`, '--method', 'GET', '--output', '-'];
     if (this.trackerConfig.host) args.push('--hostname', this.trackerConfig.host);
     const { tail, bytes } = await boundedOutput('gh', args, this.directory, limits);
     return { text: tail.toString('utf8'), bytes, truncated: bytes > tail.length };
