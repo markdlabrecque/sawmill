@@ -50,14 +50,90 @@ role_timeout: 60m
 # The project's test command, run in the worktree by the implementer and by
 # mill integrate before merge. timeout is an infrastructure failure, never a
 # test failure and never a reviewer finding.
+#
+# preflight is optional: a shell command run in each new worktree after
+# setup.sh, before any role. Non-zero puts the ticket in logjam. Without it,
+# Mill checks that the test command's first word resolves and, when
+# package.json exists, that node_modules does.
+#
+# A project with no tests can opt out on purpose by replacing the whole block
+# below with this one line:
+#
+#   tests: none
+#
+# That turns off the test-writers, the red check after them, every test run
+# Mill hands to a role, and the local test run before merge. A missing tests
+# key is still an error, so nobody ends up with no tests by accident.
+#
+# focused is optional: a runner roles may call with test paths under scope,
+# and optionally name_flag with one test name. It supplements the test
+# command and never replaces it in Mill's red, green or merge runs.
 tests:
   command: npm test
   timeout: 30m
+  # preflight: test -x node_modules/.bin/tsc
+  # focused:
+  #   command: node --test
+  #   scope: dist/test
+  #   name_flag: --test-name-pattern
+
+# Optional named checks roles may run exactly as written: build, lint and
+# typecheck. Each is one command with literal arguments, no shell syntax.
+# Only declared checks are advertised to roles and allowed.
+# checks:
+#   build: npm run build
+#   lint: npm run lint
+#   typecheck: npx tsc --noEmit
+
+# Optional checks Mill itself runs on the rebased final head before push, in
+# this order: clean, build, lint, typecheck, artifact. Each is a shell command
+# run in the worktree. Any failure, missing command or timeout blocks delivery
+# with its output, and they run even with tests: none. Mill deletes nothing
+# itself: use clean to remove generated output so a stale build cannot pass.
+# artifact smokes the actual installable or build artifact, not the source
+# tree: for a package, pack it and install it in a clean temporary folder.
+# Unlike checks above, these are not granted to roles.
+# required_checks:
+#   clean: rm -rf dist
+#   build: npm run build
+#   artifact: d=$(mktemp -d) && npm pack --pack-destination "$d" && npm install --prefix "$d" "$d"/*.tgz
+#   timeout: 30m
+
+# Optional release obligations mill release handoff reports after a merge. Mill
+# never performs or deploys them. kind: migration, configuration, assets,
+# external-effect or manual. paths: the step applies only when the delivered
+# change touches a matching file. check: a required check whose pass verifies
+# the step; without one the step stays pending. recovery: reversible (undone
+# with the code), separate (only a backup or restore recovers it) or
+# irreversible. rollback is shown only when declared here.
+# release:
+#   steps:
+#     - id: update-db
+#       kind: migration
+#       text: Run drush updatedb; existing content keeps its values.
+#       paths: ['**/*.install']
+#       recovery: irreversible
+#       recovery_note: Restore the database backup taken before the update.
 
 # wait: after the rebase gate, push the branch and wait for the tracker's
 # pipeline on that exact commit before merging; red is one more implementer
 # round. none: merge on green local tests.
 ci: none
+
+# Optional, GitHub with ci: wait only. Names the hosted checks (check runs or
+# commit status contexts) that must each report on the exact head before Mill
+# merges: an absent or pending one waits, any failed run of that name fails,
+# and skipped or neutral counts as passed. A failure of an advisory check never
+# blocks. Every other check still gates as before. GitLab keeps its own
+# pipeline rules, so this key is refused there.
+# mill run draft also reads the integration branch's required status checks
+# (rulesets and branch protection) and adds them. With ci: wait, a draft that
+# finds neither those nor ci_checks is refused, as is any merge queue (GitHub)
+# or merged results pipeline or merge train (GitLab). The draft output, the PR
+# body and the merge report show the policy and where it came from.
+# ci_checks:
+#   required: [phpunit]
+#   advisory: [docs]
 
 # How mill integrate merges the PR or MR through the tracker: squash or merge.
 merge_method: squash
@@ -72,6 +148,22 @@ merge_method: squash
 
 # The site URL the reviewer drives when test_harness is docker.
 # test_url: http://localhost:8080
+
+# How long each delivery phase outside the roles may wait before Mill stops
+# it, kills its own processes and leaves a recoverable stop naming the command
+# that resumes. setup and teardown bound .mill/setup.sh and .mill/teardown.sh;
+# prepare the fetch of the integration branch; site each run of
+# .mill/prepare.sh; install the `npm ci` repair; readiness the workspace
+# preflight; ci the wait for the pipeline when ci is wait. Suffixes: s, m, h.
+# Shown with their defaults.
+# phase_timeouts:
+#   setup: 30m
+#   prepare: 1m
+#   site: 30m
+#   install: 30m
+#   readiness: 15m
+#   ci: 3h
+#   teardown: 10m
 
 # Names of the labels Sawmill writes to the tracker. Only logjam exists.
 # labels:

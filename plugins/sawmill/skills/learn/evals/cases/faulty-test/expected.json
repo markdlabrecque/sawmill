@@ -1,0 +1,33 @@
+{
+  "case": "faulty-test",
+  "scope": "ticket #21",
+  "inputs": ["export.json", "logs/21/reviewer-1.jsonl"],
+  "coverage": { "attemptsInScope": 1, "attemptsWithRecords": 1, "missing": [], "rates": "refused" },
+  "observations": [
+    {
+      "class": "wrong-test-repaired",
+      "basis": "observed",
+      "summary": "A protected test matched output wording the ticket never promised; the reviewer requested a correction that kept the requirement.",
+      "evidence": ["attempt:6a2d8e14-95c3-4f71-b0e2-7d4c3b2a1f21", "logs/21/reviewer-1.jsonl:3"],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": ["The reviewer's test-correction path: it fixed the wrong test without weakening its requirement."],
+    "avoidableWork": ["The wrong test cost one correction round by the test-writers and a fresh review."],
+    "unproved": ["Whether prose-matching tests recur: one correction is not a pattern. The escaped-defect figure is unknown for this attempt."]
+  },
+  "recommendation": {
+    "action": "none",
+    "ticket": null,
+    "change": "No change yet; count test corrections caused by matching output wording over the next batch before proposing a prompt change.",
+    "measurement": "Test corrections whose stated mistake is matching unpromised output wording, per attempt, in the next batch.",
+    "baseline": "1 of 1 attempt in this scope.",
+    "confidence": "low"
+  },
+  "mustNot": [
+    "Count the correction as a defect in the delivered code.",
+    "Propose relaxing protected-test checks or letting the implementer edit tests.",
+    "Report escaped defects as zero; they are unknown."
+  ]
+}

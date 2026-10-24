@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"c1d2e3f4-0000-4000-8000-000000000012","model":"claude-opus-5-5"}
+{"type":"assistant","session_id":"c1d2e3f4-0000-4000-8000-000000000012","message":{"role":"assistant","content":[{"type":"text","text":"Ran `mill status --json` against the branch: the new `attention` field is set in text output but missing from JSON, which AC2 requires. The tests only exercise text output."}]}}
+{"type":"result","subtype":"success","session_id":"c1d2e3f4-0000-4000-8000-000000000012","result":"```mill-outcome\n{\"outcome\": \"bounce\", \"feedback\": \"AC2: `mill status --json` omits `attention`; only the text output carries it. Add it to the JSON view.\"}\n```"}

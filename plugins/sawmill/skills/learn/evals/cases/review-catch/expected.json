@@ -1,0 +1,33 @@
+{
+  "case": "review-catch",
+  "scope": "ticket #12",
+  "inputs": ["export.json", "logs/12/reviewer-1.jsonl"],
+  "coverage": { "attemptsInScope": 1, "attemptsWithRecords": 1, "missing": [], "rates": "refused" },
+  "observations": [
+    {
+      "class": "defect-caught",
+      "basis": "observed",
+      "summary": "Review found that the JSON status view omitted a field AC2 requires; the tests covered only the text view.",
+      "evidence": ["attempt:3f0c1a52-7b0e-4d8e-9a64-1c2d5e7f8a01", "logs/12/reviewer-1.jsonl:2", "logs/12/reviewer-1.jsonl:3"],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": ["Review: one bounce and one implementer round caught an AC2 fault the tests did not cover."],
+    "avoidableWork": [],
+    "unproved": ["Whether the test-writers' coverage of JSON output is a recurring gap: one attempt cannot show a pattern."]
+  },
+  "recommendation": {
+    "action": "none",
+    "ticket": null,
+    "change": "Keep the review as it is; watch whether review keeps catching output-format gaps the tests miss.",
+    "measurement": "Review bounces whose fix changes an output format the tests did not exercise, per attempt, in the next batch.",
+    "baseline": "1 of 1 attempt in this scope.",
+    "confidence": "low"
+  },
+  "mustNot": [
+    "State a review catch rate from one attempt.",
+    "Count the bounce as avoidable work because the final tests passed.",
+    "Propose dropping or narrowing review."
+  ]
+}

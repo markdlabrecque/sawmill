@@ -5,9 +5,9 @@ role. The template's unqualified Claude model names are not Pi model IDs. Sawmil
 does not resolve fuzzy names, replace a model, or translate `max` to another level.
 
 The contract follows Pi 1.4.0 at commit
-`58c0b02ce552adab76014e7ed712ab7981359aa8`. No real Pi CLI or model was run to
-verify it. Tests use scripted processes and source-derived events, not live
-captures. Older versions lacking these flags, hooks or settlement events fail.
+`58c0b02ce552adab76014e7ed712ab7981359aa8`. Pi 1.4.0 was also run against
+a real model in local Mill fixtures on 2026-10-24. Older versions lacking these
+flags, hooks or settlement events fail.
 
 ## Invocation and outcomes
 
@@ -101,7 +101,8 @@ pi --session <session-id-or-path>
 
 Sawmill starts fresh role conversations; it does not automatically resume vendor
 sessions. Human inspection uses the user's normal interactive Pi configuration.
-Live startup, provider/model availability and live resume have not been tested.
+Live startup and `openai/gpt-6.1-sol` at low effort were checked. Automatic
+vendor-session resume has not been tested; Mill starts a fresh role conversation.
 
 ## First-party sources
 
@@ -118,7 +119,8 @@ Live startup, provider/model availability and live resume have not been tested.
 
 Only an implementer repairing a CLI-detected rebase conflict receives the exact
 saved integration SHA. Its native policy permits `git rebase <that-sha>`,
-`git -c core.editor=true rebase --continue`, and `git rebase --abort` for that
+the single continuation command in `src/runtime.ts` (it restores the replayed
+commit's exact message, so `#<ticket>:` subjects are not stripped as comments), and `git rebase --abort` for that
 invocation. Other targets, merge, skip, reset and push remain denied. The CLI
 still requires integration ancestry, unchanged writer patches, one final fix
 commit, a fresh review and full local tests. Claude's native allowlist receives
@@ -129,3 +131,18 @@ The exact-command mapping follows the
 checked October 22, 2026. Scripted vendor tests exercise those emitted rules and
 the shipped Pi policy during a real local conflict; they do not certify live
 vendor enforcement.
+
+## Live evidence
+
+Pi 1.4.0 completed a local three-role Mill ticket with a failing assertion,
+implementation, reviewer pass and fake-tracker merge. All three roles reported
+`openai/gpt-6.1-sol` and low effort. A separate real Pi reviewer used the scoped
+`chrome-devtools-axi` command to open an isolated local Chromium page, click a
+button and confirm the result. The first browser attempt tried a forbidden PATH
+probe and concluded the executable was unavailable; Mill's browser handoff now
+states that it has checked the executable and tells the reviewer to run it
+directly. These smokes used no production site or hosted CI. Pi remains a
+command-policy runtime, not an OS sandbox, and provider-native effort is only
+verified when Pi reports it. A forced role timeout followed by `mill run
+answer` and a resumed complete ticket also passed. See [local runtime
+evidence](analysis/165-runtime-evidence.md).

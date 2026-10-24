@@ -1,3 +1,4 @@
+import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -10,29 +11,36 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
+import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
 import { checkMillyard } from './millyard.js';
 import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
-import { readRun, type InfrastructureAttempt, type TeamProgress } from './run-store.js';
-import { infrastructure, type Runtime, type Outcome } from './runtime.js';
+import { checkFirstStart } from './first-start.js';
+import { alreadyClosed, readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
+import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
-import { createWorktree } from './worktrees.js';
+import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
+import { verificationFrom, verificationInstructions } from './verification.js';
 import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
 
 const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
+const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;
+const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+const changedFiles = async (cwd: string, from: string, to: string, ...files: string[]) =>
+  (await execute('git', ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', from, to, '--', ...files], { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.split('\0').filter(Boolean);
 export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
 export interface TeamResult {
-  outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped';
+  outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped' | 'skipped';
   ticket: number;
   stage: string;
   reason?: string;
@@ -57,14 +65,21 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (ticket.completion === 'manual' || ticket.blockers.length) throw new CliError('Team requires an unfinished, unblocked ticket.');
     if (!ticket.completion) requireBrowserCapability(project, ticket);
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
+    const first = await checkFirstStart(cwd, number, () => tracker);
+    if (first.status === 'skipped') return { outcome: 'skipped', ticket: number, stage: 'first-start', reason: alreadyClosed, error: `#${number} was already closed on the tracker; it was skipped before any role started.` };
+    if (first.status === 'lookup-failed') return { outcome: 'infrastructure', ticket: number, stage: 'first-start', error: first.error };
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = ticket.stage ?? 'worktree-create';
+    // With tests: none, or a drafted existing-checks plan, there is nothing to write, so the flow starts
+    // at the implementer. Review and the final tests and required checks still run.
+    const testsOff = project.tests === 'none' || ticket.proofPlan?.path === 'existing-checks';
+    const firstRole: Role = testsOff ? 'implementer' : 'test-writers';
     const integrationStage = ['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'ci-failed', 'merge', 'merge-accepted', 'remote-delete', 'fast-forward', 'merged'].includes(stage);
     let resume: Role | 'integrate' = ticket.team.stop?.resume ?? ticket.team.question?.role ?? ticket.team.next ?? ticket.team.activeRole?.role ??
       (ticket.completion === 'merged' || integrationStage ? 'integrate' :
         stage === 'implemented' ? 'reviewer' : stage === 'tests-written' ? 'implementer' :
-          stage === 'reviewer' || stage === 'implementer' ? stage : 'test-writers');
+          stage === 'reviewer' || stage === 'implementer' ? stage : firstRole);
     let progress: TeamProgress = { ...ticket.team, outputs: { ...ticket.team.outputs } };
     const guard = () => {
       const state = readRun(cwd), row = state.tickets.find(r => r.number === number);
@@ -151,7 +166,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     },
       result => result.outcome === 'infrastructure' ? result.message ?? 'Integration failed.' : undefined,
       result => ({ integration: result }), result => result.outcome === 'stopped' ||
-        progress.next === 'reviewer' || Boolean(current().team.stop && current().state === 'logjam'));
+        progress.next === 'reviewer' || Boolean(current().team.stop && current().state === 'logjam') ||
+        // A site that cannot be prepared waits for a person; retrying would not fix it.
+        (current().state === 'logjam' && current().reason === 'environment'));
     const integrationStop = (result: IntegrationResult): TeamResult | undefined => {
       const row = current();
       if (result.outcome !== 'stopped' && !(row.team.stop && row.state === 'logjam')) return;
@@ -187,6 +204,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       }
       checkStop(cwd, number);
       const tree = await createWorktree(cwd, project, machine, number, { ...options, writer: () => tracker });
+      // A worker's stderr is its log, where a resumed worktree's build change stays visible.
+      for (const warning of tree.warnings ?? []) process.stderr.write(`Warning: ${warning}\n`);
       guard();
       const path = tree.path;
       checkStop(cwd, number);
@@ -208,19 +227,23 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
       const recovery = progress.recovery;
       if (!recovery && await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Ticket worktree has uncommitted files; retained for recovery.');
       const runtime = options.runtime ?? createRuntime(project.runtime);
-      const repairing = Boolean(progress.repair && progress.testCommit);
-      const recoveredRole: Role | undefined = recovery ? progress.activeRole?.role ?? (progress.testCommit
+      const pastWriters = testsOff || Boolean(progress.testCommit);
+      const repairing = Boolean(progress.repair && pastWriters);
+      const recoveredRole: Role | undefined = recovery ? progress.activeRole?.role ?? (pastWriters
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
       let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
-      if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      // A person's waivers outlive a fresh start; only mill run reset drops them.
+      if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD'), ...(progress.acceptance ? { acceptance: progress.acceptance } : {}) };
       if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       delete progress.recovery;
-      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number): Promise<TeamResult | undefined> => {
+      const acceptance = acceptanceFor({ ...current(), team: progress });
+      if (acceptance.items.length) progress.acceptance = acceptance;
+      const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number, command?: string): Promise<TeamResult | undefined> => {
         delete progress.question;
         delete progress.stop;
         delete progress.activeRole;
-        progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
+        progress.repair = { source, feedback: outcome.feedback, baseCommit: await git(path, 'rev-parse', 'HEAD'), ...(command ? { command } : {}), ...(outcome.cases ? { failedCases: outcome.cases.filter(c => c.result === 'broken') } : {}) };
         const bounces = current().bounces + 1;
         const exhausted = bounces >= 3;
         const testing = source === 'reviewer' && progress.userTesting ? [{ kind: 'comment' as const, payload: { body: await reportComment(cwd, {
@@ -246,31 +269,99 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (result.outcome === 'infrastructure') return { ...await stop(infrastructure(result.message ?? 'Integration failed.')), integration: result };
         if (result.outcome === 'stopped') throw new Error('Stopped integration has no saved checkpoint.');
         if (result.outcome !== 'rebase-conflict') progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-        const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome);
+        const capped = await bounce({ outcome: 'bounce', feedback: `${result.outcome}: ${result.message ?? ''}` }, result.outcome, undefined, result.command);
         if (capped) return { ...capped, integration: result };
+      };
+      let latest: { head: string; handoff: string } | undefined;
+      const runTests = () => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      /** Run the suite at another commit in this worktree, optionally with files taken from `overlay.from`, then return to the branch. */
+      const testsAt = async (commit: string, overlay?: { from: string; files: string[] }) => {
+        await git(path, 'switch', '--quiet', '--detach', commit);
+        try {
+          if (overlay) {
+            const present = (await git(path, '--literal-pathspecs', 'ls-tree', '--name-only', '-r', overlay.from, '--', ...overlay.files)).split('\n').filter(Boolean);
+            const removed = overlay.files.filter(file => !present.includes(file));
+            if (present.length) await git(path, '--literal-pathspecs', 'checkout', overlay.from, '--', ...present);
+            if (removed.length) await git(path, '--literal-pathspecs', 'rm', '--quiet', '--ignore-unmatch', '--', ...removed);
+          }
+          return await runTests();
+        } finally { await git(path, 'checkout', '--quiet', '--force', `mill/${number}`); }
+      };
+      /**
+       * The suite before the test-writers' commits. A problem means it cannot certify new tests. Output Mill
+       * cannot read (say, the command names a test file the writers add) is no baseline: the new run stands alone.
+       */
+      const baselineRun = async (config: Exclude<ProjectConfig['tests'], 'none'>): Promise<{ results?: StructuredResults; problem?: string }> => {
+        const base = progress.testBase!;
+        if (progress.redBaseline?.commit === base) return progress.redBaseline;
+        const run = await testsAt(base);
+        checkStop(cwd, number);
+        const { file } = await reportTestRun(cwd, number, config.command, run, config.timeout);
+        const read = readResults(run.output), at = `The baseline run at ${base} (before the new tests)`;
+        const problem = run.timedOut ? `${at} timed out after ${config.timeout}` : run.code === null ? `${at} was killed`
+          : read && !read.ok ? `${at}: ${read.problem}` : read && testRunProblem(run);
+        if (problem) return { problem: `${problem}\nFull output: ${file}` };
+        const results = read?.ok ? read.results : undefined;
+        // Only a healthy baseline is kept; a broken one is rerun once a person has fixed it.
+        if (!results || (results.status === 'ok' && !results.scenarios.some(s => s.status === 'fail'))) progress.redBaseline = { commit: base, ...(results ? { results } : {}) };
+        return { ...(results ? { results } : {}) };
       };
       /** Tests that already pass guard nothing. True sends the work back to the test-writers. */
       const redCheck = async (): Promise<TeamResult | boolean> => {
+        const config = project.tests;
+        // No tests is a choice, not a mistake: there is no run to read as "not red".
+        if (config === 'none') { delete progress.redPending; return false; }
         stage = 'tests-written';
         const head = await git(path, 'rev-parse', 'HEAD');
         // A timeout or killed run is not green.
-        const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${project.tests.timeout}.\n${run.output}`
-          : run.code === null ? `Tests were killed.\n${run.output}` : undefined;
-        const tested = await retryInfrastructure(() => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true })),
-          unusable, () => ({}));
+        // Nor is a command that could not run: red means named failing tests, or output Mill cannot read.
+        // Malformed results, a bootstrap or collection error, or zero tests are environment problems too.
+        const results = (run: Awaited<ReturnType<typeof tests>>) => run.code ? readResults(run.output) : undefined;
+        const environment = (run: Awaited<ReturnType<typeof tests>>) => {
+          const read = results(run);
+          if (!read?.ok) return read && `${read.problem} This is an environment problem, not a failing test.`;
+          return read.results.status !== 'ok' || !read.results.collected ? redEvidence(undefined, read.results).problem : undefined;
+        };
+        const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${config.timeout}.\n${run.output}`
+          : run.code === null ? `Tests were killed.\n${run.output}` : (testRunProblem(run) ?? environment(run)) && `${testRunProblem(run) ?? environment(run)}\n${run.output}`;
+        const tested = await retryInfrastructure(runTests, unusable, () => ({}));
         checkStop(cwd, number);
+        const report = await reportTestRun(cwd, number, config.command, tested, config.timeout);
         const error = unusable(tested);
-        if (error) return await stop(infrastructure(error));
-        if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        if (error) return await stop(infrastructure(`${error}\nFull output: ${report.file}`));
+        const unchanged = async () => {
+          if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        };
+        await unchanged();
+        // Readable results must name new scenarios that failed for the intended reason on a healthy baseline.
+        // Output Mill cannot read still counts as red, as before, but proves no scenario and is marked unverified.
+        const read = results(tested);
+        let evidence: Evidence | undefined;
+        if (read?.ok) {
+          const baseline = await baselineRun(config);
+          await unchanged();
+          evidence = baseline.problem ? undefined : redEvidence(baseline.results, read.results);
+          const problem = baseline.problem ?? (evidence?.environment ? evidence.problem : undefined);
+          if (problem) return await stop(infrastructure(`${problem}\nThis is an environment problem, not a failing test: fix the base branch or the test environment, then answer the ticket.\nNew tests' output: ${report.file}`));
+        }
+        latest = { head, handoff: report.handoff };
         delete progress.redPending;
-        if (tested.code !== 0) { delete progress.redFeedback; return false; }
+        if (tested.code !== 0 && evidence?.valid !== false) {
+          delete progress.redFeedback;
+          progress.redHead = head;
+          if (evidence?.scenarios.length) progress.redScenarios = evidence.scenarios; else delete progress.redScenarios;
+          latest.handoff += evidence ? `\nRed check: these new scenarios fail for the intended reason and must pass: ${evidence.scenarios.join(', ')}.`
+            : '\nRed check: unverified. Mill could not read which tests failed, only that the command failed.';
+          return false;
+        }
+        const feedback = evidence?.problem ? `${evidence.problem} ${notMeaningful}` : notRed;
         const checks = progress.redChecks ?? 0;
-        progress.redFeedback = notRed;
+        progress.redFeedback = feedback;
         // The rerun records a fresh baseline, so a legitimate rewrite is not tampering.
         delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
         resume = progress.next = 'test-writers';
         if (checks >= redCheckCap) {
-          const details = `The tests passed without any new code after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
+          const details = `${evidence?.problem ? `The tests did not fail meaningfully (${evidence.problem})` : 'The tests passed without any new code'} after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
           if (!await transition(cwd, project, tracker, number, {
             state: 'logjam', reason: 'tests-not-red', stage, team: progress,
             report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage, round: checks + 1 },
@@ -278,8 +369,100 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
         }
         progress.redChecks = checks + 1;
-        await save({ report: { stage: 'tests-not-red', details: `${notRed}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
+        await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
         return true;
+      };
+      /** Mill's own test result for the next role, rerun once a role has moved HEAD. The first test-writers round has none. */
+      const latestRun = async (next: Role): Promise<string> => {
+        const head = await git(path, 'rev-parse', 'HEAD'), status = await git(path, 'status', '--porcelain', '--untracked-files=all');
+        if (latest?.head === head && !status) return `\n\n${latest.handoff}`;
+        const config = project.tests;
+        if (next === 'test-writers' || config === 'none') return '';
+        const run = await runTests();
+        checkStop(cwd, number);
+        if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all') !== status) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        // A passing run must still report every scenario the red check accepted, now passing.
+        const green = run.code === 0 && !run.timedOut ? greenProblem(progress.redScenarios, run.output) : undefined;
+        latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff + (green ? `\nGreen check failed: ${green}` : '') };
+        return `\n\n${latest.handoff}`;
+      };
+      /** The corrected tests against the unfixed code the red check accepted: they must still fail there, for the intended reason. */
+      const renewRed = async (correction: TestCorrection): Promise<Evidence | undefined> => {
+        const config = project.tests, redHead = progress.redHead;
+        if (config === 'none' || !redHead) return undefined;
+        const run = await testsAt(redHead, { from: correction.head!, files: correction.files });
+        checkStop(cwd, number);
+        if (await git(path, 'rev-parse', 'HEAD') !== correction.head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        const at = `The corrected tests on the unfixed code at ${redHead}`;
+        const failed = (problem: string): Evidence => ({ valid: false, scenarios: [], problem });
+        if (run.timedOut || run.code === null) return failed(`${at} ${run.timedOut ? `timed out after ${config.timeout}` : 'were killed'}.`);
+        if (run.code === 0) return failed(`${at} pass, so they no longer prove the missing behaviour.`);
+        const read = readResults(run.output);
+        if (!read) return { valid: true, scenarios: [] };
+        if (!read.ok) return failed(`${at}: ${read.problem}`);
+        const evidence = redEvidence(progress.redBaseline?.results, read.results);
+        return evidence.valid ? evidence : failed(`${at}: ${evidence.problem}`);
+      };
+      /** A reviewer's scoped test correction goes to the test-writers, at most `correctionCap` times. */
+      const requestCorrection = async (outcome: Extract<Outcome, { outcome: 'test-correction' }>, head: string, round?: number): Promise<TeamResult | undefined> => {
+        delete progress.activeRole;
+        const request = `Files: ${outcome.files.join(', ')}\nMistake: ${outcome.mistake}\nPreserves: ${outcome.preserves}`;
+        const unprotected = outcome.files.filter(file => !progress.testFiles?.includes(file));
+        const attempts = (progress.correction?.attempts ?? 0) + 1;
+        if (unprotected.length || attempts > correctionCap) {
+          return question(path, 'reviewer', { outcome: 'question', question: unprotected.length
+            ? `The reviewer asked the test-writers to correct files they did not write: ${unprotected.join(', ')}. Only protected test files can be corrected this way. A person must decide.\n\n${request}`
+            : `The reviewer asked for another test correction after ${correctionCap} attempts. The protected tests are unchanged. A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.\n\n${request}` });
+        }
+        progress.correction = { ...progress.correction, files: outcome.files, mistake: outcome.mistake, preserves: outcome.preserves,
+          baseline: progress.correction?.baseline ?? progress.testCommit!, requestedHead: head, attempts };
+        delete progress.correction.from;
+        resume = progress.next = 'test-writers';
+        await save({ report: { stage: 'test-correction', details: `Reviewer requested test correction ${attempts}/${correctionCap} at ${head}; protected baseline ${progress.correction.baseline}.\n\n${request}`, reachedStage: 'reviewer', round } });
+        checkStop(cwd, number);
+        guard();
+      };
+      /** Each attempt starts from the protected tests: every rejected change, in any protected file, is reverted in a new commit, never rewritten. */
+      const startCorrection = async (correction: TestCorrection) => {
+        const rejected = await changedFiles(path, progress.testCommit!, 'HEAD', ...progress.testFiles!);
+        if (rejected.length) {
+          await git(path, '--literal-pathspecs', 'restore', `--source=${progress.testCommit}`, '--staged', '--worktree', '--', ...rejected);
+          await git(path, 'commit', '-m', `#${number}: Revert rejected test correction`);
+          (correction.commits ??= []).push(await git(path, 'rev-parse', 'HEAD'));
+        }
+        delete correction.head; delete correction.tests;
+        correction.from = await git(path, 'rev-parse', 'HEAD');
+      };
+      /** The CLI, not the role's claim, holds a correction to its approved files and to appended commits. */
+      const checkCorrection = async (correction: TestCorrection) => {
+        if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Test correction left uncommitted files; work retained.');
+        try { await git(path, 'merge-base', '--is-ancestor', correction.from!, 'HEAD'); }
+        catch { throw new Error('Test correction rewrote prior history; work retained.'); }
+        const changed = await changedFiles(path, correction.from!, 'HEAD');
+        const outside = changed.filter(file => !correction.files.includes(file));
+        if (outside.length) throw new Error(`Test correction changed files outside the approved tests: ${outside.join(', ')}; work retained.`);
+        if (!changed.length) throw new Error('Test correction committed no change to the approved tests; work retained.');
+        correction.commits = [...correction.commits ?? [], ...(await git(path, 'rev-list', '--reverse', `${correction.from}..HEAD`)).split('\n').filter(Boolean)];
+        correction.head = await git(path, 'rev-parse', 'HEAD');
+        correction.tests = (await latestRun('reviewer')).trim();
+        const red = await renewRed(correction);
+        if (red) correction.red = red; else delete correction.red;
+      };
+      const correctionHandoff = async (role: Role): Promise<string> => {
+        const correction = progress.correction;
+        if (!correction) return '';
+        const request = `Files: ${correction.files.join(', ')}\nMistake: ${correction.mistake}\nPreserves: ${correction.preserves}`;
+        if (role === 'test-writers') {
+          return `\n\nTest correction ${correction.attempts}/${correctionCap}: the reviewer found a mistake in your protected tests. Change only the files named here, commit, and change no implementation code or other test.\n${request}\n\n` +
+            `Implementation diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.requestedHead, '--')}`;
+        }
+        if (role !== 'reviewer' || !correction.head) return '';
+        return `\n\nTest correction to verify (${correction.attempts}/${correctionCap}): check that it fixes only the requested mistake, keeps every requirement covered, and that the implementation still meets the ticket. ` +
+          `A green run alone does not make weaker tests acceptable. Pass accepts it as the new protected baseline.\n${request}\n\n${correction.tests ?? ''}\n\n` +
+          (correction.red ? `Renewed red proof on the unfixed code at ${progress.redHead}: ${correction.red.valid
+            ? `the corrected tests still fail${correction.red.scenarios.length ? ` (${correction.red.scenarios.join(', ')})` : ''}.`
+            : `${correction.red.problem} Mill will not accept this correction on a pass.`}\n\n` : '') +
+          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}`;
       };
       if (resuming === 'integrate') {
         if (await changedTests(path, progress)) {
@@ -295,9 +478,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (result) return result;
         }
       }
-      let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : 'test-writers');
+      let role: Role = resuming && resuming !== 'integrate' ? resuming : (repairing ? 'implementer' : firstRole);
       if (resuming === 'integrate') role = 'implementer';
+      // A person committed the fix while the ticket was stuck, then answered it: review that
+      // fix rather than demand another commit. Interrupted roles and saved WIP resume as before.
+      if (role === 'implementer' && repairing && !recovery && !progress.question && !progress.stop &&
+          progress.repair!.source !== 'rebase-conflict' && await fixedSinceBounce(path, progress.repair!.baseCommit)) role = 'reviewer';
       for (;;) {
+        // A review cannot accept a correction that has no committed attempt yet; the test-writers go first.
+        if (role === 'reviewer' && progress.correction && !progress.correction.head) role = 'test-writers';
         resume = progress.next = role;
         delete progress.approvedHead;
         checkStop(cwd, number);
@@ -307,28 +496,41 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (typeof sent === 'object') return sent;
           if (sent) { role = 'test-writers'; continue; }
         }
+        const correcting = role === 'test-writers' ? progress.correction : undefined;
+        if (correcting && !correcting.from) await startCorrection(correcting);
         stage = role;
         await save({ state: 'working', stage });
+        if (role === 'reviewer') {
+          // Review checks the site prepared at the head under review, and the run records which site that was.
+          const site = await prepareSite(cwd, project, number, path, options);
+          if (site.status !== 'ok') return await stop(infrastructure(site.message!));
+          progress.site = preparedSite(site);
+          await save({});
+        }
         const prompt = await readFile(new URL(`../../roles/${role}.md`, import.meta.url), 'utf8').catch(() => readFile(new URL(`../roles/${role}.md`, import.meta.url), 'utf8'));
         const entry = progress.activeRole;
         const beforeRole = recovery && entry?.role === role && entry.bounces === current().bounces ? entry.beforeHead : await git(path, 'rev-parse', 'HEAD');
         const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
           ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
+        // Plain text, so the saved CI log paths are readable as written rather than JSON-escaped.
+        const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
+        const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
+        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site;
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});
         const result = await retryInfrastructure(async () => {
-          const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, options.home, options.signal, progress.userTesting) : undefined;
+          const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, number, options.home, options.signal, progress.userTesting, progress.site) : undefined;
           checkStop(cwd, number);
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
-            role, cwd: path, home: options.home, ...project.roles[role], prompt,
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests.command}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then git -c core.editor=true rebase --continue. Preserve writer patches, then append a separate fix commit.` : ''}`,
+            role, cwd: path, home: options.home, ...project.roles[role], prompt: prompt + verificationInstructions(verificationFrom(project), role),
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
-            testCommand: project.tests.command, timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
+            ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
           }, options);
-          const testing = browser && userTestingResult(browser, invoked.outcome, progress.userTesting);
+          const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
           return invoked;
@@ -340,6 +542,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        // The same checklist decides every round; an unmet item is a bounce, never a pass.
+        const refused = role === 'reviewer' && result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
+        if (refused) result.outcome = refused;
         if (result.outcome.outcome === 'no-change') {
           checkStop(cwd, number);
           // Only an ordinary repair can be left unchanged; a conflict repair must rebase.
@@ -347,9 +552,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (await git(path, 'rev-parse', 'HEAD') !== beforeRole || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('A no-change repair must leave HEAD and the worktree untouched; work retained.');
           return await stop(result.outcome);
         }
-        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
+        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== 'test-correction' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
         if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
-        if (role === 'test-writers') {
+        if (correcting) await checkCorrection(correcting);
+        else if (role === 'test-writers') {
           await git(path, 'merge-base', '--is-ancestor', progress.testBase!, 'HEAD');
           progress.testCommit = await git(path, 'rev-parse', 'HEAD');
           progress.testCommits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^${progress.testBase}`, `^refs/heads/${project.integration}`)).split('\n').filter(Boolean);
@@ -361,6 +567,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           progress.testFiles = [...files];
           progress.redPending = true;
         }
+        const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
+        if (conflictRepair) {
+          // Rebase rewrites SHAs. Require each protected patch, in order, before the separate
+          // fix commit, then compare the tests against the rebased copies, not the old ones.
+          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
+          await remapRebasedWriters(path, progress, project.integration);
+          progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
+        }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');
           if (stopped) return stopped;
@@ -368,21 +583,21 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         if (await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Role left uncommitted files; work retained for recovery.');
         if (role === 'test-writers' && (!progress.testCommits?.length || !progress.testFiles?.length)) throw new Error('Test writers must commit their test files before implementation.');
-        const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
-        if (conflictRepair) {
-          // Rebase rewrites SHAs. Require each writer patch, in order, before
-          // the separate fix commit; never replace the original baselines.
-          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
-          await checkRebasedWriters(path, progress);
-          progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
-          progress.repair!.baseCommit = await git(path, 'rev-parse', 'HEAD^');
-        } else if (role !== 'test-writers' && progress.testCommit) {
+        if (!conflictRepair && role !== 'test-writers' && progress.testCommit) {
           try { await git(path, 'merge-base', '--is-ancestor', progress.checkpointHead ?? progress.testCommit!, 'HEAD'); }
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
-        if (role === 'implementer' && progress.repair && !conflictRepair &&
-            (await git(path, 'rev-parse', 'HEAD^') !== beforeRole || await git(path, 'rev-parse', 'HEAD') === beforeRole)) {
-          throw new Error('Each repair must append one separate fix commit; prior work retained.');
+        if (role === 'implementer' && progress.repair && !conflictRepair) {
+          // A repair is the commit range since the bounce: any number of appended commits, or a fix
+          // already committed since the bounce. Only rewritten history or a repair with nothing new is stuck.
+          const head = await git(path, 'rev-parse', 'HEAD');
+          const ancestor = async (commit: string) => git(path, 'merge-base', '--is-ancestor', commit, 'HEAD').then(() => true, () => false);
+          if (!await ancestor(beforeRole) || !await ancestor(progress.repair.baseCommit)) {
+            throw new Error('Repair rewrote prior history: the pre-repair HEAD and the review bounce point must remain ancestors of HEAD; prior work retained.');
+          }
+          if (head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
+            throw new Error('Repair added no new commits since the review bounce; prior work retained.');
+          }
         }
         if (role === 'reviewer' && await git(path, 'rev-parse', 'HEAD') !== beforeRole) throw new Error('Reviewer changed HEAD; refusing to integrate an unreviewed commit.');
         if (role === 'reviewer') {
@@ -391,6 +606,25 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         delete progress.question;
         delete progress.stop;
+        if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.correction?.head) {
+          const accepted = progress.correction;
+          // A correction that passes on the unfixed code proves nothing missing; only a person can accept it.
+          if (accepted.red && !accepted.red.valid) return await question(path, 'reviewer', { outcome: 'question', question:
+            `The reviewer passed test correction ${accepted.attempts}/${correctionCap}, but its renewed red proof failed: ${accepted.red.problem} The protected tests are unchanged. ` +
+            `A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.` });
+          // Only a fresh passing review moves the protected baseline. The writer commits stay for rebase checks.
+          progress.testCommit = accepted.head;
+          progress.testCommits = [...progress.testCommits ?? [], ...accepted.commits ?? []];
+          if (accepted.red?.scenarios.length) progress.redScenarios = accepted.red.scenarios;
+          delete progress.correction;
+          await save({ report: { stage: 'test-correction', details: `Fresh review at ${beforeRole} accepted test correction ${accepted.attempts}/${correctionCap}: protected baseline moved from ${accepted.baseline} to ${accepted.head}.\n\n` +
+            `Files: ${accepted.files.join(', ')}\nMistake: ${accepted.mistake}\nPreserves: ${accepted.preserves}\n\n${accepted.tests ?? ''}`, reachedStage: role, round: result.round } });
+        }
+        if (result.outcome.outcome === 'test-correction') {
+          const stopped = await requestCorrection(result.outcome, beforeRole, result.round);
+          if (stopped) return stopped;
+          role = 'test-writers'; continue;
+        }
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.userTesting) {
           delete progress.activeRole;
           resume = progress.next = 'integrate';
@@ -405,8 +639,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         const completed = role === 'test-writers' ? 'tests-written' : role === 'implementer' ? 'implemented' : 'review-pass';
         delete progress.activeRole;
-        resume = progress.next = role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
-        await save({ stage: completed, report: { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
+        resume = progress.next = correcting ? 'reviewer' : role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
+        await save({ stage: completed, report: correcting
+          ? { stage: 'test-correction', details: `Test correction ${correcting.attempts}/${correctionCap} committed at ${correcting.head}. A fresh review must accept it before it replaces the protected baseline ${correcting.baseline}.\n\n${correcting.tests}`, reachedStage: role, round: result.round }
+          : { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
         checkStop(cwd, number);
         // Mirroring yields to external I/O. Recheck evidence before dispatching again.
         if (await changedTests(path, progress)) {
@@ -420,7 +656,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           resume = 'reviewer';
           throw new Error('Reviewed HEAD changed during reporting; refusing to integrate.');
         }
-        if (role !== 'reviewer') { role = role === 'test-writers' ? 'implementer' : 'reviewer'; continue; }
+        if (role !== 'reviewer') { role = role === 'test-writers' && !correcting ? 'implementer' : 'reviewer'; continue; }
         const integratedResult = await runIntegration();
         if (integratedResult) return integratedResult;
         role = 'implementer';
@@ -432,7 +668,10 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
   });
 }
 
-async function checkRebasedWriters(path: string, progress: TeamProgress): Promise<void> {
+/** Rebase rewrites SHAs, and a conflict can fold new base lines into a protected file. Find each
+ * protected commit's rebased copy, by subject and in order, and make it the new baseline. A copy
+ * whose patch changed must differ only by lines the new base brought. */
+async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<void> {
   const patchId = async (commit: string) => {
     const patch = (await execute('git', ['show', '--format=', '--binary', commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 })).stdout;
     return new Promise<string>((resolve, reject) => {
@@ -441,25 +680,67 @@ async function checkRebasedWriters(path: string, progress: TeamProgress): Promis
       child.stdin!.end(patch);
     });
   };
-  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', `${progress.testBase}..HEAD^`)).split('\n').filter(Boolean);
-  const expected = await Promise.all((progress.testCommits ?? []).map(patchId));
+  const subject = (commit: string) => git(path, 'log', '-1', '--format=%s', commit);
+  const rewritten = () => new Error('Role rewrote the test-writer checkpoint history; work retained.');
+  const writers = progress.testCommits ?? [];
+  if (!writers.length) throw rewritten();
+  // An approved baseline that is not itself a writer commit comes after them in history.
+  const originals = progress.testCommit && !writers.includes(progress.testCommit) ? [...writers, progress.testCommit] : writers;
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD^', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
+  const copies = new Map<string, string>();
   let next = 0;
-  for (const commit of commits) {
-    if (next < expected.length && await patchId(commit) === expected[next]) next++;
+  for (const original of originals) {
+    const wanted = await subject(original);
+    while (next < commits.length && await subject(commits[next]!) !== wanted) next++;
+    const copy = commits[next++];
+    if (!copy) throw rewritten();
+    if (copy !== original && await patchId(copy) !== await patchId(original) && !await baseExplains(path, original, copy, progress.testFiles ?? [])) throw rewritten();
+    copies.set(original, copy);
   }
-  if (!expected.length || next !== expected.length) throw new Error('Role rewrote the test-writer checkpoint history; work retained.');
+  progress.testCommits = writers.map(commit => copies.get(commit)!);
+  if (progress.testCommit) progress.testCommit = copies.get(progress.testCommit)!;
+}
+
+/** True when, counting each occurrence, every protected file in `copy` keeps the lines of the base
+ * it was replayed onto (less those `original` removed) plus the lines `original` added, and holds
+ * nothing beyond those. A resolution that drops a base or pre-existing line is not explained. */
+async function baseExplains(path: string, original: string, copy: string, files: string[]): Promise<boolean> {
+  const lines = async (commit: string, file: string) => {
+    const counts = new Map<string, number>();
+    for (const line of (await execute('git', ['cat-file', 'blob', `${commit}:${file}`], { cwd: path, maxBuffer: 64 * 1024 * 1024 })
+      .then(result => result.stdout, () => '')).split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+    return counts;
+  };
+  for (const file of files) {
+    const [before, after, base, merged] = await Promise.all([lines(`${original}^`, file), lines(original, file), lines(`${copy}^`, file), lines(copy, file)]);
+    const count = (counts: Map<string, number>, line: string) => counts.get(line) ?? 0;
+    for (const line of new Set([...before.keys(), ...after.keys(), ...base.keys(), ...merged.keys()])) {
+      const added = Math.max(0, count(after, line) - count(before, line));
+      const removed = Math.max(0, count(before, line) - count(after, line));
+      const kept = Math.max(0, count(base, line) - removed) + added;
+      if (count(merged, line) < kept || count(merged, line) > count(base, line) + added) return false;
+    }
+  }
+  return true;
 }
 function integrated(result: IntegrationResult): TeamResult {
   return { outcome: result.outcome === 'merged' ? 'passed' : 'infrastructure', ticket: result.ticket, stage: 'integrate',
     integration: result, mergeCommit: result.mergeCommit, changeRequestUrl: result.changeRequestUrl, ...(result.message ? { error: result.message } : {}) };
 }
 
-/** Compare the writer baseline with HEAD, the index, and the working tree. */
+/** True when HEAD builds on the repair's bounce point with at least one commit since. */
+async function fixedSinceBounce(path: string, base: string): Promise<boolean> {
+  try { await git(path, 'merge-base', '--is-ancestor', base, 'HEAD'); } catch { return false; }
+  return Number(await git(path, 'rev-list', '--count', `${base}..HEAD`)) > 0;
+}
+
+/** Compare the writer baseline, or a committed correction awaiting review, with HEAD, the index, and the working tree. */
 async function changedTests(path: string, progress: TeamProgress): Promise<boolean> {
   const files = progress.testFiles ?? [];
-  if (!files.length || !progress.testCommit) return false;
+  const base = progress.correction?.head ?? progress.testCommit;
+  if (!files.length || !base) return false;
   for (const target of [['HEAD'], ['--cached'], []]) {
-    const diff = await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--name-only', progress.testCommit, ...target, '--', ...files);
+    const diff = await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--name-only', base, ...target, '--', ...files);
     if (diff) return true;
   }
   return false;

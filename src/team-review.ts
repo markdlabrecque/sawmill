@@ -1,8 +1,13 @@
+import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { createRuntime } from './runtime-factory.js';
 import { stopAtBoundary } from './cooperative-stop.js';
 import { preserveWip } from './preserve-wip.js';
+import { tests } from './integrate.js';
+import { recordChild } from './process-ownership.js';
+import { processStart } from './slots.js';
+import { noTests, reportTestRun } from './test-results.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -13,7 +18,9 @@ import { readRun, type TeamProgress } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { infrastructure, type Runtime } from './runtime.js';
+import { preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, type BrowserReview } from './user-testing.js';
+import { verificationFrom, verificationInstructions } from './verification.js';
 
 const execute = promisify(execFile);
 export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
@@ -28,6 +35,8 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   requireBrowserCapability(project, ticket);
   const progress: TeamProgress = { ...ticket.team, next: 'reviewer', outputs: { ...ticket.team.outputs } };
   delete progress.approvedHead;
+  const acceptance = acceptanceFor(ticket);
+  if (acceptance.items.length) progress.acceptance = acceptance;
   const stopped = async () => {
     const result = await stopAtBoundary(cwd, project, writer, number, 'reviewer', 'reviewer', progress, options);
     return { status: 'logjam', ticket: number, outcome: result.outcome === 'stopped' ? { outcome: 'stopped' as const } : infrastructure(result.error ?? 'Stop preservation failed.') };
@@ -59,15 +68,27 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   let browser: BrowserReview = { browser: false, handoff: '', cases: [], allCases: [] };
   let head = '';
   let committed = false;
+  let latest = '';
   let runtime = options.runtime ?? createRuntime(project.runtime);
   try {
     head = (await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim();
-    committed = !(await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
+    const status = (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim();
+    committed = !status;
+    if (project.tests !== 'none') {
+      const run = await tests(ticket.worktree, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      if ((await execute('git', ['rev-parse', 'HEAD'], { cwd: ticket.worktree })).stdout.trim() !== head ||
+        (await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ticket.worktree })).stdout.trim() !== status) throw new Error('Tests changed the ticket worktree or HEAD.');
+      latest = `\n\n${(await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout)).handoff}`;
+    }
+    const site = await prepareSite(cwd, project, number, ticket.worktree, options);
+    if (site.status !== 'ok') throw new Error(site.message);
+    progress.site = preparedSite(site);
+    latest += siteHandoff(progress.site);
     diff = progress.reviewedHead && progress.repair
       ? `Fix diff:\n${(await execute('git', ['diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, '--'], { cwd: ticket.worktree, maxBuffer: 64 * 1024 * 1024 })).stdout}`
       : `Full diff:\n${await fullReviewDiff(ticket.worktree!, project.integration)}`;
     prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
-    browser = await browserHandoff(project, ticket.body, ticket.worktree, options.home, options.signal, progress.userTesting);
+    browser = await browserHandoff(project, ticket.body, ticket.worktree, number, options.home, options.signal, progress.userTesting, progress.site);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     runtime = { async run() { return { outcome: infrastructure(`Review preparation failed: ${message}`) }; } };
@@ -75,16 +96,26 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const duration = Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0);
   const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
     role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
-    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests.command}${browser.handoff}`,
-    testCommand: project.tests.command, timeoutMs: duration, browser: browser.browser, signal: options.signal,
+    effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}${acceptanceHandoff(acceptance)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
+    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, browserUrl: browser.url, signal: options.signal,
   }, options);
+  // The same checklist decides every round; an unmet item is a bounce, never a pass.
+  const refused = result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
+  if (refused) result.outcome = refused;
   const outcome = result.outcome;
   progress.outputs!.reviewer = result;
   if (readRun(cwd).tickets.find(row => row.number === number)!.stopRequested) return stopped();
-  const testing = userTestingResult(browser, outcome, progress.userTesting);
+  const testing = userTestingResult(browser, outcome);
   if (testing) progress.userTesting = testing;
   if (outcome.outcome === 'question') {
     const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', outcome, progress, options);
+    return { status: 'logjam', ticket: number, ...result, preservation: saved };
+  }
+  if (outcome.outcome === 'test-correction') {
+    // A standalone review cannot route a correction; a person decides, with the request in hand.
+    const question = `The standalone reviewer asked for a test correction, which only a team run can send to the test-writers. Answer with \`mill run answer ${number}\` to review again in the team run, or correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`.\n\n` +
+      `Files: ${outcome.files.join(', ')}\nMistake: ${outcome.mistake}\nPreserves: ${outcome.preserves}`;
+    const saved = await checkpointQuestion(cwd, project, writer, number, ticket.worktree, 'reviewer', { outcome: 'question', question }, progress, options);
     return { status: 'logjam', ticket: number, ...result, preservation: saved };
   }
   if (outcome.outcome === 'pass' || outcome.outcome === 'bounce') {

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { TestContext } from 'node:test';
 import type { RunSnapshot } from '../src/run-store.js';
+import { stopScheduler } from '../src/scheduler.js';
 import { millyard } from './helpers.js';
 
 const execute = promisify(execFile);
@@ -43,16 +44,42 @@ const cp = require('node:child_process');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FIXTURE_DIR + '/tracker.jsonl', JSON.stringify(args) + '\\n');
 const method = args[args.indexOf('--method') + 1], url = args[1];
+// A single-issue read is the first-start state recheck: closed-N marks it closed, lookup-fail breaks the tracker.
+const lookup = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)$/) : null;
+if (lookup) {
+  if (fs.existsSync(process.env.FIXTURE_DIR + '/lookup-fail')) { console.error('Fixture tracker outage'); process.exit(75); }
+  console.log(JSON.stringify({ number: Number(lookup[1]), title: 'Ticket ' + lookup[1], body: 'Same shared file for every ticket.', labels: [],
+    state: fs.existsSync(process.env.FIXTURE_DIR + '/closed-' + lookup[1]) ? 'closed' : 'open' }));
+  process.exit(0);
+}
+// A comment lookup answers with the comments stored by earlier posts; comments-lookup-fail breaks it.
+const thread = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)\\/comments\\?/) : null;
+if (thread) {
+  if (fs.existsSync(process.env.FIXTURE_DIR + '/comments-lookup-fail')) { console.error('Fixture comment lookup outage'); process.exit(74); }
+  const stored = process.env.FIXTURE_DIR + '/comments-' + thread[1] + '.jsonl';
+  console.log(JSON.stringify([fs.existsSync(stored) ? fs.readFileSync(stored, 'utf8').split('\\n').filter(Boolean).map(line => JSON.parse(line)) : []]));
+  process.exit(0);
+}
 if (!args.includes('--method') || (method === 'GET' && !url.includes('/pulls?'))) process.exit(71);
 let input = '';
 process.stdin.on('data', x => input += x);
 process.stdin.on('end', async () => {
   const body = input ? JSON.parse(input) : {};
-  if (body.body?.includes('[sawmill:review-pass]')) {
-    while (fs.existsSync(process.env.FIXTURE_DIR + '/hold-review-mirror')) await new Promise(r => setTimeout(r, 30));
+  // Stage reports are log-only; the change request lookup is the first tracker call after review.
+  if (url.includes('/pulls?')) {
+    while (fs.existsSync(process.env.FIXTURE_DIR + '/hold-change-request')) await new Promise(r => setTimeout(r, 30));
   }
   const failStage = process.env.FIXTURE_DIR + '/fail-mirror-stage';
   if (fs.existsSync(failStage) && body.body?.includes('[sawmill:' + fs.readFileSync(failStage, 'utf8') + ']')) { console.error('Fixture mirror outage'); process.exit(73); }
+  const posted = url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)\\/comments$/);
+  if (posted && method === 'POST') {
+    const stored = process.env.FIXTURE_DIR + '/comments-' + posted[1] + '.jsonl';
+    const id = fs.existsSync(stored) ? fs.readFileSync(stored, 'utf8').split('\\n').filter(Boolean).length + 1 : 1;
+    fs.appendFileSync(stored, JSON.stringify({ id, body: body.body }) + '\\n');
+    // lose-mirror-stage: the host keeps the comment, then its response is lost.
+    const loseStage = process.env.FIXTURE_DIR + '/lose-mirror-stage';
+    if (fs.existsSync(loseStage) && body.body.includes('[sawmill:' + fs.readFileSync(loseStage, 'utf8') + ']')) { console.error('Fixture lost response'); process.exit(73); }
+  }
   const git = (...args) => cp.execFileSync('git', args, {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim();
   let result = {};
   if (url.includes('/pulls?')) result = [];
@@ -83,11 +110,19 @@ let input = '';
 process.stdin.on('data', x => input += x);
 process.stdin.on('end', async () => {
   const number = Number(require('node:path').basename(process.cwd()));
-  const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: process.env.FIXTURE_YARD, encoding: 'utf8' }));
+  // Locate the millyard from the worktree so one shared scheduler can serve several fixtures.
+  const yard = require('node:path').dirname(cp.execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' }).trim());
+  const root = require('node:path').dirname(yard);
+  const status = JSON.parse(cp.execFileSync(process.execPath, [process.env.MILL_FIXTURE_BIN, 'run', 'status', '--json'], { cwd: yard, encoding: 'utf8' }));
   const row = status.tickets.find(x => x.number === number);
-  fs.appendFileSync(process.env.FIXTURE_DIR + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
-  const root = process.env.FIXTURE_DIR;
-  const repair = row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
+  fs.appendFileSync(root + '/starts.jsonl', JSON.stringify({ number, role: row.stage, handoff: input, pid: process.pid, parent: process.ppid, state: row.state, bounces:row.bounces, worker: row.worker }) + '\\n');
+  if (fs.existsSync(root + '/peer.py') && !fs.existsSync(root + '/peer-pid')) {
+    const log = fs.openSync(root + '/peer-output', 'a');
+    const peer = cp.spawn('python3', ['-u', root + '/peer.py', root + '/readable-peer', root + '/exit-peer'], {env:{PATH:process.env.PATH}, stdio:['ignore', log, log]});
+    fs.writeFileSync(root + '/peer-pid', String(peer.pid));
+    peer.unref();
+  }
+  const repair =row.stage === 'implementer' && row.bounces > 0 && fs.existsSync(root + '/repair-crash');
   if (repair && !fs.existsSync('repair.txt')) {
     fs.writeFileSync('repair.txt', 'Committed repair before crash\\n');
     cp.execFileSync('git', ['add', 'repair.txt']);
@@ -134,6 +169,7 @@ process.stdin.on('end', async () => {
     return json ? JSON.parse(result.stdout) : result.stdout;
   };
   t.after(async () => {
+    await stopScheduler(y.home);
     for (const name of await readdir(y.root)) if (name.startsWith('hold-')) await rm(join(y.root, name), { force: true });
     await writeFile(join(y.root, 'release'), 'yes');
     // Let every detached fixture worker finish before deleting its real worktree/database.

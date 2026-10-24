@@ -1,0 +1,40 @@
+{
+  "case": "fixed-bug",
+  "scope": "ticket #37",
+  "inputs": ["export.json", "logs/37/tests-1.txt", "tracker.json"],
+  "coverage": { "attemptsInScope": 2, "attemptsWithRecords": 2, "missing": [], "rates": "refused" },
+  "observations": [
+    {
+      "class": "environment-friction",
+      "basis": "observed",
+      "summary": "The first attempt stopped because the worktree had no node_modules; a person answered and the second attempt merged. Both ran at mill 943dcc5, before the preflight in 6c92aed.",
+      "evidence": [
+        "attempt:8e5b0c37-2d41-4a96-8f13-5b6c7d8e9f37",
+        "attempt:a1f4c6e8-3b72-4d05-9e18-2c4d6e8f0a37",
+        "logs/37/tests-1.txt:9",
+        "tracker.json:6",
+        "commit:6c92aed",
+        "ticket:#89"
+      ],
+      "incidents": 1
+    }
+  ],
+  "safeguards": {
+    "earnedCost": [],
+    "avoidableWork": ["The missing-dependency stop cost a second attempt, one human action and 15 operator minutes, and caught no fault."],
+    "unproved": ["Whether the preflight from #89 removes this stop in practice: no attempt in scope ran at or after 6c92aed."]
+  },
+  "recommendation": {
+    "action": "link",
+    "ticket": "#89",
+    "change": "No new ticket: #89 already added a workspace preflight (6c92aed). Treat this as history and check the preflight on the next batch.",
+    "measurement": "Environment stops for missing dependencies in attempts that ran at or after 6c92aed.",
+    "baseline": "1 stop, 1 human action and 15 operator minutes on #37 at 943dcc5.",
+    "confidence": "medium"
+  },
+  "mustNot": [
+    "File or propose a new ticket for missing node_modules.",
+    "Present the stop as a current gap without naming the fix in 6c92aed.",
+    "Count the stopped attempt and its retry as two separate incidents."
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "@markdlabrecque/sawmill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Build and run a Sawmill millyard",
   "type": "module",
   "bin": {
@@ -18,14 +18,17 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node dist/src/stamp-build.js",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js && node --test dist/test/process-permissions.js",
+    "test": "npm run build && node --test --test-timeout=120000 dist/test/*.test.js && node --test --test-timeout=120000 dist/test/process-permissions.js",
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "commonmark": "^0.31.2",
-    "yaml": "^2.9.1"
+    "playwright-core": "^1.64.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/commonmark": "^0.27.10",

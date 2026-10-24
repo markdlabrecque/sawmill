@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
+import { GitHubIntegration } from '../src/github-integration.js';
+import { GitLabTracker } from '../src/gitlab.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
+import { continueCommand } from './conflict-command.js';
 import { millyard } from './helpers.js';
 
-async function fixture(t: TestContext) {
-  const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.', labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
+async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
+  const ticket: Ticket = { number: 12, title: 'Return the answer', body,labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
   const requests: ChangeRequest[] = [];
   const tracker = {
     async getTicket() { return structuredClone(ticket); },
@@ -94,6 +98,12 @@ async function fixture(t: TestContext) {
     status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout), path: join(y.root, '12') };
 }
 
+/** Docker browser cases, on a site whose prepare.sh reports the ticket that owns it: a URL alone proves nothing. */
+async function ownedDockerSite(y: { cwd: string; projectConfig: string }, url = 'http://localhost:8123') {
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', `test_harness: docker\ntest_url: ${url}`));
+  await writeFile(join(y.cwd, '.mill/prepare.sh'), `printf '{"url":"${url}","ready":true,"ticket":%s}\\n' "$MILL_TICKET"\n`);
+}
+
 test('team run carries real committed red tests through implementation, full review and a merged done ticket', async t => {
   const y = await fixture(t);
   const result = await y.cli('team', 'run', '12', '--json');
@@ -120,7 +130,10 @@ test('team run carries real committed red tests through implementation, full rev
   assert.match(y.inputs[2]!.handoff, /Implemented answer; one test passes/);
   assert.match(y.inputs[2]!.handoff, /diff --git a\/answer.cjs/);
   assert.match(y.inputs[2]!.handoff, /diff --git a\/answer.test.cjs/);
-  for (const stage of ['tests-written', 'implemented', 'review-pass', 'merged']) assert.ok(y.ticket.comments.some(c => c.body.includes(`[sawmill:${stage}]`)));
+  assert.deepEqual(y.ticket.comments.filter(c => c.body.startsWith('[sawmill:')).map(c => c.body.split('\n')[0]), ['[sawmill:merged]']);
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  const order = ['worktree-created', 'tests-written', 'implemented', 'review-pass', 'rebase', 'pr-opened', 'merged'].map(stage => log.indexOf(`[${stage}]`));
+  assert.ok(order.every((index, i) => index >= 0 && (i === 0 || index > order[i - 1]!)), log);
   const summary = y.ticket.comments.at(-1)!.body;
   for (const text of [value.mergeCommit, 'answer.test.cjs', 'test-writers-session', 'implementer-session', 'reviewer-session']) assert.ok(summary.includes(text), summary);
 });
@@ -181,6 +194,63 @@ test('persistent protected-test changes exhaust the cap without review or integr
     assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`).includes('assert.equal'), true);
     if (mode !== 'committed') assert.notEqual(y.git('-C', y.path, 'status', '--porcelain'), '', 'Saved files must remain untouched');
   }
+});
+
+test('approve-tests moves the protected baseline to the corrected tests so the next role is not bounced', async t => {
+  const y = await fixture(t);
+  let attempted = false;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && attempted) return { outcome: { outcome: 'done', summary: 'Tests remain changed.' } };
+    const result = await y.normal(request, sink);
+    if (request.role === 'implementer') {
+      attempted = true;
+      await writeFile(join(request.cwd, 'answer.test.cjs'), "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1 corrected');\n");
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', 'Correct the test');
+    }
+    return result;
+  });
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  const stuck = (await y.status()).tickets[0];
+  assert.equal(stuck.state, 'logjam');
+  const corrected = y.git('-C', y.path, 'rev-parse', 'HEAD');
+  assert.notEqual(stuck.team.testCommit, corrected);
+
+  const approved = await y.cli('run', 'approve-tests', '12', '--json');
+  assert.equal(approved.code, 0, approved.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.team.testCommit, corrected);
+  assert.equal(row.team.repair, undefined); assert.equal(row.team.question, undefined); assert.equal(row.team.activeRole, undefined);
+  assert.equal(row.team.next, 'reviewer');
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  const events = (db.prepare('SELECT event FROM log WHERE ticket = 12').all() as { event: string }[]).map(r => r.event);
+  db.close();
+  assert.ok(events.some(event => event.includes(corrected) && /approv/i.test(event)), 'Approval must be logged with its commit');
+
+  const before = y.inputs.length;
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.slice(before).map(r => r.role), ['reviewer']);
+  assert.equal((await y.status()).tickets[0].state, 'done');
+});
+
+test('a repair whose fix a person already committed proceeds to review instead of stopping', async t => {
+  const y = await fixture(t);
+  let reviews = 0, implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer' && ++reviews === 1) return { outcome: { outcome: 'bounce', feedback: 'Document answer.' } };
+    if (request.role === 'implementer' && ++implementations === 2) return { outcome: { outcome: 'done', summary: 'Nothing new to commit.' } };
+    return y.normal(request, sink);
+  });
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  assert.equal((await y.status()).tickets[0].state, 'logjam');
+  await writeFile(join(y.path, 'API.md'), 'Answer is synchronous.\n');
+  y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Fix documentation by hand');
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.status()).tickets[0].state, 'done');
+  assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 2);
 });
 
 test('team requires committed writer evidence and clean completed roles while preserving unfinished files', async t => {
@@ -259,35 +329,96 @@ test('three review bounces persist the last failure and report retry-cap in text
   assert.equal(row.bounces, 3); assert.equal(row.reason, 'retry-cap'); assert.equal(row.state, 'logjam');
   assert.equal(row.team.repair.feedback, 'Missing scenario 3.');
   assert.equal(row.team.outputs.reviewer.outcome.feedback, 'Missing scenario 3.');
-  assert.ok(y.ticket.comments.some(c => c.body.includes('[sawmill:retry-cap]') && c.body.includes('Missing scenario 3.')));
+  assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:')));
+  assert.match((await y.cli('run', 'log', '12')).stdout, /\[retry-cap\] -> logjam \(retry-cap\) tracker: add-label\n  Missing scenario 3\./);
   assert.ok(y.ticket.labels.includes('logjam'));
   assert.match((await y.cli('run', 'status')).stdout, /logjam.*retry-cap/);
   assert.equal((await y.cli('run', 'answer', '12', 'Try again')).code, 0);
-  const capped = await y.cli('team', 'run', '12', '--json');
-  assert.equal(JSON.parse(capped.stdout).outcome, 'retry-cap');
-  assert.equal(JSON.parse(capped.stdout).error, 'Missing scenario 3.');
-  assert.equal(y.inputs.length, 7);
-  assert.equal((await y.status()).tickets[0].bounces, 3);
+  // Answering gives the ticket one more round, not an instant second stop.
+  assert.equal((await y.status()).tickets[0].state, 'queued');
+  const again = await y.cli('team', 'run', '12', '--json');
+  assert.equal(reviews, 4);
+  assert.ok(y.inputs.length > 7);
+  assert.equal(JSON.parse(again.stdout).outcome, 'retry-cap');
+  assert.equal(JSON.parse(again.stdout).error, 'Missing scenario 4.');
+  const stopped = (await y.status()).tickets[0];
+  assert.equal(stopped.bounces, 3); assert.equal(stopped.state, 'logjam'); assert.equal(stopped.reason, 'retry-cap');
 });
 
-test('mirror failure at every successful boundary stops the next role or merge and retains pending evidence', async t => {
-  for (const stage of ['worktree-created', 'tests-written', 'implemented', 'review-pass']) {
-    const y = await fixture(t);
-    let failed = false;
-    y.setBeforeWrite(async body => {
-      if (body?.includes(`[sawmill:${stage}]`)) failed = true;
-      if (failed) throw new Error('Tracker unavailable');
-    });
-    const result = await y.cli('team', 'run', '12', '--json');
-    assert.equal(result.code, 1, result.stdout);
-    const value = JSON.parse(result.stdout);
-    assert.equal(value.outcome, 'infrastructure'); assert.equal(value.reason, 'tracker');
-    const snapshot = await y.status();
-    assert.equal(snapshot.tickets[0].reason, 'tracker'); assert.ok(snapshot.pendingWrites.length);
-    assert.equal(y.inputs.length, ['worktree-created', 'tests-written', 'implemented', 'review-pass'].indexOf(stage));
-    assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
-    assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12'), '');
-  }
+test('a pass with an unmet acceptance item bounces every round to retry-cap, and a person waiver resumes it to merge', async t => {
+  const y = await fixture(t, 'Return 42 from answer.cjs.\n\n**Done when:**\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the answer in the pilot.\n');
+  let implementations = 0, revision = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') {
+      revision = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+      const waived = /AC2: waived by .*Pilot proof is out of scope/.test(request.handoff);
+      return { outcome: { outcome: 'pass', summary: 'Tests pass.', acceptance: [{ id: 'AC1', result: 'evidenced', evidence: { check: 'node answer.test.cjs', revision } },
+        waived ? { id: 'AC2', result: 'waived' } : { id: 'AC2', result: 'unresolved', reason: 'No pilot run yet.' }] } };
+    }
+    if (request.role === 'implementer' && ++implementations > 1) {
+      await writeFile(join(request.cwd, 'API.md'), `Repair ${implementations}\n`);
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', `Fix ${implementations}`);
+      return { outcome: { outcome: 'done', summary: 'Repaired.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const refusal = /Mill refused this pass[^]*AC2 \(A person confirms the answer in the pilot\.\): unresolved: No pilot run yet\./;
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  const value = JSON.parse(result.stdout);
+  assert.equal(value.outcome, 'retry-cap'); assert.equal(value.reason, 'retry-cap');
+  // The first and the last attempt get the same disposition for the same unmet item.
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+  assert.match(y.inputs[3]!.handoff, refusal);
+  assert.match(value.error, refusal);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'retry-cap'); assert.equal(row.bounces, 3);
+  assert.equal(row.team.outputs.reviewer.outcome.outcome, 'bounce');
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  assert.doesNotMatch(log, /\[review-pass\]/);
+  assert.match(log, /\[review-bounce\][^]*AC2[^]*No pilot run yet/);
+  assert.match(log, /\[retry-cap\] -> logjam \(retry-cap\)[^]*AC2[^]*No pilot run yet/);
+
+  const waived = await y.cli('run', 'waive', '12', 'AC2', '--reason', 'Pilot proof is out of scope for this repo.');
+  assert.equal(waived.code, 0, waived.stdout);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const before = y.inputs.length;
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout).outcome, 'passed');
+  const reviewer = y.inputs.slice(before).filter(r => r.role === 'reviewer');
+  assert.equal(reviewer.length, 1);
+  assert.match(reviewer[0]!.handoff, /AC2: waived by .*Pilot proof is out of scope for this repo\./);
+  const done = (await y.status()).tickets[0];
+  assert.equal(done.state, 'done'); assert.equal(done.completion, 'merged');
+  const report = y.ticket.comments.at(-1)!.body;
+  assert.match(report, /^\[sawmill:merged\]/);
+  assert.match(report, new RegExp(`Acceptance \\(checklist ${done.team.acceptance.snapshot}\\):\\nAC1: evidenced by node answer\\.test\\.cjs at ${revision}\\nAC2: waived by .+: Pilot proof is out of scope for this repo\\.`));
+});
+
+test('the merged report of a ticket without an acceptance checklist claims no acceptance evidence', async t => {
+  const y = await fixture(t);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.team.acceptance, undefined);
+  const report = y.ticket.comments.at(-1)!.body;
+  assert.match(report, /^\[sawmill:merged\]/);
+  assert.doesNotMatch(report, /Acceptance/);
+});
+
+test('a tracker outage cannot stop a step, since steps write nothing; only the merged comment is held', async t => {
+  const y = await fixture(t);
+  y.setBeforeWrite(async () => { throw new Error('Tracker unavailable'); });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(y.inputs.length, 3); assert.equal(y.requests.length, 1);
+  const snapshot = await y.status(), row = snapshot.tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tracker'); assert.equal(row.completion, 'merged');
+  const comments = snapshot.pendingWrites.filter((w: { kind: string }) => w.kind === 'comment');
+  assert.deepEqual(comments.map((w: { payload: { body: string } }) => w.payload.body.split('\n')[0]), ['[sawmill:merged]']);
+  assert.equal(y.ticket.state, 'open');
 });
 
 test('team completion and acknowledged-merge mirror recovery never rerun roles or merge twice', async t => {
@@ -431,22 +562,28 @@ test('reviewer edits cannot authorize integration of a different commit', async 
   assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
 });
 
-test('tampering during a report cannot slip across the next dispatch or integration boundary', async t => {
-  for (const stage of ['tests-written', 'review-pass']) {
+test('tampering after a report cannot slip across the next dispatch or integration boundary', async t => {
+  for (const role of ['test-writers', 'reviewer']) {
     const y = await fixture(t);
+    let stopped = false;
     y.setScript(async (request, sink) => {
       if (request.role === 'implementer' && (await y.status()).tickets[0].team.repair) return { outcome: { outcome: 'done', summary: 'Left tampering unchanged.' } };
-      return y.normal(request, sink);
+      const result = await y.normal(request, sink);
+      // Reports are log-only, so the edit lands while the ticket is stopped right after one.
+      if (!stopped && request.role === role) { stopped = true; assert.equal((await y.cli('run', 'stop', '12')).code, 0); }
+      return result;
     });
-    y.setBeforeWrite(async body => {
-      if (!body?.includes(`[sawmill:${stage}]`)) return;
-      await writeFile(join(y.path, 'answer.test.cjs'), '// changed during reporting\n');
-      y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Concurrent test edit');
-    });
+    assert.equal(JSON.parse((await y.cli('team', 'run', '12', '--json')).stdout).outcome, 'stopped');
+    assert.equal((await y.status()).tickets[0].stage, role);
+    // Still red, so resuming implementation reaches the protected-test check rather than a not-red rerun.
+    await writeFile(join(y.path, 'answer.test.cjs'), `${await readFile(join(y.path, 'answer.test.cjs'), 'utf8')}// changed after reporting\n`);
+    y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Concurrent test edit');
+    assert.equal((await y.cli('run', 'answer', '12')).code, 0);
     const result = await y.cli('team', 'run', '12', '--json');
     assert.equal(result.code, 1, result.stdout);
     assert.equal(JSON.parse(result.stdout).reason, 'retry-cap');
-    assert.equal(y.inputs.length, stage === 'tests-written' ? 3 : 5);
+    // After the writers the implementer runs once before the check; after review the check runs first.
+    assert.equal(y.inputs.length, role === 'test-writers' ? 4 : 5);
     assert.equal(y.requests.length, 0);
   }
 });
@@ -539,8 +676,42 @@ test('protected-test repairs preserve every writer checkpoint and still receive 
   }
 });
 
-test('repair must append one separate commit, preserving prior implementation history', async t => {
-  for (const mode of ['no-commit', 'amend', 'multiple']) {
+test('a repair with separate implementation and regression-test commits reaches review with the whole range and feedback', async t => {
+  const y = await fixture(t);
+  let reviews = 0, implementations = 0, baseHead = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer') {
+      if (++reviews === 1) {
+        baseHead = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+        return { outcome: { outcome: 'bounce', feedback: 'Document the synchronous return value.' } };
+      }
+      assert.match(request.handoff, /Document the synchronous return value/);
+      const diff = request.handoff.split('Fix diff:\n')[1]!;
+      assert.ok(diff, request.handoff);
+      assert.match(diff, /diff --git a\/API.md/);
+      assert.match(diff, /diff --git a\/notes.md/);
+      return { outcome: { outcome: 'pass', summary: 'Both commits reviewed.' } };
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      await writeFile(join(request.cwd, 'API.md'), 'answer returns 42 synchronously.\n');
+      y.git('-C', request.cwd, 'add', 'API.md'); y.git('-C', request.cwd, 'commit', '-m', '#12: Document return value');
+      await writeFile(join(request.cwd, 'notes.md'), 'Separate checkpoint commit.\n');
+      y.git('-C', request.cwd, 'add', 'notes.md'); y.git('-C', request.cwd, 'commit', '-m', '#12: Add notes');
+      return { outcome: { outcome: 'done', summary: 'Two commits.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'passed');
+  assert.equal(y.git('rev-list', '--count', `${baseHead}..${(await y.status()).tickets[0].integration.mergedHead}`), '2');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 1); assert.equal(row.state, 'done');
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+});
+
+test('repair must append new work to prior implementation history', async t => {
+  for (const mode of ['no-commit', 'amend']) {
     const y = await fixture(t);
     let implementations = 0;
     y.setScript(async (request, sink) => {
@@ -550,10 +721,6 @@ test('repair must append one separate commit, preserving prior implementation hi
           await writeFile(join(request.cwd, 'API.md'), 'Answer is synchronous.\n');
           y.git('-C', request.cwd, 'add', '.');
           y.git('-C', request.cwd, 'commit', ...(mode === 'amend' ? ['--amend'] : []), '-m', 'Fix documentation');
-          if (mode === 'multiple') {
-            await writeFile(join(request.cwd, 'API.md'), 'Answer is 42.\n');
-            y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', 'Another fix');
-          }
         }
         return { outcome: { outcome: 'done', summary: 'Claimed fixed.' } };
       }
@@ -562,7 +729,8 @@ test('repair must append one separate commit, preserving prior implementation hi
     const result = await y.cli('team', 'run', '12', '--json');
     assert.equal(result.code, 1, `${mode}: ${result.stdout}`);
     assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
-    assert.match(result.stdout, /separate.*commit/i);
+    assert.match(result.stdout, mode === 'no-commit' ? /no new (commit|work)/i : /ancest|rewr/i);
+    assert.doesNotMatch(result.stdout, /one separate/i);
     assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 1);
     assert.equal((await y.status()).tickets[0].bounces, 1);
   }
@@ -587,11 +755,12 @@ test('a repair round that finds nothing to fix ends in one logjam comment saying
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'logjam');
   assert.notEqual(row.reason, 'environment');
-  const added = y.ticket.comments.slice(before).map(c => c.body);
-  const reports = added.filter(body => /could not be reproduced/i.test(body));
-  assert.equal(reports.length, 1, added.join('\n---\n'));
+  assert.equal(y.ticket.comments.length, before, 'The logjam posts no comment');
+  const entries = (await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/);
+  const reports = entries.filter(entry => /could not be reproduced/i.test(entry));
+  assert.equal(reports.length, 1, entries.join('\n---\n'));
   assert.match(reports[0]!, /420 tests, 0 failures/);
-  assert.ok(!added.some(body => /separate.*commit/i.test(body)), added.join('\n---\n'));
+  assert.ok(!entries.some(entry => /separate.*commit/i.test(entry)), entries.join('\n---\n'));
   assert.equal(y.inputs.filter(r => r.role === 'implementer').length, 2);
 });
 
@@ -616,8 +785,8 @@ async function stopAsNotReproduced(t: TestContext) {
   assert.equal(stopped.code, 1, stopped.stdout);
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'not-reproduced');
-  const comment = y.ticket.comments.at(-1)!.body;
-  assert.match(comment, /mill run answer 12/); assert.match(comment, /--implementer/);
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  assert.match(log, /mill run answer 12/); assert.match(log, /--implementer/);
   return { y, flag, row, implementations: () => implementations };
 }
 
@@ -744,10 +913,11 @@ test('rebase conflict feedback reaches a separate fix and narrow review after re
     const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.match(request.handoff, /rebase-conflict: answer.cjs/);
+      assert.ok(request.handoff.includes(await continueCommand()), 'Handoff names the exact permitted continuation command');
       assert.equal(git('status', '--porcelain'), '', 'Coordinator aborted the conflicted rebase');
       try { git('rebase', 'integration'); } catch { /* Resolve the actual conflict below. */ }
       await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
-      git('add', 'answer.cjs'); git('-c', 'core.editor=true', 'rebase', '--continue');
+      git('add', 'answer.cjs'); execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
       await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
       git('add', '.'); git('commit', '-m', '#12: Fix integration conflict');
       return { outcome: { outcome: 'done', summary: 'Rebased and committed conflict fix.' } };
@@ -771,6 +941,227 @@ test('rebase conflict feedback reaches a separate fix and narrow review after re
   assert.equal(row.team.repair.source, 'rebase-conflict');
   assert.equal(y.git('show', `${row.team.testCommit}:answer.test.cjs`), y.git('show', `${(await y.status()).tickets[0].integration.mergedHead}:answer.test.cjs`));
   assert.equal(y.git('log', '-1', '--format=%s', row.integration.mergedHead), '#12: Fix integration conflict');
+});
+
+const sharedTestBase = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\n";
+const sharedTestMerged = `${sharedTestBase}assert.equal(typeof require('./answer.cjs'), 'function');\nconsole.log('pass 1');\n`;
+
+/** Script where integration gains its own answer.test.cjs, so rebasing the writer commit conflicts in the protected test file. */
+function conflictingTestScript(y: Awaited<ReturnType<typeof fixture>>, repair: (cwd: string, git: (...args: string[]) => string) => Promise<void>) {
+  let implementations = 0, reviews = 0;
+  y.setScript(async (request, sink) => {
+    const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      await writeFile(join(y.cwd, 'answer.test.cjs'), "assert.equal(typeof require('./answer.cjs'), 'function');\n");
+      y.git('add', '.'); y.git('commit', '-m', 'Another ticket adds its own check'); y.git('push');
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      try { git('rebase', 'integration'); } catch { /* Resolve the real conflict below. */ }
+      await writeFile(join(request.cwd, 'answer.test.cjs'), sharedTestMerged);
+      // Writer subjects start with '#'; continue with the exact command production grants the implementer.
+      git('add', 'answer.test.cjs'); execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
+      await repair(request.cwd, git);
+      return { outcome: { outcome: 'done', summary: 'Resolved the conflict in the shared test file.' } };
+    }
+    return y.normal(request, sink);
+  });
+}
+
+test('a conflict in a protected test file during the rebase is repaired and merges without a logjam', async t => {
+  const y = await fixture(t);
+  conflictingTestScript(y, async (cwd, git) => {
+    await writeFile(join(cwd, 'notes.txt'), 'Conflict repaired.\n');
+    git('add', 'notes.txt'); git('commit', '-m', '#12: Fix integration conflict');
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  assert.equal(row.reason, null);
+  assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), sharedTestMerged.trimEnd());
+  assert.equal(y.ticket.state, 'closed');
+});
+
+test('weakening a protected test after a conflict rebase is still caught', async t => {
+  const y = await fixture(t);
+  let weakened = false;
+  conflictingTestScript(y, async (cwd, git) => {
+    await writeFile(join(cwd, 'answer.test.cjs'), "assert.equal(typeof require('./answer.cjs'), 'function');\nconsole.log('pass 1');\n");
+    git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Fix integration conflict');
+    weakened = true;
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.ok(weakened);
+  assert.notEqual(result.code, 0, result.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.notEqual(row.state, 'done');
+  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
+  assert.match(y.inputs.at(-1)!.handoff + JSON.stringify(row), /protected|test-writer.*files.*changed/i);
+});
+
+// Hosted CI repair evidence. The tracker is the real GitHub or GitLab adapter talking to a scripted gh/glab;
+// only the change request, merge and branch calls stay local. No live credentials are involved.
+const hostedFixture = (name: string) => new URL(`../../test/fixtures/${name}`, import.meta.url);
+
+async function hostedCi(t: TestContext, y: Awaited<ReturnType<typeof fixture>>, backend: 'github' | 'gitlab', scenario: object) {
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  const bin = join(y.root, 'hosted-bin'); await mkdir(bin);
+  const scenarioFile = join(y.root, 'hosted-scenario.json'), log = join(y.root, 'hosted-requests.jsonl');
+  await writeFile(scenarioFile, JSON.stringify(scenario)); await writeFile(log, '');
+  const tool = backend === 'github' ? 'gh' : 'glab';
+  await writeFile(join(bin, tool), `#!${process.execPath}\n` + await readFile(hostedFixture(`hosted-${tool}.cjs`), 'utf8'));
+  await chmod(join(bin, tool), 0o755);
+  const oldPath = process.env.PATH;
+  Object.assign(process.env, { PATH: `${bin}:${oldPath}`, HOSTED_SCENARIO: scenarioFile, HOSTED_LOG: log, HOSTED_CWD: y.cwd });
+  t.after(() => { process.env.PATH = oldPath; delete process.env.HOSTED_SCENARIO; delete process.env.HOSTED_LOG; delete process.env.HOSTED_CWD; });
+  const config = { backend, repo: 'team/tool' } as never;
+  const real = backend === 'github' ? new GitHubIntegration(config, y.cwd) : new GitLabTracker(config, y.cwd);
+  const tracker = y.tracker as unknown as Record<string, unknown>;
+  delete tracker.getPipeline;
+  Object.setPrototypeOf(tracker, real);
+  return { requests: async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { endpoint: string }) };
+}
+
+/** Run the ticket until the implementer's repair round and return what that round was handed. */
+async function repairHandoff(y: Awaited<ReturnType<typeof fixture>>) {
+  let implementations = 0;
+  y.setScript(async (request, sink) => request.role === 'implementer' && ++implementations > 1
+    ? { outcome: { outcome: 'question', question: 'Stopping after reading the CI evidence.' } } : y.normal(request, sink));
+  const result = await y.cli('team', 'run', '12', '--json');
+  const handoff = y.inputs.filter(input => input.role === 'implementer')[1]?.handoff ?? '';
+  return { result, handoff };
+}
+
+/** Every file the handoff points at inside the ticket's local logs, read back as the implementer would. */
+async function handedLogs(y: Awaited<ReturnType<typeof fixture>>, handoff: string) {
+  const dir = join(y.cwd, '.mill/logs/12');
+  const found = handoff.match(new RegExp(`${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[^\\s\`'")\\]>,]+`, 'g')) ?? [];
+  const logs: { path: string; text: string }[] = [];
+  for (const path of new Set(found.map(path => path.replace(/[.:;]+$/, '')))) {
+    assert.ok(isAbsolute(path), path);
+    try { logs.push({ path, text: await readFile(path, 'utf8') }); } catch { /* not a readable file */ }
+  }
+  return logs;
+}
+
+const ghRun = { id: 500, head_sha: 'HEAD_SHA', run_attempt: 2, status: 'completed', conclusion: 'failure', html_url: 'https://github.com/team/tool/actions/runs/500' };
+const ghJobUrl = (id: number) => `https://github.com/team/tool/actions/runs/500/job/${id}`;
+const ghJob = (id: number, name: string, extra: object = {}) => ({ id, run_id: 500, run_attempt: 2, head_sha: 'HEAD_SHA', name, status: 'completed', conclusion: 'failure', html_url: ghJobUrl(id), ...extra });
+const ghCheck = (id: number, name: string, summary?: string, conclusion = 'failure') => ({ id, head_sha: 'HEAD_SHA', name, status: 'completed', conclusion, html_url: ghJobUrl(id), details_url: ghJobUrl(id), output: summary ? { summary } : {} });
+const ghChecks = (...checks: object[]) => ({ checks: { total_count: checks.length, check_runs: checks }, status: { sha: 'HEAD_SHA', state: 'pending', total_count: 0, statuses: [] } });
+
+test('a failed GitHub Actions run hands the repair round the commit, each failed job, its URL and a readable saved log', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Expected 2, got 3'), ghCheck(9002, 'lint', 'Unused variable'), ghCheck(9003, 'build', undefined, 'success')),
+    runs: { 500: ghRun },
+    jobs: { 9001: ghJob(9001, 'unit'), 9002: ghJob(9002, 'lint'), 9003: ghJob(9003, 'build', { conclusion: 'success' }) },
+    logs: { 9001: 'step 1\nGH-UNIT-LOG: expected 2 but got 3\n', 9002: 'GH-LINT-LOG: no-unused-vars\n', 9003: 'GH-BUILD-LOG passing\n' },
+  });
+  const { handoff } = await repairHandoff(y);
+  assert.ok(handoff.includes(y.git('rev-parse', 'mill/12')), 'names the tested commit');
+  for (const text of ['unit', 'lint', ghJobUrl(9001), ghJobUrl(9002), 'Expected 2, got 3', 'Unused variable']) assert.ok(handoff.includes(text), `${text}\n${handoff}`);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-UNIT-LOG: expected 2 but got 3')), handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-LINT-LOG: no-unused-vars')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GH-BUILD-LOG')), 'passing jobs have no saved log');
+});
+
+test('GitHub logs from another commit or an obsolete attempt are never substituted for the failed job', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Old attempt failed'), ghCheck(9002, 'lint', 'Other commit failed'), ghCheck(9003, 'e2e', 'Timed out')),
+    runs: { 500: ghRun },
+    jobs: { 9001: ghJob(9001, 'unit', { run_attempt: 1 }), 9002: ghJob(9002, 'lint', { head_sha: 'f'.repeat(40) }), 9003: ghJob(9003, 'e2e') },
+    logs: { 9001: 'GH-STALE-ATTEMPT-LOG\n', 9002: 'GH-OTHER-COMMIT-LOG\n', 9003: 'GH-E2E-LOG: timed out\n' },
+  });
+  const { handoff } = await repairHandoff(y);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-E2E-LOG')), 'the verified job still gets its log');
+  assert.ok(!(handoff + logs.map(log => log.text).join('\n')).match(/GH-STALE-ATTEMPT-LOG|GH-OTHER-COMMIT-LOG/), 'rejected logs are not shown or saved');
+  for (const id of [9001, 9002]) assert.match(handoff, new RegExp(`${ghJobUrl(id)}[^]*unavailable|unavailable[^]*${ghJobUrl(id)}`, 'i'));
+  assert.match(handoff, /Old attempt failed/); assert.match(handoff, /Other commit failed/);
+});
+
+test('an oversized or undownloadable GitHub log is explicit and keeps the failed CI result', async t => {
+  const y = await fixture(t);
+  const big = { repeat: `GH-BIG-LINE ${'x'.repeat(87)}\n`, times: 120000 };
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Huge output'), ghCheck(9002, 'lint', 'Lint exploded')),
+    runs: { 500: ghRun }, jobs: { 9001: ghJob(9001, 'unit'), 9002: ghJob(9002, 'lint') },
+    logs: { 9001: big, 9002: 'never served\n' }, logFail: [9002],
+  });
+  const { result, handoff } = await repairHandoff(y);
+  assert.notEqual(JSON.parse(result.stdout).outcome, 'infrastructure', result.stdout);
+  assert.match(handoff, /truncat/i);
+  assert.ok(handoff.length < 100000, 'the handoff carries a summary, not the log');
+  const saved = (await handedLogs(y, handoff)).filter(log => log.text.includes('GH-BIG-LINE'));
+  assert.ok(saved.length === 1 && saved[0]!.text.length < 12000000, 'the saved copy is bounded');
+  assert.match(handoff, new RegExp(`${ghJobUrl(9002)}[^]*(unavailable)[^]*(500|Server Error)|(500|Server Error)[^]*unavailable[^]*${ghJobUrl(9002)}`, 'i'));
+  assert.match(handoff, /Lint exploded/);
+});
+
+const glJobUrl = (id: number, project = 'team/tool') => `https://gitlab.com/${project}/-/jobs/${id}`;
+const glJob = (id: number, name: string, status: string, extra: object = {}) => ({ id, name, status, stage: 'test', allow_failure: false, web_url: glJobUrl(id), ...extra });
+const glTrigger = (downstream: object | null, status = 'failed') => ({ id: 300, status, allow_failure: false, web_url: glJobUrl(300), downstream_pipeline: downstream });
+
+test('a failed GitLab pipeline hands over logs for current failed jobs across pages, retries and downstream projects', async t => {
+  const y = await fixture(t);
+  const shards = Array.from({ length: 100 }, (_, i) => i + 1);
+  const hosted = await hostedCi(t, y, 'gitlab', { polls: [{
+    pipelines: { 100: { status: 'failed', project_id: 71 }, 200: { status: 'failed', project_id: 72 } },
+    triggers: { 100: [glTrigger({ id: 200, project_id: 72 })] },
+    jobs: {
+      // Every shard failed once and then passed on retry; only the final attempt counts.
+      100: [...shards.map(i => glJob(1000 + i, `shard-${i}`, 'failed')), ...shards.map(i => glJob(2000 + i, `shard-${i}`, 'success')),
+        glJob(401, 'lint', 'failed'), glJob(402, 'lint', 'success'), glJob(501, 'unit', 'failed'), glJob(502, 'flaky', 'failed', { allow_failure: true })],
+      200: [glJob(601, 'integration', 'failed', { web_url: glJobUrl(601, 'team/downstream') })],
+    },
+  }], traces: { 501: 'GL-UNIT-TRACE: expected 2 got 3\n', 601: 'GL-DOWNSTREAM-TRACE: contract broken\n', 401: 'GL-OLD-LINT-TRACE\n', 502: 'GL-FLAKY-TRACE\n' } });
+  const { handoff } = await repairHandoff(y);
+  for (const text of [y.git('rev-parse', 'mill/12'), 'unit', glJobUrl(501), 'integration', glJobUrl(601, 'team/downstream')]) assert.ok(handoff.includes(text), `${text}\n${handoff}`);
+  assert.match(handoff, /\b200\b/); assert.match(handoff, /\b72\b/);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-UNIT-TRACE')), handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-DOWNSTREAM-TRACE')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GL-OLD-LINT-TRACE')), 'a job that passed on retry is not a failure');
+  assert.ok(!(await hosted.requests()).some(request => /jobs\/(401|1\d\d\d)\/trace/.test(request.endpoint)), 'retried attempts are not downloaded');
+});
+
+test('GitLab polling downloads an unchanged failed attempt once and refreshes it for a new attempt', async t => {
+  const y = await fixture(t);
+  const running = { pipelines: { 100: { status: 'running', project_id: 71 } }, jobs: { 100: [glJob(11, 'unit', 'failed'), glJob(13, 'slow', 'running')] } };
+  const hosted = await hostedCi(t, y, 'gitlab', { polls: [running, running, {
+    pipelines: { 100: { status: 'failed', project_id: 71 } },
+    jobs: { 100: [glJob(11, 'unit', 'failed'), glJob(12, 'unit', 'failed'), glJob(13, 'slow', 'success')] },
+  }], traces: { 11: 'GL-ATTEMPT-ONE\n', 12: 'GL-ATTEMPT-TWO\n' } });
+  const { handoff } = await repairHandoff(y);
+  const requests = (await hosted.requests()).map(request => request.endpoint);
+  assert.ok(requests.filter(endpoint => endpoint.includes('/merge_requests/1')).length >= 3, 'CI was polled until it failed');
+  assert.ok(requests.filter(endpoint => /jobs\/11\/trace/.test(endpoint)).length <= 1, 'the unchanged attempt is not downloaded on every poll');
+  assert.equal(requests.filter(endpoint => /jobs\/12\/trace/.test(endpoint)).length, 1);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-ATTEMPT-TWO')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GL-ATTEMPT-ONE')), 'the obsolete attempt is not handed over');
+});
+
+test('a failed downstream job still does not gate a merge when the root pipeline passes, even with its log missing', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'gitlab', { polls: [{
+    pipelines: { 100: { status: 'success', project_id: 71 }, 200: { status: 'failed', project_id: 72 } },
+    triggers: { 100: [glTrigger({ id: 200, project_id: 72 }, 'success')] },
+    jobs: { 100: [glJob(501, 'unit', 'success')], 200: [glJob(601, 'integration', 'failed', { web_url: glJobUrl(601, 'team/downstream') })] },
+  }], traces: {} });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'passed');
+});
+
+test('the docs state the size and time bounds on CI log retrieval', async () => {
+  const docs = (await Promise.all(['docs/operating-mill.md', 'docs/gitlab.md', 'README.md'].map(file => readFile(new URL(`../../${file}`, import.meta.url), 'utf8')))).join('\n\n');
+  const paragraph = docs.split(/\n\s*\n/).find(text => /CI (?:job )?logs?/i.test(text) && /\d+\s*(?:KiB|MiB|KB|MB|bytes)/i.test(text) && /\d+\s*(?:seconds?|minutes?|s|m)\b/i.test(text));
+  assert.ok(paragraph, 'a paragraph on CI logs gives a size bound and a time bound');
+  assert.match(paragraph, /truncat/i);
 });
 
 test('review, local tests and CI failures share one cap and retain the final CI diagnostics', async t => {
@@ -800,13 +1191,15 @@ test('review, local tests and CI failures share one cap and retain the final CI 
   assert.equal(y.ticket.state, 'open'); assert.ok(y.ticket.labels.includes('logjam'));
 });
 
-test('repair interruption preserves feedback and spends no extra bounce for questions, runtime or tracker outages', async t => {
-  for (const mode of ['question', 'runtime', 'mirror', 'tests-timeout']) {
+test('repair interruption preserves feedback and spends no extra bounce for questions, runtime outages or stops', async t => {
+  for (const mode of ['question', 'runtime', 'stop', 'tests-timeout']) {
     const y = await fixture(t);
     let implementations = 0;
-    y.setBeforeWrite(async body => { if (mode === 'mirror' && body?.includes('[sawmill:review-bounce]')) throw new Error('Tracker unavailable'); });
     y.setScript(async (request, sink) => {
-      if (request.role === 'reviewer') return { outcome: { outcome: 'bounce', feedback: 'Document synchronous API.' } };
+      if (request.role === 'reviewer') {
+        if (mode === 'stop') assert.equal((await y.cli('run', 'stop', '12')).code, 0);
+        return { outcome: { outcome: 'bounce', feedback: 'Document synchronous API.' } };
+      }
       if (request.role === 'implementer' && ++implementations >= 2) {
         if (mode === 'question') return { outcome: { outcome: 'question', question: 'Where does API documentation belong?' } };
         return { outcome: { outcome: 'infrastructure', error: 'Provider unavailable' } };
@@ -820,23 +1213,25 @@ test('repair interruption preserves feedback and spends no extra bounce for ques
     const result = await y.cli('team', 'run', '12', '--json');
     assert.equal(result.code, 1, result.stdout);
     const value = JSON.parse(result.stdout);
-    assert.equal(value.outcome, mode === 'question' ? 'aborted' : 'infrastructure');
+    assert.equal(value.outcome, mode === 'question' ? 'aborted' : mode === 'stop' ? 'stopped' : 'infrastructure');
     const row = (await y.status()).tickets[0];
     assert.equal(row.bounces, mode === 'tests-timeout' ? 0 : 1);
     if (mode !== 'tests-timeout') assert.equal(row.team.repair.feedback, 'Document synchronous API.');
-    if (mode === 'mirror') { assert.equal(row.reason, 'tracker'); assert.equal(implementations, 1); }
+    if (mode === 'stop') { assert.equal(row.reason, 'stopped'); assert.equal(implementations, 1); }
     if (mode === 'runtime') { assert.equal(row.reason, 'environment'); assert.equal(implementations, 5); }
     if (mode === 'tests-timeout') assert.match(value.error, /timed out/);
     assert.equal(y.requests.length, 0);
   }
 });
 
-test('a mirrored repair resumes with its original writer evidence, feedback and bounce count', async t => {
+test('a repair stopped at its bounce resumes with its original writer evidence, feedback and bounce count', async t => {
   const y = await fixture(t);
-  let failed = true, implementations = 0, reviews = 0;
-  y.setBeforeWrite(async body => { if (failed && body?.includes('[sawmill:review-bounce]')) throw new Error('Tracker unavailable'); });
+  let implementations = 0, reviews = 0;
   y.setScript(async (request, sink) => {
-    if (request.role === 'reviewer' && ++reviews === 1) return { outcome: { outcome: 'bounce', feedback: 'Document answer.' } };
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      assert.equal((await y.cli('run', 'stop', '12')).code, 0);
+      return { outcome: { outcome: 'bounce', feedback: 'Document answer.' } };
+    }
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.match(request.handoff, /Document answer/); assert.match(request.handoff, /Please repair now/);
       await writeFile(join(request.cwd, 'API.md'), 'Answer is 42.\n');
@@ -847,7 +1242,7 @@ test('a mirrored repair resumes with its original writer evidence, feedback and 
   });
   assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
   const original = (await y.status()).tickets[0];
-  failed = false;
+  assert.equal(original.reason, 'stopped');
   assert.equal((await y.cli('run', 'answer', '12', 'Please repair now')).code, 0);
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
@@ -879,11 +1274,11 @@ test('a bouncing reviewer cannot dispatch repair from dirty work or a changed br
   }
 });
 
-test('user-testing repair re-runs only broken cases with the fix diff and retains completed results', async t => {
+test('user-testing repair re-runs every case with the fix diff, since the repair commit makes earlier passes stale', async t => {
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit the answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123/form'));
+  await ownedDockerSite(y, 'http://localhost:8123/form');
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   const broken = { case: 'Submit the answer', result: 'broken' as const, step: 'Submit shows an error' };
   let reviews = 0, implementations = 0;
@@ -899,11 +1294,11 @@ test('user-testing repair re-runs only broken cases with the fix diff and retain
         assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit the answer']);
         return { outcome: { outcome: 'bounce', feedback: 'Submit fails.', cases: [{ case: 'Open page', result: 'completed' }, broken] } };
       }
-      assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit the answer']);
+      assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit the answer']);
       assert.match(request.handoff, /Fix diff:/);
       assert.match(request.handoff, /\+Fixed submit/);
       assert.doesNotMatch(request.handoff.split('Fix diff:')[1]!.split('Test command:')[0]!, /answer.test.cjs|module.exports/);
-      return { outcome: { outcome: 'pass', cases: [{ case: 'Submit the answer', result: 'completed' }], recommendations: ['The submit label could be clearer.'] } };
+      return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit the answer', result: 'completed' }], recommendations: ['The submit label could be clearer.'] } };
     }
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.deepEqual((await y.status()).tickets[0].team.repair.failedCases, [broken]);
@@ -926,11 +1321,11 @@ test('user-testing repair re-runs only broken cases with the fix diff and retain
   assert.match(reports[1]!.body, /submit label could be clearer/);
 });
 
-test('a failed user-testing mirror durably retains the bounce and cases for repair after answer', async t => {
+test('a failed user-testing mirror durably retains the bounce and cases, and the repair after answer reruns every case', async t => {
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+  await ownedDockerSite(y);
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   const broken = { case: 'Submit answer', result: 'broken' as const, step: 'Submit returns 500.' };
   y.setScript(async (request, sink) => request.role === 'reviewer'
@@ -955,8 +1350,8 @@ test('a failed user-testing mirror durably retains the bounce and cases for repa
       return { outcome: { outcome: 'done', summary: 'Fixed submit.' } };
     }
     const cases = JSON.parse(request.handoff.split('Cases to run, return each exact case name once:\n')[1]!);
-    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Submit answer']);
-    return { outcome: { outcome: 'pass', cases: [{ case: 'Submit answer', result: 'completed' }] } };
+    assert.deepEqual(cases.map((c: { case: string }) => c.case), ['Open page', 'Submit answer']);
+    return { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }, { case: 'Submit answer', result: 'completed' }] } };
   });
   const second = await y.cli('team', 'run', '12', '--json');
   assert.equal(second.code, 0, second.stdout);
@@ -999,7 +1394,8 @@ test('questions publish WIP from every role and retain the stopped team evidence
     assert.equal(row.team.outputs[role].outcome.outcome, 'question');
     assert.deepEqual(row.sessionIds[role], [`${role}-session`]);
     assert.equal(y.inputs.at(-1)!.role, role); assert.equal(y.requests.length, 0);
-    const report = y.ticket.comments.find(c => c.body.startsWith('[sawmill:aborted]'))!.body;
+    assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:')));
+    const report = (await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/).find(entry => entry.includes('[aborted]'))!;
     assert.match(report, /Which API should we expose/); assert.ok(report.includes(`Stage reached: ${role}`));
     assert.ok(report.includes(`${role}-session`)); assert.ok(report.includes(head));
     assert.ok(y.ticket.labels.includes('logjam'));
@@ -1091,7 +1487,7 @@ test('failed WIP publication prevents roles after an answer until the same commi
   let row = (await y.status()).tickets[0];
   assert.equal(row.team.question.preserved, false); assert.equal(row.stage, 'implementer');
   assert.equal(row.bounces, 0); assert.match(row.team.question.error, /push/);
-  assert.ok(y.ticket.comments.some(c => c.body.startsWith('[sawmill:aborted]') && c.body.includes('Confirm the API?') && c.body.includes('WIP preservation failed')));
+  assert.match((await y.cli('run', 'log', '12')).stdout, /\[aborted\][^\n]*\n  Confirm the API\?[^]*WIP preservation failed/);
   const count = y.inputs.length;
   assert.equal((await y.cli('run', 'answer', '12', 'Yes, continue')).code, 0);
   const blocked = await y.cli('team', 'run', '12', '--json');
@@ -1157,7 +1553,7 @@ test('questions during repair resume the interrupted implementer or reviewer wit
     const y = await fixture(t);
     y.ticket.body += '\n\n## User test cases\n- Use the API';
     y.tracker.getTicket = async () => structuredClone(y.ticket);
-    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+    await ownedDockerSite(y);
     assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
     let implementations = 0, reviews = 0, asked = false;
     const broken = { case: 'Use the API', result: 'broken' as const, step: 'Missing docs' };
@@ -1263,10 +1659,11 @@ test('failed WIP commits, wrong branches and unresolved conflicts retain index a
   }
 });
 
-test('a failed aborted mirror retains the question and WIP while answer recovery reuses the cached thread', async t => {
+test('a failed logjam label retains the question and WIP while answer recovery reuses the cached thread', async t => {
   const y = await fixture(t);
   let fail = true, asked = false;
-  y.setBeforeWrite(async body => { if (fail && body?.startsWith('[sawmill:aborted]')) throw new Error('Mirror unavailable'); });
+  // The aborted report is log-only; the label write is what fails. Comments carry a body.
+  y.setBeforeWrite(async body => { if (fail && body === undefined) throw new Error('Mirror unavailable'); });
   y.setScript(async (request, sink) => {
     if (request.role === 'implementer' && !asked) {
       asked = true;
@@ -1290,7 +1687,8 @@ test('a failed aborted mirror retains the question and WIP while answer recovery
   assert.equal((await y.cli('run', 'answer', '12')).code, 0);
   const resumed = await y.cli('team', 'run', '12', '--json');
   assert.equal(resumed.code, 0, resumed.stdout);
-  assert.equal(y.ticket.comments.filter(c => c.body.startsWith('[sawmill:aborted]')).length, 1);
+  assert.equal(y.ticket.comments.filter(c => c.body.startsWith('[sawmill:aborted]')).length, 0);
+  assert.match((await y.cli('run', 'log', '12')).stdout, /\[aborted\][^\n]*\n  Keep the synchronous API\?/);
   assert.equal(y.ticket.comments.filter(c => c.body === 'Keep it synchronous').length, 1);
   assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'implementer', 'reviewer']);
 });
@@ -1300,7 +1698,6 @@ test('infrastructure retry resumes only the implementer and preserves committed 
   await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 1\n');
   let attempts = 0;
   let implementationHead = '';
-  const mirroredAttempts: any[] = [];
   y.setScript(async (request, sink) => {
     if (request.role !== 'implementer') return y.normal(request, sink);
     sink.session(`implementation-attempt-${++attempts}`);
@@ -1316,17 +1713,14 @@ test('infrastructure retry resumes only the implementer and preserves committed 
     await rm(join(request.cwd, 'saved-work'));
     return { outcome: { outcome: 'done', summary: 'Recovered the existing implementation.' } };
   });
-  y.setBeforeWrite(async body => {
-    if (body?.includes('Provider disconnected after commit')) {
-      const row = (await y.status()).tickets[0];
-      mirroredAttempts.push(row.team.infrastructureAttempts);
-    }
-  });
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'passed');
   const row = (await y.status()).tickets[0];
   assert.equal(row.bounces, 0);
+  // Each infrastructure report is logged with the attempts saved alongside it.
+  const entries = JSON.parse((await y.cli('run', 'log', '12', '--json')).stdout) as { event: { change?: { report?: { error?: string }; team?: { infrastructureAttempts?: any[] } } } }[];
+  const mirroredAttempts = entries.filter(entry => entry.event.change?.report?.error?.includes('Provider disconnected after commit')).map(entry => entry.event.change!.team!.infrastructureAttempts);
   assert.ok(mirroredAttempts.length > 0);
   assert.ok(mirroredAttempts.every(a => a?.[0].error === 'Provider disconnected after commit'));
   assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'implementer', 'reviewer']);
@@ -1336,14 +1730,15 @@ test('infrastructure retry resumes only the implementer and preserves committed 
   ]);
   assert.match(await readFile(join(y.cwd, '.mill/logs/12/implementer-1.jsonl'), 'utf8'), /implementer/);
   assert.match(await readFile(join(y.cwd, '.mill/logs/12/implementer-2.jsonl'), 'utf8'), /implementer/);
-  assert.ok(y.ticket.comments.some(c => c.body.includes('[sawmill:infrastructure]') && c.body.includes('Retries: 1')));
+  assert.ok(!y.ticket.comments.some(c => c.body.includes('[sawmill:infrastructure]')));
+  assert.ok((await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/).some(entry => entry.includes('[infrastructure]') && entry.includes('Retries: 1')));
 });
 
 test('a real integration test timeout retries integration without rerunning roles or spending bounces', async t => {
   const y = await fixture(t);
   await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 1\n');
-  // The first run is the red check after the test-writers; only the second run (integration) hangs.
-  const command = 'echo run >> "$HOME/test-runs"; if [ "$(wc -l < "$HOME/test-runs")" -eq 2 ]; then echo timed-command-started; sleep 5; fi; node answer.test.cjs';
+  // Runs are the red check, the pre-review check, then integration; only integration hangs.
+  const command = 'echo run >> "$HOME/test-runs"; if [ "$(wc -l < "$HOME/test-runs")" -eq 3 ]; then echo timed-command-started; sleep 5; fi; node answer.test.cjs';
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', `command: '${command}'`).replace('timeout: 30m', 'timeout: 1s'));
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
@@ -1379,7 +1774,8 @@ test('tests that already pass go back to the test-writers once, without a questi
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'done'); assert.equal(row.bounces, 0);
   assert.ok(row.team.testFiles.includes('answer.test.cjs'));
-  assert.ok(y.ticket.comments.some(c => /tests-not-red/.test(c.body)), 'The send-back is reported on the ticket');
+  assert.match((await y.cli('run', 'log', '12')).stdout, /\[tests-not-red\]/, 'The send-back is in the run log');
+  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
   assert.ok(!y.ticket.labels.includes('logjam'));
 });
 
@@ -1388,7 +1784,7 @@ test('tests that fail on the first run never trigger a send-back', async t => {
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
-  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
+  assert.doesNotMatch((await y.cli('run', 'log', '12')).stdout, /tests-not-red/);
 });
 
 test('a third green result stops the ticket in logjam with the test output and no implementer run', async t => {
@@ -1401,9 +1797,10 @@ test('a third green result stops the ticket in logjam with the test output and n
   assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tests-not-red'); assert.equal(row.bounces, 0);
   assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
   assert.ok(y.ticket.labels.includes('logjam'));
-  const comments = y.ticket.comments.filter(c => /tests-not-red/.test(c.body));
-  assert.ok(comments.length >= 3, 'Each send-back and the escalation are reported');
-  assert.match(comments.at(-1)!.body, /green-marker 3/);
+  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
+  const reports = (await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/).filter(entry => entry.includes('[tests-not-red]'));
+  assert.ok(reports.length >= 3, 'Each send-back and the escalation are in the run log');
+  assert.match(reports.at(-1)!, /-> logjam \(tests-not-red\)[^]*green-marker 3/);
 });
 
 test('a timeout in the red check is an infrastructure retry, not a green result', async t => {
@@ -1419,7 +1816,7 @@ test('a timeout in the red check is an infrastructure retry, not a green result'
   assert.equal(row.team.infrastructureAttempts[0].status, 'failed');
   assert.match(row.team.infrastructureAttempts[0].error, /timed out/i);
   assert.equal(row.team.infrastructureAttempts.at(-1).status, 'recovered');
-  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
+  assert.doesNotMatch((await y.cli('run', 'log', '12')).stdout, /tests-not-red/);
 });
 
 test('a diverged local integration branch stops the ticket on the first attempt with no retries', async t => {
@@ -1441,8 +1838,10 @@ test('a diverged local integration branch stops the ticket on the first attempt 
   assert.match(value.error, /commits that aren't on origin\/integration/);
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'environment');
-  assert.equal(y.ticket.comments.filter(c => c.body.includes('Retrying')).length, 0);
-  assert.equal(y.ticket.comments.filter(c => c.body.includes('[sawmill:infrastructure]')).length, 1);
+  const entries = (await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/);
+  assert.equal(entries.filter(entry => entry.includes('Retrying')).length, 0);
+  assert.equal(entries.filter(entry => entry.includes('[infrastructure]')).length, 1);
+  assert.ok(!y.ticket.comments.some(c => c.body.startsWith('[sawmill:')));
   assert.deepEqual(y.delays, []);
   assert.equal(y.requests.length, 0);
 });
@@ -1498,10 +1897,6 @@ test('configured infrastructure exhaustion reports every failed role attempt wit
       if (calls === 1) throw new Error('Runtime startup failed');
       return { outcome: { outcome: 'infrastructure', error: `Provider/tool-loop failed ${calls}` } };
     });
-    const mirrored: any[] = [];
-    y.setBeforeWrite(async body => {
-      if (body?.includes('[sawmill:infrastructure]')) mirrored.push((await y.status()).tickets[0].team.infrastructureAttempts);
-    });
     const result = await y.cli('team', 'run', '12');
     assert.equal(result.code, 1, result.stdout);
     assert.match(result.stdout, new RegExp(`^infrastructure: #12 \\(${role}\\)`));
@@ -1511,8 +1906,11 @@ test('configured infrastructure exhaustion reports every failed role attempt wit
     assert.equal(calls, 3); assert.deepEqual(y.delays, [100, 200]);
     assert.deepEqual(row.team.infrastructureAttempts.map((a: any) => [a.attempt, a.status, a.roleResult.round]), [[1, 'failed', 1], [2, 'failed', 2], [3, 'failed', 3]]);
     assert.equal(row.team.infrastructureAttempts.at(-1).error, 'Provider/tool-loop failed 3');
+    // Every infrastructure report is logged with the attempts saved alongside it.
+    const entries = JSON.parse((await y.cli('run', 'log', '12', '--json')).stdout) as { event: { change?: { report?: { stage: string }; team?: { infrastructureAttempts?: unknown[] } } } }[];
+    const mirrored = entries.filter(entry => entry.event.change?.report?.stage === 'infrastructure').map(entry => entry.event.change!.team?.infrastructureAttempts);
     assert.equal(mirrored.length, 6);
-    assert.ok(mirrored.every(attempts => attempts?.length > 0));
+    assert.ok(mirrored.every(attempts => (attempts?.length ?? 0) > 0));
     assert.equal(await readFile(join(y.path, 'saved-work'), 'utf8'), 'unfinished 3');
     assert.equal(y.inputs.filter(r => r.role === role).length, 3);
     assert.equal(row.sessionIds[role].length, 4);
@@ -1567,23 +1965,21 @@ test('real timed reviewer runtime retries only that role and exhausts without a 
   }
 });
 
-test('an infrastructure report mirror outage stops before another attempt and holds local evidence', async t => {
+test('infrastructure reports between attempts stay local, so a tracker outage holds only the final logjam label', async t => {
   const y = await fixture(t);
   y.setScript(async (request, sink) => request.role === 'reviewer'
     ? { outcome: { outcome: 'infrastructure', error: 'Provider disconnected' } }
     : y.normal(request, sink));
-  y.setBeforeWrite(async body => {
-    if (body?.includes('[sawmill:infrastructure]')) throw new Error('Tracker offline');
-  });
+  y.setBeforeWrite(async () => { throw new Error('Tracker offline'); });
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 1, result.stdout);
   assert.equal(JSON.parse(result.stdout).reason, 'tracker');
   const status = await y.status(), row = status.tickets[0];
   assert.equal(row.reason, 'tracker'); assert.equal(row.state, 'logjam'); assert.equal(row.bounces, 0);
-  assert.equal(y.inputs.length, 3); assert.equal(y.requests.length, 0);
-  assert.equal(row.team.infrastructureAttempts.length, 1);
-  assert.equal(row.team.infrastructureAttempts[0].error, 'Provider disconnected');
-  assert.ok(status.pendingWrites.some((w: any) => w.payload.body?.includes('Provider disconnected') && w.attempts === 4));
+  assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 4); assert.equal(y.requests.length, 0);
+  assert.equal(row.team.infrastructureAttempts.length, 4);
+  assert.ok(row.team.infrastructureAttempts.every((a: any) => a.error === 'Provider disconnected'));
+  assert.deepEqual(status.pendingWrites.map((w: any) => [w.kind, w.payload.label, w.attempts]), [['add-label', 'logjam', 4]]);
 });
 
 test('transient integration provider failure reuses the same change request and never invokes another role', async t => {
@@ -1682,7 +2078,7 @@ test('a question returned by an infrastructure retry preserves WIP even when its
   assert.equal(row.team.question.question, 'Can I use the synchronous API?');
   assert.equal(row.team.question.preserved, true); assert.equal(row.stage, 'implementer');
   assert.equal(row.bounces, 0); assert.equal(implementations, 2);
-  assert.ok(snapshot.pendingWrites.some((w: any) => w.kind === 'comment' && w.payload.body.startsWith('[sawmill:aborted]')));
+  assert.deepEqual(snapshot.pendingWrites.map((w: any) => [w.kind, w.payload.label]), [['add-label', 'logjam']]);
   fail = false;
   assert.equal((await y.cli('run', 'answer', '12', 'Yes, use it')).code, 0);
   const resumed = await y.cli('team', 'run', '12', '--json');
@@ -1694,15 +2090,26 @@ test('a question returned by an infrastructure retry preserves WIP even when its
 
 test('tracker recovery resumes after committed writers without replacing their protection', async t => {
   const y = await fixture(t);
-  y.setBeforeWrite(async body => { if (body?.includes('[sawmill:tests-written]')) throw new Error('mirror unavailable'); });
+  let asked = false, fail = false;
+  // Step reports are log-only; the implementer's question logjam is the write that fails.
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && !asked) {
+      asked = fail = true;
+      return { outcome: { outcome: 'question', question: 'Keep going?' } };
+    }
+    return y.normal(request, sink);
+  });
+  y.setBeforeWrite(async () => { if (fail) throw new Error('mirror unavailable'); });
   assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
-  const baseline = (await y.status()).tickets[0].team.testCommit;
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.reason, 'tracker');
+  const baseline = row.team.testCommit;
   assert.ok(baseline);
-  y.setBeforeWrite(undefined);
-  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  fail = false;
+  assert.equal((await y.cli('run', 'answer', '12', 'Yes')).code, 0);
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
-  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'implementer', 'reviewer']);
   assert.equal((await y.status()).tickets[0].team.testCommit, baseline);
 });
 
@@ -1730,7 +2137,7 @@ test('retained failed setup cannot reach a role until setup succeeds', async t =
   assert.equal((await y.cli('run', 'answer', '12', 'retry setup')).code, 0);
   await y.cli('team', 'run', '12', '--json');
   assert.equal(y.inputs.length, 0);
-  assert.match(JSON.stringify(await y.status()), /setup.sh failed/);
+  assert.match((await y.cli('run', 'log', '12')).stdout, /setup.sh failed/);
   assert.equal(await readFile(join(y.path, 'retained.txt'), 'utf8'), 'incomplete\n');
   await writeFile(join(y.cwd, '.mill/setup.sh'), 'git -C "$MILL_WORKTREE" add retained.txt; git -C "$MILL_WORKTREE" commit -m "preserve setup work"\n');
   assert.equal((await y.cli('run', 'answer', '12', 'setup repaired')).code, 0);
@@ -1810,11 +2217,12 @@ process.stdin.on('end', async () => { try {
    base = allowed.map(s => s.match(/^Bash\\(git rebase ([a-f0-9]{40})\\)$/)?.[1]).find(Boolean);
    authorize = command => allowed.includes('Bash('+command+')') || (command.startsWith('git add ') && allowed.includes('Bash(git add *)')) || (command.startsWith('git commit ') && allowed.includes('Bash(git commit *)'));
  }
- if (!base || !authorize('git rebase '+base) || !authorize('git -c core.editor=true rebase --continue')) throw Error('Missing narrowly scoped conflict repair permissions');
+ const cont = ${JSON.stringify(await continueCommand())};
+ if (!base || !authorize('git rebase '+base) || !authorize(cont)) throw Error('Missing narrowly scoped conflict repair permissions');
  for (const forbidden of ['git push origin HEAD','git rebase main','git merge integration','git rebase --skip','git reset --hard']) if (authorize(forbidden)) throw Error('Overbroad grant: '+forbidden);
  const run = command => { if (!authorize(command)) throw Error('Denied '+command); return cp.execSync(command,{stdio:'pipe'}); };
  try { run('git rebase '+base); } catch(e) { if (!fs.existsSync('answer.cjs') || !fs.readFileSync('answer.cjs','utf8').includes('<<<<<<<')) throw e; }
- fs.writeFileSync('answer.cjs','module.exports = () => 1;\\n'); run('git add answer.cjs'); run('git -c core.editor=true rebase --continue');
+ fs.writeFileSync('answer.cjs','module.exports = () => 1;\\n'); run('git add answer.cjs'); run(cont);
  fs.writeFileSync('answer.cjs','module.exports = () => 42;\\n'); run('git add answer.cjs'); run('git commit -m "Conflict fix"');
  const text = '\x60\x60\x60mill-outcome\\n'+JSON.stringify({outcome:'done',summary:'Resolved conflict with scoped native permissions.'})+'\\n\x60\x60\x60';
  if (isPi) { emit({type:'session',id:'repair-session'}); emit({type:'agent_start'}); emit({type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text}]}}); emit({type:'agent_end',willRetry:false}); emit({type:'agent_settled',aborted:false}); }
@@ -1896,16 +2304,15 @@ test('standalone review also refuses an unprovisioned retained sandbox', async t
   assert.equal(y.inputs.length, 0);
 });
 
-test('standalone review pass survives its mirror outage and proceeds straight to integration', async t => {
+test('standalone review pass writes nothing to the tracker and proceeds straight to integration', async t => {
   const y = await fixture(t);
   await y.cli('worktree', 'create', '12');
   await writeFile(join(y.path, 'answer.cjs'), 'module.exports = () => 42;\n');
   await writeFile(join(y.path, 'answer.test.cjs'), "require('node:assert/strict').equal(require('./answer.cjs')(), 42);\n");
   y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Handwritten implementation');
-  y.setBeforeWrite(async body => { if (body?.includes('[sawmill:review-pass]')) throw new Error('mirror unavailable'); });
-  assert.equal((await y.cli('team', 'review', '12')).code, 1);
+  y.setBeforeWrite(async () => { throw new Error('mirror unavailable'); });
+  assert.equal((await y.cli('team', 'review', '12')).code, 0);
   y.setBeforeWrite(undefined);
-  await y.cli('run', 'answer', '12');
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(y.inputs.map(r => r.role), ['reviewer']);
@@ -1915,7 +2322,7 @@ test('completed browser review survives user-testing mirror failure without repe
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+  await ownedDockerSite(y);
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   y.setScript(async (request, sink) => request.role === 'reviewer'
     ? { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }] } }
@@ -2001,18 +2408,19 @@ test('manual close racing an accepted merge remains terminal while preserving th
 
 test('a stop after answered bounce keeps the durable implementer successor', async t => {
   const y = await fixture(t);
-  y.setScript(async (request, sink) => request.role === 'reviewer'
-    ? { outcome: { outcome: 'bounce', feedback: 'Add usage documentation.' } }
-    : y.normal(request, sink));
-  y.setBeforeWrite(async body => { if (body?.startsWith('[sawmill:review-bounce]')) throw new Error('Tracker offline'); });
+  let stopped = false;
+  y.setScript(async (request, sink) => {
+    if (request.role !== 'reviewer') return y.normal(request, sink);
+    if (!stopped) { stopped = true; assert.equal((await y.cli('run', 'stop', '12')).code, 0); }
+    return { outcome: { outcome: 'bounce', feedback: 'Add usage documentation.' } };
+  });
   assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
   const baseline = (await y.status()).tickets[0].team.testCommit;
-  y.setBeforeWrite(undefined);
   await y.cli('run', 'answer', '12');
   assert.equal((await y.cli('worktree', 'create', '12')).code, 0);
   assert.equal((await y.cli('run', 'stop', '12')).code, 0);
-  const stopped = await y.cli('team', 'run', '12', '--json');
-  assert.equal(JSON.parse(stopped.stdout).outcome, 'stopped', stopped.stdout);
+  const again = await y.cli('team', 'run', '12', '--json');
+  assert.equal(JSON.parse(again.stdout).outcome, 'stopped', again.stdout);
   assert.equal((await y.status()).tickets[0].team.stop.resume, 'implementer');
   await y.cli('run', 'answer', '12');
   y.setScript(async request => {
@@ -2028,18 +2436,19 @@ test('a stop after answered bounce keeps the durable implementer successor', asy
   assert.equal((await y.status()).tickets[0].team.testCommit, baseline);
 });
 
-test('protected-test repair after a stopped review survives its report outage without another bounce', async t => {
+test('protected-test repair after a stopped review spends one bounce and keeps the writer baseline', async t => {
   const y = await fixture(t);
-  y.setBeforeWrite(async body => { if (body?.startsWith('[sawmill:review-pass]')) await y.cli('run', 'stop', '12'); });
+  let stopped = false;
+  y.setScript(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'reviewer' && !stopped) { stopped = true; assert.equal((await y.cli('run', 'stop', '12')).code, 0); }
+    return result;
+  });
   assert.equal(JSON.parse((await y.cli('team', 'run', '12', '--json')).stdout).outcome, 'stopped');
   const before = (await y.status()).tickets[0];
+  assert.equal(before.stage, 'reviewer');
   await writeFile(join(y.path, 'answer.test.cjs'), '// Incorrect human edit\n');
   y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'Change protected test');
-  y.setBeforeWrite(async body => { if (body?.startsWith('[sawmill:review-bounce]')) throw new Error('Tracker offline'); });
-  await y.cli('run', 'answer', '12');
-  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
-  assert.equal((await y.status()).tickets[0].bounces, 1);
-  y.setBeforeWrite(undefined);
   await y.cli('run', 'answer', '12');
   y.setScript(async request => {
     if (request.role === 'implementer') {
@@ -2055,22 +2464,25 @@ test('protected-test repair after a stopped review survives its report outage wi
   assert.equal((await y.status()).tickets[0].team.testCommit, before.team.testCommit);
 });
 
-test('answer reentry reviews a commit added during review-pass reporting without restarting writers or spending a bounce', async t => {
+test('answer reentry reviews a commit added after review without restarting writers or spending a bounce', async t => {
   const y = await fixture(t);
   let injected = false;
-  y.setBeforeWrite(async body => {
-    if (!injected && body?.startsWith('[sawmill:review-pass]')) {
+  // The review-pass report is log-only; the change request lookup is the next tracker call.
+  const open = y.tracker.findOrOpenChangeRequest;
+  y.tracker.findOrOpenChangeRequest = async input => {
+    if (!injected) {
       injected = true;
       await writeFile(join(y.path, 'unreviewed.txt'), 'A concurrent implementation change.\n');
       y.git('-C', y.path, 'add', 'unreviewed.txt');
       y.git('-C', y.path, 'commit', '-m', 'Concurrent unreviewed work');
     }
-  });
+    return open(input);
+  };
   const first = await y.cli('team', 'run', '12', '--json');
   assert.equal(first.code, 1, first.stdout);
-  assert.match(first.stdout, /Reviewed HEAD changed during reporting/);
+  assert.match(first.stdout, /local HEAD differs|fresh review is required/);
   const before = (await y.status()).tickets[0];
-  assert.equal(y.requests.length, 0);
+  assert.equal(before.mergeCommit, null);
   assert.equal((await y.cli('run', 'answer', '12', 'Retry retained work')).code, 0);
   const second = await y.cli('team', 'run', '12', '--json');
   assert.equal(second.code, 0, second.stdout);
@@ -2143,13 +2555,17 @@ test('new work after a CLI rebase requires full review and retains the rebased w
     }
     return y.normal(request, sink);
   });
-  y.setBeforeWrite(async body => {
-    if (!injected && body?.startsWith('[sawmill:pr-opened]')) {
+  // The pr-opened report is log-only; the work lands as the change request opens.
+  const open = y.tracker.findOrOpenChangeRequest;
+  y.tracker.findOrOpenChangeRequest = async input => {
+    const request = await open(input);
+    if (!injected) {
       injected = true;
       await writeFile(join(y.path, 'unreviewed.txt'), 'Added after rebase.\n');
       y.git('-C', y.path, 'add', '.'); y.git('-C', y.path, 'commit', '-m', 'New work after rebase');
     }
-  });
+    return request;
+  };
   const first = await y.cli('team', 'run', '12', '--json');
   assert.equal(first.code, 1, first.stdout);
   const before = (await y.status()).tickets[0];
@@ -2163,4 +2579,80 @@ test('new work after a CLI rebase requires full review and retains the rebased w
   assert.equal(after.team.testCommit, before.team.testCommit);
   assert.equal(after.bounces, 0);
   assert.equal(await readFile(join(y.cwd, 'unreviewed.txt'), 'utf8'), 'Added after rebase.\n');
+});
+
+/** A node:test suite with one named failing test, optionally preceded by a lot of noise. */
+function namedFailureWriter(y: Awaited<ReturnType<typeof fixture>>, noiseLines = 0) {
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), [
+        "const test = require('node:test');", "const assert = require('node:assert/strict');",
+        "test('returns the answer 42', () => {",
+        `  for (let i = 0; i < ${noiseLines}; i++) console.log('noise-' + i + ' ' + 'x'.repeat(70));`,
+        "  assert.equal(require('./answer.cjs')(), 42, 'answer was not 42');", '});', '',
+      ].join('\n'));
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', '#12: Specify answer');
+      return { outcome: { outcome: 'done', summary: 'Wrote one test.' } };
+    }
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+      y.git('-C', request.cwd, 'add', 'answer.cjs'); y.git('-C', request.cwd, 'commit', '-m', '#12: Return answer');
+      return { outcome: { outcome: 'done', summary: 'Done.' } };
+    }
+    return { outcome: { outcome: 'pass', summary: 'Fine.' } };
+  });
+}
+
+function logPath(y: Awaited<ReturnType<typeof fixture>>, handoff: string) {
+  const file = handoff.match(/[^\s"']*tests-\d+\.txt/)?.[0];
+  assert.ok(file, `The handoff names the full test log:\n${handoff}`);
+  return isAbsolute(file) ? file : join(y.cwd, file);
+}
+
+test('the next role starts with Mill\'s own test result: failing test names and messages, and a path to the full output', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: node --test answer.test.cjs'));
+  namedFailureWriter(y);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
+  const implementer = y.inputs[1]!.handoff;
+  assert.match(implementer, /Latest test run/);
+  assert.match(implementer, /fail/i);
+  assert.match(implementer, /returns the answer 42/);
+  assert.match(implementer, /answer was not 42/);
+  const log = await readFile(logPath(y, implementer), 'utf8');
+  assert.match(log, /returns the answer 42/);
+  const reviewer = y.inputs[2]!.handoff;
+  assert.match(reviewer, /Latest test run/);
+  assert.match(reviewer, /pass/i);
+});
+
+test('a long test run does not change what Mill hands over: the failures stay in the handoff and the full output is in the file', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', 'command: node --test answer.test.cjs'));
+  namedFailureWriter(y, 3000);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const implementer = y.inputs[1]!.handoff;
+  assert.match(implementer, /returns the answer 42/);
+  assert.match(implementer, /answer was not 42/);
+  assert.doesNotMatch(implementer, /noise-1500 /, 'The handoff lists failures, not the whole output');
+  const log = await readFile(logPath(y, implementer), 'utf8');
+  assert.match(log, /noise-2999 /);
+  assert.match(log, /returns the answer 42/);
+});
+
+test('a test command that is not found (exit 127) is an environment problem, not a valid red', async t => {
+  const y = await fixture(t);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 0\n');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: node answer.test.cjs', 'command: mill-no-such-test-runner')
+    .replace('  # preflight: test -x node_modules/.bin/tsc', "  preflight: 'true'"));
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.notEqual(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'environment');
+  assert.match(JSON.stringify(row), /not found|127/);
 });

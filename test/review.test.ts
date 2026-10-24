@@ -45,7 +45,8 @@ test('review alone reports pass through local state and the tracker without runn
   const status = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.equal(status.stage, 'review-pass');
   assert.equal(status.bounces, 0);
-  assert.ok(yard.ticket.comments.some(comment => comment.body.startsWith('[sawmill:review-pass]')));
+  assert.ok(!yard.ticket.comments.some(comment => comment.body.startsWith('[sawmill:review-pass]')));
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /\[review-pass\]/);
 });
 
 // Source-derived projections, not live captures. SDK 0.3.308, retrieved 2026-10-21:
@@ -91,7 +92,27 @@ test('direct review passes prompt, cached ticket, full diff, model and effort an
   assert.equal(await readFile(output.stderrLog, 'utf8'), 'diagnostic only\n');
   const status = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.deepEqual(status.sessionIds.reviewer, ['fixture-session']);
-  assert.match(yard.ticket.comments.at(-1)!.body, /fixture-session/);
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /\[review-pass\][^]*reviewer: fixture-session/);
+});
+
+test('an agent session does not carry the worker variables', async t => {
+  const names = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; }));
+  const yard = await reviewYard(t);
+  const stream = [init, final(fence({ outcome: 'pass' }))].map(value => JSON.stringify(value)).join('\n');
+  const runtime = await processRuntime(yard, `
+    const fs = require('node:fs');
+    process.stdin.resume();
+    process.stdin.on('end', () => {
+      fs.writeFileSync('env.json', JSON.stringify(Object.keys(process.env).filter(name => name.startsWith('MILL_'))));
+      process.stdout.write(${JSON.stringify(stream)});
+    });`);
+  for (const name of names) process.env[name] = 'leaked-from-worker';
+  const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
+  assert.equal(result.code, 0, result.stdout);
+  const seen = JSON.parse(await readFile(join(yard.worktree, 'env.json'), 'utf8')) as string[];
+  assert.deepEqual(seen.filter(name => names.includes(name)), []);
 });
 
 async function eventsRuntime(yard: Awaited<ReturnType<typeof reviewYard>>, events: unknown[], extra = '') {
@@ -129,7 +150,7 @@ for (const [name, text, expected] of [
     const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
     assert.deepEqual(row.sessionIds.reviewer, ['fixture-session']);
     assert.equal(row.bounces, 0);
-    if (expected === 'question') assert.match(yard.ticket.comments.at(-1)!.body, /Which behavior is correct/);
+    if (expected === 'question') assert.match((await yard.cli('run', 'log', '11')).stdout, /Which behavior is correct/);
   });
 }
 for (const [name, events] of [
@@ -170,8 +191,12 @@ test('role timeout kills a stubborn process group and preserves partial logs and
     setTimeout(() => process.exit(), 2000);
   `);
   const running = yard.invoke(['team', 'review', '11', '--json'], { runtime });
-  await new Promise(resolve => setTimeout(resolve, 200));
-  const during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  // Wait for the session to be recorded rather than for a fixed time; a busy machine starts the fixture late.
+  let during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  for (let attempt = 0; attempt < 100 && !during.sessionIds.reviewer?.length; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  }
   assert.deepEqual(during.sessionIds.reviewer, ['fixture-session']);
   const result = await running;
   assert.equal(result.code, 1, result.stdout);
@@ -343,8 +368,9 @@ test('CLI termination cleans up the vendor and records interruption before exiti
 
 test('tracker mirror failure retains the stage result, session and raw stream locally', async t => {
   const yard = await reviewYard(t);
-  yard.tracker.addComment = async () => { throw new Error('tracker offline'); };
-  const runtime = await eventsRuntime(yard, [init, final(fence({ outcome: 'pass', summary: 'Result survives failed reporting' }))]);
+  // The stage report is log-only; the logjam label is the write that fails.
+  yard.tracker.addLabel = async () => { throw new Error('tracker offline'); };
+  const runtime = await eventsRuntime(yard, [init, final(fence({ outcome: 'infrastructure', error: 'Result survives failed reporting' }))]);
   const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
   assert.equal(result.code, 1, result.stdout);
   const output = JSON.parse(result.stdout);
@@ -352,7 +378,10 @@ test('tracker mirror failure retains the stage result, session and raw stream lo
   const snapshot = JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
   assert.equal(snapshot.tickets[0].reason, 'tracker');
   assert.deepEqual(snapshot.tickets[0].sessionIds.reviewer, ['fixture-session']);
-  assert.ok(snapshot.pendingWrites.some((write: { payload: { body?: string } }) => write.payload.body?.includes('Result survives failed reporting')));
+  assert.ok(snapshot.pendingWrites.some((write: { kind: string; payload: { label?: string } }) => write.kind === 'add-label' && write.payload.label === 'logjam'));
+  const log = (await yard.cli('run', 'log', '11')).stdout;
+  assert.match(log, /\[infrastructure\][^]*Result survives failed reporting/);
+  assert.match(log, /mirror failed: tracker offline/);
   assert.match(await readFile(output.log, 'utf8'), /Result survives/);
 });
 for (const [name, events, code] of [
@@ -446,7 +475,7 @@ test('later reviews append a new round and retain earlier sessions and streams',
   assert.deepEqual(await readFile(first.log), firstBytes);
   const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.deepEqual(row.sessionIds.reviewer, ['fixture-session', 'second-session']);
-  assert.match(yard.ticket.comments.at(-1)!.body, /Round: 2/);
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /Second round[^\n]*\n  Round: 2/);
   const tail = await yard.invoke(['team', 'tail', '11', '--no-follow']);
   assert.match(tail.stdout, /Second round/);
   assert.doesNotMatch(tail.stdout, /First round/);

@@ -7,6 +7,7 @@ import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { literalCommand } from './pi-policy.js';
 import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { authorizeVerification } from './verification.js';
 
 /** Direct Pi 1.4.0 JSON-mode adapter. Protocol fixtures are source-derived. */
 export class PiRuntime implements Runtime {
@@ -104,8 +105,8 @@ export class PiRuntime implements Runtime {
           if (event.isError === true) {
             const text = Array.isArray(event.result?.content) ? event.result.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n') : JSON.stringify(event.result);
             const name = tool?.name ?? event.toolName;
-            const expectedRed = name === 'bash' && tool?.command !== undefined
-              && JSON.stringify(literalCommand(tool.command)) === JSON.stringify(literalCommand(request.testCommand))
+            const expectedRed = name === 'bash' && tool?.command !== undefined && ((request.testCommand !== undefined
+              && JSON.stringify(literalCommand(tool.command)) === JSON.stringify(literalCommand(request.testCommand))) || Boolean(authorizeVerification(request.verification, tool.command)))
               && /(?:exit code|exited with code|exit status)\s*[1-9]\d*/i.test(text)
               && !/command not found|permission denied|timed? out|ENOENT/i.test(text);
             if (!expectedRed) {
@@ -132,7 +133,7 @@ export class PiRuntime implements Runtime {
       } catch { stop('Invalid Pi permission policy readiness record.'); }
     };
     const child = await directChild(request, sink, { executable: this.options.executable ?? 'pi', args,
-      env: { ...env, SAWMILL_PI_POLICY: JSON.stringify({ nonce, role: request.role, model: request.model, effort: request.effort, testCommand: request.testCommand, browser: request.browser, browserExecutable, conflictBase: request.conflictBase }) }, label: 'Pi', deadline, stdoutLine: record, stderrLine: errorLine });
+      env: { ...env, SAWMILL_PI_POLICY: JSON.stringify({ nonce, role: request.role, model: request.model, effort: request.effort, testCommand: request.testCommand, verification: request.verification, browser: request.browser, browserExecutable, conflictBase: request.conflictBase }) }, label: 'Pi', deadline, stdoutLine: record, stderrLine: errorLine });
     const { code, signal, stderr } = child;
     failure ??= child.failure;
     if (code !== 0) failure ??= `Pi ${!ready && !sessionId ? 'startup failed' : 'process failure'} ${code ?? signal}: ${stderr.trim()}`;

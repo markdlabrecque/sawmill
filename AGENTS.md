@@ -2,6 +2,8 @@
 
 Plan: `docs/sawmill_prd.md`. Spec: `docs/specs/sawmill.md`.
 
+Working around a live run, its lifecycle and the shared scheduler: `docs/operating-mill.md`. Use the Mill command it names instead of a hand fix.
+
 ## Agent skills
 
 ### Issue tracker

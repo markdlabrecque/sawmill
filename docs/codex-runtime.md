@@ -42,9 +42,9 @@ Review uses native `read-only`; test writers and implementers use
 and implicit `/tmp` and `$TMPDIR` write grants are disabled. Login-shell startup
 is disabled. Native browser features, web search, apps, plugins, hooks and
 multi-agent tools are disabled. The adapter ignores user configuration and
-execpolicy rules, supplies an empty MCP map and pins the OpenAI provider so
-role model settings cannot inherit another configured provider family. Managed
-requirements may further restrict execution.
+execpolicy rules and pins the OpenAI provider so role model settings cannot
+inherit another configured provider family. Without user test cases, the MCP
+map is empty. Managed requirements may further restrict execution.
 
 Checkpoint commits need explicit native `--add-dir` grants to the checkout's
 Git directory and common Git directory. Without these, a real smoke failed on
@@ -55,16 +55,22 @@ files and are **not** a branch-level security boundary. Sawmill's existing
 checkpoint, test-tampering and branch checks still apply.
 
 These are filesystem/network restrictions, **not a shell command allowlist**.
-The runtime cannot enforce strict exclusion of an arbitrary browser executable
-while allowing general shell commands. `RuntimeRequest.browser: true` therefore
-fails explicitly and every invocation reports the limitation. Draft rejects
-Codex tickets containing actual user test cases before saving the run. Dispatch,
-team run and standalone review repeat that check for existing runs, before any
-writer or implementer starts. An empty section does not request browser cases.
-Codex browser-case support remains unavailable; Sawmill never switches runtime
-or model, broadens permissions, or treats a prompt as enforcement. Builds that require external writable caches, network,
-Docker sockets, or Git hooks writing outside the granted paths can fail. The
-adapter never retries them with broader permissions.
+Codex CLI has no native browser tool. For a reviewer with user test cases, Mill
+grants one local `mill_browser` MCP server. It launches a fresh, headless
+Chromium context for the prepared site and offers navigation, an accessibility
+snapshot, clicking, filling and screenshots. HTTP requests stay on that site's
+exact origin, including redirects; service workers are disabled and
+cross-origin WebSockets are closed. The MCP server is required at CLI startup.
+Writers and reviews without cases receive no browser MCP server. Mill still
+disables Codex's other browser and MCP sources and keeps command network access
+off. Chromium must be on `PATH`. Assets on another origin are blocked; provision
+them within the test site's origin. Downloads and file uploads are not exposed.
+Mill does not switch runtime or model, broaden the shell sandbox, or treat a
+prompt as permission enforcement.
+
+Builds that require external writable caches, network, Docker sockets, or Git
+hooks writing outside the granted paths can fail. The adapter never retries
+them with broader permissions.
 
 JSONL does not attest effective model or effort. Results leave those fields
 unset and record that only the explicit requested settings are known.
@@ -89,8 +95,18 @@ Sawmill does not resume role conversations automatically or use `--last`.
 processes through `runCli`. Its complete team test runs real assertions, commits
 and integration against temporary local Git repositories and a fake tracker.
 These fixtures prove Sawmill behavior and argv, not vendor sandbox enforcement.
-Separate real GPT smoke evidence and its limitations are recorded in the
-external implementation result. Automated tests never require model auth.
+`test/codex-browser.test.ts` runs an isolated Chromium page and rejects direct,
+redirected and page-initiated requests to another origin. It skips when
+Chromium is not installed. Automated tests never require model auth.
+
+On 2026-10-24, Codex CLI 0.163.0 with `gpt-6.1-sol` at low effort completed a
+local three-role Mill ticket with red/green tests, review and a fake-tracker
+merge. A second complete local ticket used the browser MCP tool to verify a
+button on a ticket-owned site; Mill recorded the completed case and merged it.
+No hosted CI or production environment was involved. Codex JSONL still does
+not attest effective model or effort, and no automatic vendor-session resume
+is claimed. A forced role timeout followed by `mill run answer` and a resumed
+complete ticket also passed. See [local runtime evidence](analysis/165-runtime-evidence.md).
 
 Checked 2026-10-22 against installed `codex exec --help`, `codex exec resume
 --help`, `codex features list`, and current official OpenAI documentation:
@@ -98,4 +114,5 @@ Checked 2026-10-22 against installed `codex exec --help`, `codex exec resume
 - [Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
 - [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 - [Configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+- [MCP servers](https://learn.chatgpt.com/docs/extend/mcp)
 - [Sandbox and protected Git paths](https://learn.chatgpt.com/docs/agent-approvals-security)

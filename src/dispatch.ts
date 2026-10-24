@@ -9,10 +9,12 @@ import type { MachineConfig, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { checkMillyard } from './millyard.js';
 import { readRun, mergeCleanupPending, type RunSnapshot, type WorkerOwnership } from './run-store.js';
-import { claimSlot, processStart, releaseSlot, transferSlot, type SlotLease } from './slots.js';
+import { dispatchHeld } from './scheduler.js';
+import { claimSlot, processStart, releaseSlot, transferSlot, unresolvedSlots, type SlotLease } from './slots.js';
 import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { withRunLock } from './run-lock.js';
+import { checkFirstStart } from './first-start.js';
 
 export interface DispatchResult {
   status: 'ok' | 'partial';
@@ -20,6 +22,10 @@ export interface DispatchResult {
   started: { ticket: number; worker: WorkerOwnership }[];
   failures: { ticket: number; error: string }[];
   slotsFull: boolean;
+  /** A running `mill update` holds dispatch, so the pass started nothing more. */
+  held: boolean;
+  /** When slots are full, the reservations holding capacity without a known owner. */
+  unresolved: { path: string; problem: string }[];
 }
 export type WorkerEvent = { ticket: number; worker: WorkerOwnership };
 /** Ordered local candidates only. Claiming repeats these checks inside a write transaction. */
@@ -33,16 +39,29 @@ export function workerEvents(snapshot: RunSnapshot): WorkerEvent[] {
   return snapshot.tickets.flatMap(row => row.worker ? [{ ticket: row.number, worker: row.worker }] : []);
 }
 
-export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true): Promise<DispatchResult> {
+/** `limit` bounds the launch attempts of one pass, so a shared scheduler can give each
+ * project a turn; `wait: false` skips a project whose integration lock is held. */
+export async function dispatchOnce(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter, beforeClaim: () => boolean = () => true,
+  options: { limit?: number; wait?: boolean } = {}): Promise<DispatchResult> {
   cwd = await realpath(cwd);
-  const snapshot = await dispatchPreflight(cwd, project);
-  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false };
+  const snapshot = await dispatchPreflight(cwd, project, options.wait);
+  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false, unresolved: [] };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
-    if (!beforeClaim()) break;
+    if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
+    // Before any slot or claim: a closed ticket is skipped, a failed lookup leaves it queued.
+    const first = await checkFirstStart(cwd, ticket, writer);
+    if (first.status === 'skipped') continue;
+    if (first.status === 'lookup-failed') {
+      result.status = 'partial';
+      result.failures.push({ ticket, error: first.error });
+      continue;
+    }
     const token = randomUUID(), started = new Date().toISOString();
     const lease = claimSlot(home, machine.concurrency, { token, processToken: token, millyard: cwd, runId: snapshot.run.id, ticket, launcherPid: process.pid, launcherStart: processStart(process.pid), pid: null, created: started });
-    if (!lease) { result.slotsFull = true; break; }
+    if (!lease) { result.slotsFull = true; result.unresolved = unresolvedSlots(home); break; }
+    // Checked after the claim: mill update takes its hold before it counts slots, so either it sees this lease or this sees the hold.
+    if (dispatchHeld(home)) { releaseSlot(lease); result.held = true; break; }
     const directory = join(cwd, '.mill/logs', String(ticket));
     const worker: WorkerOwnership = { token, processToken: token, runId: snapshot.run.id, slot: lease.path, launcherPid: process.pid, launcherStart: lease.launcherStart, pid: null, status: 'starting', started, log: join(directory, `worker-${token}.log`) };
     let claimed = false;
@@ -67,9 +86,9 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   return result;
 }
 
-export async function dispatchPreflight(cwd: string, project: ProjectConfig): Promise<RunSnapshot> {
+export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true): Promise<RunSnapshot> {
   readRun(cwd);
-  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
+  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), wait);
   const snapshot = readRun(cwd);
   const a = snapshot.run.tracker, b = project.tracker;
   if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);

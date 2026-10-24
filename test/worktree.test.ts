@@ -142,18 +142,18 @@ test('drafted create records the path and reached stage locally before mirroring
   const yard = await configured(t, tracker);
   assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
   tracker.readsAllowed = false;
-  tracker.beforeWrite = async () => {
-    const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
-    assert.equal(row.worktree, join(yard.root, '7'));
-    assert.equal(row.branch, 'mill/7');
-    assert.equal(row.stage, 'worktree-created');
-    assert.equal(row.state, 'working');
-  };
+  tracker.beforeWrite = async () => { throw new Error('A step must not write to the tracker'); };
   const result = await yard.cli('worktree', 'create', '7', '--json');
   assert.equal(result.code, 0, result.stdout);
-  assert.match(tracker.ticket(7).comments[0]?.body ?? '', /^\[sawmill:worktree-created\]/);
+  const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  assert.equal(row.worktree, join(yard.root, '7'));
+  assert.equal(row.branch, 'mill/7');
+  assert.equal(row.stage, 'worktree-created');
+  assert.equal(row.state, 'working');
+  assert.deepEqual(tracker.ticket(7).comments, []);
   assert.equal((await yard.cli('worktree', 'create', '7')).code, 0);
-  assert.equal(tracker.ticket(7).comments.length, 1);
+  assert.deepEqual(tracker.ticket(7).comments, []);
+  assert.equal((await yard.cli('run', 'log', '7')).stdout.match(/\[worktree-created\]/g)?.length, 1);
 });
 
 test('failed setup captures both streams, tears down the new sandbox, and records environment logjam first', async t => {
@@ -175,7 +175,7 @@ printf '%s\\n' "$PWD" "$#" "$1" "$2" "$MILL_WORKTREE" "$MILL_TICKET" "$MILL_PROJ
     assert.equal(row.reason, 'environment');
     assert.equal(row.bounces, 0);
     assert.equal(row.worktree, null);
-    assert.match(row.comments.at(-1).body, /setup-stdout/);
+    assert.match((await yard.cli('run', 'log', '7')).stdout, /\[infrastructure\] -> logjam \(environment\) tracker: add-label\n[^]*setup-stdout/);
   };
   const result = await yard.cli('worktree', 'create', '7', '--json');
   assert.equal(result.code, 1, result.stdout);
@@ -186,8 +186,8 @@ printf '%s\\n' "$PWD" "$#" "$1" "$2" "$MILL_WORKTREE" "$MILL_TICKET" "$MILL_PROJ
   assert.deepEqual((await readFile(join(yard.cwd, '.mill/teardown-evidence'), 'utf8')).trimEnd().split('\n'), [
     join(yard.cwd, '.mill'), '2', join(yard.root, '7'), '7', join(yard.root, '7'), '7', 'islandhealth', yard.cwd,
   ]);
-  assert.match(tracker.ticket(7).comments[0]?.body ?? '', /^\[sawmill:infrastructure\]/);
-  assert.match(tracker.ticket(7).comments[0]!.body, /setup-stderr/);
+  assert.deepEqual(tracker.ticket(7).comments, []);
+  assert.match((await yard.cli('run', 'log', '7')).stdout, /setup-stderr/);
   assert.deepEqual(tracker.ticket(7).labels, ['logjam']);
 });
 
@@ -262,7 +262,7 @@ test('gc retires only locally done tickets including hand finishes, preserves di
   assert.equal(await readFile(join(yard.root, '8/dirty'), 'utf8'), 'Keep me\n');
 });
 
-test('mirror outage leaves the created sandbox intact and reuse cannot bypass a tracker logjam', async t => {
+test('a tracker outage cannot hold a created sandbox, and reuse cannot bypass a tracker logjam', async t => {
   const tracker = new Tracker(7);
   const yard = await configured(t, tracker);
   assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
@@ -270,9 +270,13 @@ test('mirror outage leaves the created sandbox intact and reuse cannot bypass a 
   tracker.beforeWrite = async () => { throw new Error('Mirror offline'); };
   await writeFile(join(yard.cwd, '.mill/setup.sh'), 'echo setup >> setups\n');
   await writeFile(join(yard.cwd, '.mill/teardown.sh'), 'echo teardown >> teardowns\n');
+  // The worktree-created report is log-only, so the outage does not touch it.
   const result = await yard.cli('worktree', 'create', '7', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.equal(JSON.parse(result.stdout).status, 'logjam');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).status, 'ok');
+  assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout).pendingWrites, []);
+  // A person's comment that cannot be written is a tracker logjam.
+  assert.equal((await yard.cli('tickets', 'comment', '7', 'A note from a person.')).code, 1);
   const retry = await yard.cli('worktree', 'create', '7', '--json');
   assert.equal(retry.code, 1, retry.stdout);
   assert.equal(JSON.parse(retry.stdout).status, 'logjam');

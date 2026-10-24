@@ -35,7 +35,7 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
   await mkdir(user, { recursive: true });
   await seed(new URL('default.yaml', templates), join(user, 'default.yaml'));
   await seed(new URL('config.yaml', templates), join(user, 'config.yaml'));
-  for (const hook of ['setup.sh', 'teardown.sh', 'ddev.setup.sh', 'ddev.teardown.sh']) await seed(new URL(hook, templates), join(user, hook));
+  for (const hook of ['setup.sh', 'teardown.sh', 'ddev.setup.sh', 'ddev.teardown.sh', 'ddev.prepare.drupal.sh', 'ddev.prepare.wordpress.sh']) await seed(new URL(hook, templates), join(user, hook));
   await mkdir(join(cwd, '.mill'), { recursive: true });
   let text = await readFile(join(user, 'default.yaml'), 'utf8');
   let harness: 'ddev' | 'docker' | undefined;
@@ -62,6 +62,7 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
   }
   if (created.length) notes.push(`${created.join(', ')}: created; edit to prepare and clean up each ticket worktree.`);
   if (ddev && !await exists(join(cwd, '.mill/db.sql'))) notes.push('.mill/db.sql: optional database dump; add it to import a database with the default DDEV setup hook.');
+  if (ddev && !await exists(join(cwd, '.mill/prepare.sh'))) notes.push(`.mill/prepare.sh: optional; copy ${join(user, 'ddev.prepare.drupal.sh')} or ddev.prepare.wordpress.sh there to bring each ticket's site up to date before review and after a rebase.`);
   return { written: true, notes };
 }
 

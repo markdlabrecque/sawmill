@@ -82,6 +82,8 @@ If no run exists or status fails, report that result instead of inventing rows.
 Use `mill run status --json` when you need to inspect the saved snapshot.
 
 Stop after showing status and any decision needed. Drafting does not start the
-run. All state changes go through `mill run draft`; never write SQLite, delete
+run: the draft stays inactive until the user runs `mill run` themselves. Never
+run `mill run`, `mill run --foreground`, `mill run --background` or
+`mill run once` from this skill; tell the user that `mill run` starts it. All state changes go through `mill run draft`; never write SQLite, delete
 the run file, or bypass a CLI guard. Tracker reads are for context; this skill
 does not edit tickets, labels, comments, or dependencies.

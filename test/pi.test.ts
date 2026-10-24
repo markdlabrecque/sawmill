@@ -105,14 +105,14 @@ test('Pi selection reviews through the public CLI with literal model/effort, raw
   assert.equal(await readFile(output.log, 'utf8'), raw);
   assert.match(await readFile(output.stderrLog, 'utf8'), /diagnostic only/);
   assert.deepEqual((await y.status()).sessionIds.reviewer, ['pi-fixture-session']);
-  assert.match(y.ticket.comments.at(-1)!.body, /pi-fixture-session/);
+  assert.match((await y.cli('run', 'log', String(y.ticket.number))).stdout, /\[review-pass\][^]*reviewer: pi-fixture-session/);
 });
 
 test('Pi native reviewer command rules block writes, shell/interpreter bypasses and browser access', async t => {
   const y = await piYard(t);
   const probes = [
     ['bash', 'git status --short', false], ['bash', 'git diff --stat HEAD', false],
-    ['bash', 'npm test', false], ['bash', 'git add .', true], ['bash', 'git commit -m changed', true],
+    ['bash', 'npm test', false], ['bash', 'git add .', true], ['bash', 'git rm README.md', true], ['bash', 'git commit -m changed', true],
     ['bash', 'git push origin HEAD', true], ['bash', 'git -c alias.x=!touch x', true],
     ['bash', 'git diff --output=README.md', true], ['bash', 'git show --ext-diff', true],
     ['bash', 'npm test; chrome-devtools-axi open http://localhost', true],
