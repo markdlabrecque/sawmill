@@ -60,6 +60,24 @@ async function fixture(t: TestContext, family: 'gpt' | 'claude' = 'gpt') {
     async addComment(_n: number, body: string) { ticket.comments.push({ body }); },
     async addLabel(_n: number, label: string) { ticket.labels.push(label); },
     async removeLabel() {}, async closeTicket() {},
+    async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }) {
+      return { ...input, id: 1, url: 'https://example.invalid/changes/1', headCommit: y.git('rev-parse', input.branch) };
+    },
+    async mergeChangeRequest(_id: number | string, method: 'squash' | 'merge', expectedHead?: string) {
+      assert.equal(method, 'squash');
+      assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/12').split(/\s/)[0], expectedHead);
+      const host = join(y.root, 'host');
+      y.git('clone', '--branch', 'integration', y.remote, host);
+      y.git('-C', host, 'config', 'user.name', 'Fake Tracker');
+      y.git('-C', host, 'config', 'user.email', 'fake@example.invalid');
+      y.git('-C', host, 'config', 'core.hooksPath', '/dev/null');
+      y.git('-C', host, 'merge', '--squash', 'origin/mill/12');
+      y.git('-C', host, 'commit', '-m', 'Squash ticket');
+      const mergeCommit = y.git('-C', host, 'rev-parse', 'HEAD');
+      y.git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
+      return { mergeCommit };
+    },
+    async deleteRemoteBranch(branch: string) { y.git('push', 'origin', '--delete', branch); },
   };
   const y = await millyard(t, { tracker, sleep: async () => {} }, 'sawmill-routing-');
   await y.cli('build');
