@@ -2,15 +2,15 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { Ticket } from './tracker.js';
 import { redact } from './view/diagnosis.js';
-import { classifyWithTypeSafe } from './typesafe.js';
+import { jevModel, typeSafeChoices, type Evidence } from './typesafe.js';
+export type { Evidence } from './typesafe.js';
 
-export const draftScreenModel = 'jev-1.14.0';
+export const draftScreenModel = jevModel;
 export const draftScreenQuestionVersion = 'draft-screen-v1';
 export const dimensions = ['acceptance', 'scope', 'dependencies'] as const;
 export type Dimension = typeof dimensions[number];
 export type Verdict = 'clear' | 'concern' | 'uncertain';
-export interface Evidence { id: string; source: string; text: string }
-export interface ScreeningQuestion { ticketNumber: number; dimension: Dimension; evidence: Evidence[] }
+export interface ScreeningQuestion { ticketNumber: number; dimension: Dimension; evidence: Evidence[]; incompleteEvidence?: boolean }
 export interface ScreeningRequest { model: string; questionVersion: string; questions: ScreeningQuestion[] }
 export interface ScreeningUsage { inputTokens: number | null; outputTokens: number | null }
 export interface ScreeningResult extends ScreeningQuestion {
@@ -41,15 +41,49 @@ export interface ScreeningOptions {
   classify?: (request: ScreeningRequest, signal: AbortSignal) => Promise<unknown>;
 }
 
+const prompts: Record<Dimension, string> = {
+  acceptance: 'Does this ticket have observable, bounded acceptance criteria?',
+  scope: 'Is this ticket one independently shippable change, rather than unrelated changes that should ship separately?',
+  dependencies: 'Are the stated blocked-by links relevant and supported by this ticket evidence?',
+};
+const choices = {
+  clear: 'The supplied evidence supports this criterion without an identified concern',
+  concern: 'The supplied evidence identifies a weakness in this criterion',
+  uncertain: 'The supplied evidence is insufficient, truncated, ambiguous or conflicting',
+};
+
+async function classifyWithTypeSafe(request: ScreeningRequest, options: { apiKey: string; timeoutMs: number; signal: AbortSignal }): Promise<unknown> {
+  const result = await typeSafeChoices({ model: request.model, questionVersion: request.questionVersion,
+    questions: Object.fromEntries(request.questions.map((question, index) => [`q${index}`, {
+      prompt: prompts[question.dimension], choices, evidence: question.evidence, incompleteEvidence: question.incompleteEvidence,
+    }])),
+  }, options);
+  if (typeof result.model !== 'string') throw new Error('missing-model');
+  return {
+    model: result.model,
+    answers: request.questions.map((question, index) => ({
+      ticketNumber: question.ticketNumber, dimension: question.dimension,
+      answer: result.answers?.[`q${index}`]?.choice,
+      probabilities: result.answers?.[`q${index}`]?.probabilities,
+      confidence: result.answers?.[`q${index}`]?.confidence,
+      // Select supplied evidence locally; never accept model-generated explanations.
+      evidenceIds: question.evidence.map(evidence => evidence.id),
+    })),
+    ...(result.usage ? { usage: { inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens } } : {}),
+  };
+}
+
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const verdict = (value: unknown): value is Verdict => value === 'clear' || value === 'concern' || value === 'uncertain';
 const probability = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 const tokenCount = (value: unknown): value is number | null => value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
 
 function evidenceFor(ticket: Ticket, limit: number, apiKey: string | undefined): Evidence[] {
-  const clean = (text: string) => redact(apiKey ? text.split(apiKey).join('[redacted]') : text)
-    // Also cover short bearer values, which the display redactor deliberately leaves alone.
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, '$1 [redacted]');
+  const clean = (text: string) => redact((apiKey ? text.split(apiKey).join('[redacted]') : text)
+    // Remove whole headers before the display redactor can strip just the scheme.
+    .replace(/\b(?:authorization|proxy-authorization)\s*:\s*[^\r\n]*/gi, 'Authorization: [redacted]')
+    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, '$1 [redacted]')
+    .replace(/(["'])([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_.-]*)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)/gi, '$1$2$1: "[redacted]"'));
   const sources: [string, string][] = [
     ['blockedBy', JSON.stringify(ticket.blockedBy)], ['title', ticket.title], ['body', ticket.body],
     ...ticket.comments.map((comment, index): [string, string] => [`comments/${index}/body`, comment.body]),
@@ -67,7 +101,8 @@ function evidenceFor(ticket: Ticket, limit: number, apiKey: string | undefined):
       : available > marker.length ? redacted.slice(0, available - marker.length) + marker : marker.slice(0, available);
     if (!text) continue;
     const identity = `${ticket.number}/${source}`;
-    evidence.push({ id: `${identity}/${createHash('sha256').update(text).digest('hex')}`, source: identity, text });
+    evidence.push({ id: `${identity}/${createHash('sha256').update(text).digest('hex')}`, source: identity, text,
+      ...(redacted.length > available ? { truncated: true } : {}) });
     remaining -= text.length;
   }
   return evidence;
@@ -86,16 +121,17 @@ export async function screenDraft(tickets: readonly Ticket[], options: Screening
   const limit = options.maxEvidenceChars ?? 4000;
   const timeoutMs = options.timeoutMs ?? 10_000;
   // Metadata is versioned application configuration, not ticket-supplied prose.
-  if (!/^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) || !/^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion)) {
+  const validMetadata = /^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) && /^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion);
+  if (!validMetadata) {
     report.model = report.requestedModel = draftScreenModel;
     report.questionVersion = draftScreenQuestionVersion;
-    return finish();
   }
   const validLimits = Number.isSafeInteger(limit) && limit > 0 && limit <= 16_000
     && Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60_000;
   const questions = tickets.flatMap(ticket => {
     const evidence = evidenceFor(ticket, validLimits ? limit : 4000, apiKey);
-    return dimensions.map(dimension => ({ ticketNumber: ticket.number, dimension, evidence }));
+    const incompleteEvidence = ticket.comments.length > 5 || evidence.some(item => item.truncated);
+    return dimensions.map(dimension => ({ ticketNumber: ticket.number, dimension, evidence, incompleteEvidence }));
   });
   const fallback = (reason: string) => {
     report.fallbackReason = reason;
@@ -103,7 +139,7 @@ export async function screenDraft(tickets: readonly Ticket[], options: Screening
     return finish();
   };
   if (!apiKey?.trim()) return fallback('missing-credentials');
-  if (!validLimits || (!options.classify && (model !== draftScreenModel || questionVersion !== draftScreenQuestionVersion))) return fallback('invalid-configuration');
+  if (!validMetadata || !validLimits || (!options.classify && (model !== draftScreenModel || questionVersion !== draftScreenQuestionVersion))) return fallback('invalid-configuration');
   if (!questions.length) return finish();
   const request: ScreeningRequest = { model, questionVersion, questions };
   const controller = new AbortController();

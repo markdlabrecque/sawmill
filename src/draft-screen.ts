@@ -12,7 +12,7 @@ const configSchema = z.object({
 }).strict();
 const ticketSchema = z.object({
   number: z.number().int().positive(), title: z.string(), body: z.string(),
-  labels: z.array(z.string()), state: z.enum(['open', 'closed']),
+  labels: z.array(z.string()), trackerState: z.enum(['open', 'closed']),
   blockedBy: z.array(z.number().int().positive()).nullable(),
   comments: z.array(z.object({ body: z.string() })),
 });
@@ -29,7 +29,7 @@ try {
       input += chunk.toString();
     }
     const snapshot = z.object({ status: z.literal('ok'), tickets: z.array(ticketSchema) }).parse(JSON.parse(input));
-    report = await screenDraft(snapshot.tickets, config);
+    report = await screenDraft(snapshot.tickets.map(ticket => ({ ...ticket, state: ticket.trackerState })), config);
   }
 } catch {
   // Even parse/SDK errors may contain raw ticket text. Emit only a fixed reason.
