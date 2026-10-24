@@ -105,6 +105,77 @@ for (const example of [
   });
 }
 
+// Provider framing is stripped only for deterministic recognition, never in the saved log.
+for (const example of [
+  { name: 'exit 126', output: '##[error]Process completed with exit code 126.' },
+  { name: 'exit 127', output: '##[error]Process completed with exit code 127.' },
+  { name: 'structured failure', output: 'mill-results: {"version":1,"status":"ok","collected":1,"scenarios":[{"id":"invoice total","status":"fail"}]}' },
+  { name: 'structured environment failure', output: 'mill-results: {"version":1,"status":"bootstrap-error","collected":0,"scenarios":[]}' },
+  { name: 'malformed structured result', output: '##[warning]mill-results: {not json' },
+  { name: 'Node TAP failure', output: 'TAP version 13\nnot ok 1 - invoice total\n1..1\n# tests 1\n# pass 0\n# fail 1' },
+  { name: 'Node spec failure', output: '✖ invoice total (1ms)\nℹ tests 1\nℹ pass 0\nℹ fail 1' },
+]) {
+  test(`provider-framed ${example.name} bypasses advisory inference`, async t => {
+    const log = example.output.split('\n').map(line => `2026-10-24T12:00:00.1234567Z \u001b[31m${line}\u001b[0m`).join('\n');
+    const f = await fixture(t, { '91': log });
+    const baseline = await ciLogReport(f.cwd, 172, f.tracker, f.pipeline);
+    let calls = 0;
+    const report = await f.run(options(async request => { calls++; return reply(request); }));
+    assert.equal(calls, 0, 'known runner evidence must not reach inference');
+    assert.equal(report, baseline, 'deterministic evidence keeps the existing handoff');
+    assert.equal(await readFile(join(f.cwd, '.mill/logs/172/ci-91.log'), 'utf8'), log);
+  });
+}
+
+test('provider-framed ambiguous excerpts retain saved-log line references', async t => {
+  const diagnostic = '2026-10-24T12:00:00Z ##[error]TypeError: invoice.total is not a function';
+  const log = ['2026-10-24T11:59:58Z setup complete', '2026-10-24T11:59:59Z running tests', diagnostic].join('\n');
+  const f = await fixture(t, { '91': log });
+  let calls = 0;
+  const report = await f.run(options(async request => { calls++; return reply(request); }));
+  assert.equal(calls, 1);
+  assert.ok(report.includes(diagnostic), 'excerpts must retain original provider framing');
+  assert.match(report, /lines 3-3/);
+  assert.equal(await readFile(join(f.cwd, '.mill/logs/172/ci-91.log'), 'utf8'), log);
+});
+
+test('multi-job screening timeouts cannot consume later jobs log-download budget', async t => {
+  const ids = ['91', '92', '93', '94', '95', '96'];
+  const logs = Object.fromEntries(ids.map(id => [id, `Error: ambiguous failure in job ${id}\n`]));
+  const f = await fixture(t, logs);
+  const downloads: string[] = [];
+  const getJobLog = f.tracker.getJobLog!;
+  f.tracker.getJobLog = async (j, limits) => {
+    downloads.push(j.logId!);
+    return getJobLog(j, limits);
+  };
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const signals: AbortSignal[] = [];
+  let downloadsBeforeScreening: string[] | undefined;
+  const report = await f.run(options(async (_request, signal) => {
+    downloadsBeforeScreening ??= [...downloads];
+    signals.push(signal);
+    // Exercise the supported 60-second timeout without waiting five real minutes.
+    now += 60_000;
+    t.mock.timers.tick(60_000);
+    return new Promise(() => {});
+  }, { timeoutMs: 60_000 }));
+  assert.deepEqual(downloads, ids, 'all six immediate downloads must survive unavailable screening');
+  assert.deepEqual(downloadsBeforeScreening, ids, 'collection finishes before optional screening starts');
+  assert.equal(signals.length, 5, 'the separate five-minute screening budget stays bounded');
+  assert.ok(signals.every(signal => signal.aborted), 'timed-out requests are aborted');
+  assert.equal((report.match(/uncertain \(timeout\)/g) ?? []).length, 5);
+  assert.match(report, /screening budget exhausted/);
+  assert.doesNotMatch(report, /Log unavailable/);
+  for (const id of ids) {
+    const file = join(f.cwd, `.mill/logs/172/ci-${id}.log`);
+    assert.ok(report.includes(file), `handoff must retain job ${id}'s saved log`);
+    assert.equal(await readFile(file, 'utf8'), logs[id]);
+  }
+});
+
 test('mixed failures retain both causes across jobs instead of collapsing CI to one diagnosis', async t => {
   const f = await fixture(t, { '91': 'TypeError: invoice.total is not a function\n',
     '92': 'Error: connect ECONNRESET fetching registry\n' }, [job('91', 'unit'), job('92', 'install')]);
