@@ -7,6 +7,7 @@ import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
+import { continueCommand } from './conflict-command.js';
 import { millyard } from './helpers.js';
 
 async function fixture(t: TestContext) {
@@ -841,10 +842,11 @@ test('rebase conflict feedback reaches a separate fix and narrow review after re
     const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
     if (request.role === 'implementer' && ++implementations === 2) {
       assert.match(request.handoff, /rebase-conflict: answer.cjs/);
+      assert.ok(request.handoff.includes(await continueCommand()), 'Handoff names the exact permitted continuation command');
       assert.equal(git('status', '--porcelain'), '', 'Coordinator aborted the conflicted rebase');
       try { git('rebase', 'integration'); } catch { /* Resolve the actual conflict below. */ }
       await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
-      git('add', 'answer.cjs'); git('-c', 'core.editor=true', 'rebase', '--continue');
+      git('add', 'answer.cjs'); execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
       await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
       git('add', '.'); git('commit', '-m', '#12: Fix integration conflict');
       return { outcome: { outcome: 'done', summary: 'Rebased and committed conflict fix.' } };
@@ -885,8 +887,8 @@ function conflictingTestScript(y: Awaited<ReturnType<typeof fixture>>, repair: (
     if (request.role === 'implementer' && ++implementations === 2) {
       try { git('rebase', 'integration'); } catch { /* Resolve the real conflict below. */ }
       await writeFile(join(request.cwd, 'answer.test.cjs'), sharedTestMerged);
-      // Writer subjects start with '#', which git would strip as a comment from the replayed message.
-      git('add', 'answer.test.cjs'); git('-c', 'core.commentChar=;', '-c', 'core.editor=true', 'rebase', '--continue');
+      // Writer subjects start with '#'; continue with the exact command production grants the implementer.
+      git('add', 'answer.test.cjs'); execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
       await repair(request.cwd, git);
       return { outcome: { outcome: 'done', summary: 'Resolved the conflict in the shared test file.' } };
     }
@@ -1979,11 +1981,12 @@ process.stdin.on('end', async () => { try {
    base = allowed.map(s => s.match(/^Bash\\(git rebase ([a-f0-9]{40})\\)$/)?.[1]).find(Boolean);
    authorize = command => allowed.includes('Bash('+command+')') || (command.startsWith('git add ') && allowed.includes('Bash(git add *)')) || (command.startsWith('git commit ') && allowed.includes('Bash(git commit *)'));
  }
- if (!base || !authorize('git rebase '+base) || !authorize('git -c core.editor=true rebase --continue')) throw Error('Missing narrowly scoped conflict repair permissions');
+ const cont = ${JSON.stringify(await continueCommand())};
+ if (!base || !authorize('git rebase '+base) || !authorize(cont)) throw Error('Missing narrowly scoped conflict repair permissions');
  for (const forbidden of ['git push origin HEAD','git rebase main','git merge integration','git rebase --skip','git reset --hard']) if (authorize(forbidden)) throw Error('Overbroad grant: '+forbidden);
  const run = command => { if (!authorize(command)) throw Error('Denied '+command); return cp.execSync(command,{stdio:'pipe'}); };
  try { run('git rebase '+base); } catch(e) { if (!fs.existsSync('answer.cjs') || !fs.readFileSync('answer.cjs','utf8').includes('<<<<<<<')) throw e; }
- fs.writeFileSync('answer.cjs','module.exports = () => 1;\\n'); run('git add answer.cjs'); run('git -c core.editor=true rebase --continue');
+ fs.writeFileSync('answer.cjs','module.exports = () => 1;\\n'); run('git add answer.cjs'); run(cont);
  fs.writeFileSync('answer.cjs','module.exports = () => 42;\\n'); run('git add answer.cjs'); run('git commit -m "Conflict fix"');
  const text = '\x60\x60\x60mill-outcome\\n'+JSON.stringify({outcome:'done',summary:'Resolved conflict with scoped native permissions.'})+'\\n\x60\x60\x60';
  if (isPi) { emit({type:'session',id:'repair-session'}); emit({type:'agent_start'}); emit({type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text}]}}); emit({type:'agent_end',willRetry:false}); emit({type:'agent_settled',aborted:false}); }
