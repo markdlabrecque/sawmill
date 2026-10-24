@@ -175,7 +175,8 @@ export function siteHandoff(site: PreparedSite): string {
 
 /**
  * Runs .mill/prepare.sh to bring the ticket's site into agreement with the worktree's current commit.
- * Setup seeds once; prepare must be idempotent and never reseed. Its last stdout line is {"url", "ready"}.
+ * Setup seeds once; prepare must be idempotent and never reseed. Its last stdout line is {"url", "ready"},
+ * with an optional "ticket" naming the ticket whose site answered; another ticket's site fails preparation.
  */
 export async function prepareSite(cwd: string, project: ProjectConfig, number: number, path: string, options: WorktreeOptions = {}): Promise<Preparation> {
   const script = join(cwd, '.mill', 'prepare.sh');
@@ -193,12 +194,17 @@ export async function prepareSite(cwd: string, project: ProjectConfig, number: n
         MILL_COMMIT: identity.commit, MILL_ENV: environment, MILL_STATE_DIR: stateDir },
     }));
   } catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh failed: ${failure(error)}` }; }
-  let site: { url?: unknown; ready?: unknown } | undefined;
+  let site: { url?: unknown; ready?: unknown; ticket?: unknown } | undefined;
   try { site = JSON.parse(stdout.trim().split('\n').at(-1) ?? ''); } catch { site = undefined; }
-  if (!site || typeof site !== 'object' || typeof site.ready !== 'boolean' || (site.url !== undefined && typeof site.url !== 'string')) {
-    return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh must end its output with a line like {"url": "https://...", "ready": true}.\n${stdout}` };
+  if (!site || typeof site !== 'object' || typeof site.ready !== 'boolean' || (site.url !== undefined && typeof site.url !== 'string') ||
+    (site.ticket !== undefined && !Number.isInteger(site.ticket))) {
+    return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh must end its output with a line like {"url": "https://...", "ready": true, "ticket": ${number}}.\n${stdout}` };
   }
   const url = (site.url as string | undefined) ?? null;
+  // A stable URL can serve another ticket's site; its reported owner must be this ticket.
+  if (site.ticket !== undefined && site.ticket !== number) {
+    return { status: 'failed', ...identity, url, ready: false, message: `prepare.sh reported a site${url ? ` at ${url}` : ''} that belongs to another ticket, #${site.ticket as number}, not #${number}.` };
+  }
   if (!site.ready) return { status: 'not-ready', ...identity, url, ready: false, message: `prepare.sh reported the site${url ? ` at ${url}` : ''} is not ready.\n${stdout}` };
   return { status: 'ok', ...identity, url, ready: true };
 }

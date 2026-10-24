@@ -5,11 +5,14 @@ import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import type { ProjectConfig } from './config.js';
 import { infrastructure, validateOutcome, type Outcome, type Runtime, type UserCase } from './runtime.js';
-import type { RunTicket, TeamProgress } from './run-store.js';
+import type { PreparedSite, RunTicket, TeamProgress } from './run-store.js';
 
 export interface TestCase { case: string; instructions: string }
-export interface UserTesting { url: string; cases: UserCase[]; recommendations: string[] }
-export interface BrowserReview { browser: boolean; handoff: string; cases: TestCase[]; allCases: TestCase[]; url?: string }
+/** What the latest browser results ran against: the reviewed commit and its prepared site. */
+export interface Evidence { commit: string; site: PreparedSite; recordedAt: string }
+export interface UserTesting { url: string; cases: UserCase[]; recommendations: string[]; evidence?: Evidence }
+/** `prior` holds only earlier results still applicable to `site`. */
+export interface BrowserReview { browser: boolean; handoff: string; cases: TestCase[]; allCases: TestCase[]; url?: string; site?: PreparedSite; prior?: UserTesting }
 
 /** Only document-level sections/lists/headings count, never examples in code or quotes. */
 export function userTestSection(body: string) {
@@ -68,14 +71,24 @@ function plainText(node: Node): string {
   return text.trim();
 }
 
-export async function browserHandoff(project: ProjectConfig, body: string, cwd: string, home?: string, signal?: AbortSignal, prior?: UserTesting): Promise<BrowserReview> {
+export async function browserHandoff(project: ProjectConfig, body: string, cwd: string, home?: string, signal?: AbortSignal, earlier?: UserTesting, site?: PreparedSite): Promise<BrowserReview> {
   const { cases: allCases } = userTestSection(body);
+  // Results carry forward only to the same commit on the same prepared site; any change reruns every case.
+  const prior = earlier && applicable(earlier.evidence, site) ? earlier : undefined;
+  const stale = earlier && !prior ? `\n\nEarlier browser results ${earlier.evidence ? `at ${earlier.evidence.commit}` : 'without a recorded commit'} are stale for this commit or site; every case reruns.` : '';
   const completed = prior?.cases.filter(c => c.result === 'completed') ?? [];
   const cases = allCases.filter(c => !completed.some(done => done.case === c.case));
-  const retained = completed.length ? `\n\nEarlier completed cases, retain these results and do not re-run:\n${JSON.stringify(completed)}` : '';
-  if (!cases.length) return { browser: false, handoff: retained, cases, allCases, url: prior?.url };
+  const retained = stale || (completed.length ? `\n\nEarlier completed cases, retain these results and do not re-run:\n${JSON.stringify(completed)}` : '');
+  if (!cases.length) return { browser: false, handoff: retained, cases, allCases, url: prior?.url, site, prior };
   const url = await siteUrl(project, cwd, home, signal);
-  return { browser: true, url, cases, allCases, handoff: `${retained}\n\nUser testing site URL: ${url}\nUse chrome-devtools-axi to perform only the cases below. Broken cases must name the failed step; slow or unclear behavior is a recommendation with a pass.\nCases to run, return each exact case name once:\n${JSON.stringify(cases)}` };
+  return { browser: true, url, cases, allCases, site, prior, handoff: `${retained}\n\nUser testing site URL: ${url}\nUse chrome-devtools-axi to perform only the cases below. Broken cases must name the failed step; slow or unclear behavior is a recommendation with a pass.\nCases to run, return each exact case name once:\n${JSON.stringify(cases)}` };
+}
+
+function applicable(evidence: Evidence | undefined, site: PreparedSite | undefined): boolean {
+  if (!evidence || !site || evidence.commit !== site.commit) return false;
+  const before = evidence.site;
+  return before.commit === site.commit && before.script === site.script && before.environment === site.environment &&
+    before.stateDir === site.stateDir && before.url === site.url;
 }
 
 async function siteUrl(project: ProjectConfig, cwd: string, home?: string, signal?: AbortSignal): Promise<string> {
@@ -119,11 +132,13 @@ export function caseRuntime(runtime: Runtime, expected: TestCase[]): Runtime {
   } };
 }
 
-export function userTestingResult(review: BrowserReview, outcome: Outcome, prior?: UserTesting): UserTesting | undefined {
+export function userTestingResult(review: BrowserReview, outcome: Outcome): UserTesting | undefined {
   if ((outcome.outcome !== 'pass' && outcome.outcome !== 'bounce') || !review.allCases.length || !review.url) return;
+  const { prior, site } = review;
   const results = new Map([...(prior?.cases ?? []), ...(outcome.cases ?? [])].map(c => [c.case, c]));
   return { url: review.url, cases: review.allCases.map(c => results.get(c.case)!),
-    recommendations: [...new Set([...(prior?.recommendations ?? []), ...(outcome.recommendations ?? [])])] };
+    recommendations: [...new Set([...(prior?.recommendations ?? []), ...(outcome.recommendations ?? [])])],
+    ...(site ? { evidence: { commit: site.commit, site, recordedAt: new Date().toISOString() } } : {}) };
 }
 
 /** Writers receive the specification and repair feedback, never browser tasks/capability. */
@@ -139,7 +154,8 @@ export function writerTicket(ticket: RunTicket): RunTicket {
 }
 
 export function userTestingComment(result: UserTesting): string {
-  return [`Site: ${result.url}`, ...result.cases.map(c => `${c.case}: ${c.result}${c.result === 'broken' ? `\nFailed step: ${c.step}` : ''}`),
+  const tested = result.evidence ? [`Tested: commit ${result.evidence.commit}, environment ${result.evidence.site.environment}, at ${result.evidence.recordedAt}`] : [];
+  return [`Site: ${result.url}`, ...tested, ...result.cases.map(c => `${c.case}: ${c.result}${c.result === 'broken' ? `\nFailed step: ${c.step}` : ''}`),
     ...(result.recommendations.length ? [`Recommendations:\n${result.recommendations.map(r => `- ${r}`).join('\n')}`] : [])].join('\n\n');
 }
 
