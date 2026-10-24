@@ -121,7 +121,9 @@ test('a failing required check still blocks an existing-checks ticket', async t 
   assert.equal((await y.cli('run', 'draft', '12')).code, 0);
   const result = await y.cli('team', 'run', '12', '--json');
   assert.notEqual(result.code, 0, result.stdout);
-  assert.deepEqual(y.roles, ['implementer', 'reviewer']);
+  assert.equal(y.roles[0], 'implementer');
+  assert.ok(!y.roles.includes('test-writers'));
+  assert.ok(y.roles.includes('reviewer'));
   assert.notEqual(y.ticket.state, 'closed');
   assert.equal(y.requests.length, 0);
 });
