@@ -143,6 +143,16 @@ async function checkFixtures(cwd: string, number: number) {
   }
 }
 
+/** The files `.mill/fixtures.json` lists, hashed as they are now: the fixture identity browser evidence records. */
+export async function fixtureIdentity(cwd: string): Promise<{ path: string; sha256: string }[] | null> {
+  const list = join(cwd, '.mill', 'fixtures.json');
+  if (!existsSync(list)) return null;
+  let fixtures: unknown;
+  try { fixtures = JSON.parse(await readFile(list, 'utf8')); } catch (error) { throw new Error(`.mill/fixtures.json is not valid JSON: ${failure(error)}`); }
+  if (!Array.isArray(fixtures) || !fixtures.every(fixture => typeof fixture?.path === 'string')) throw new Error('.mill/fixtures.json must be a list of {"path": "<millyard-relative path>", "sha256": "<hex digest>"}.');
+  return Promise.all((fixtures as { path: string }[]).map(async ({ path }) => ({ path, sha256: await readFile(resolve(cwd, path)).then(sha256, () => 'missing') })));
+}
+
 /** The new ticket branch is cut from the local integration branch; refuse it when origin has moved on. */
 async function checkBase(cwd: string, project: ProjectConfig, number: number) {
   try { await git(cwd, 'remote', 'get-url', 'origin'); } catch { return; }
@@ -163,14 +173,15 @@ export interface Preparation extends PreparedSite {
 }
 
 /** The identity and readiness a run records for a prepared site. */
-export function preparedSite({ commit, script, environment, stateDir, url, ready }: Preparation): PreparedSite {
-  return { commit, script, environment, stateDir, url, ready };
+export function preparedSite({ commit, script, environment, stateDir, url, ready, fixtures, owner }: Preparation): PreparedSite {
+  return { commit, script, environment, stateDir, url, ready, fixtures: fixtures ?? null, owner: owner ?? null };
 }
 
 /** The reviewer's line about the site it checks. */
 export function siteHandoff(site: PreparedSite): string {
   return `\n\nPrepared site: ${site.url ?? '(no URL reported)'} at ${site.commit}, environment ${site.environment}, ` +
-    `prepare script ${site.script ?? '(none)'}, ready: ${site.ready ?? 'not reported'}.`;
+    `prepare script ${site.script ?? '(none)'}, ready: ${site.ready ?? 'not reported'}.` +
+    (site.fixtures?.length ? ` Fixtures: ${site.fixtures.map(f => `${f.path} sha256 ${f.sha256}`).join(', ')}.` : '');
 }
 
 /**
@@ -182,9 +193,10 @@ export async function prepareSite(cwd: string, project: ProjectConfig, number: n
   const script = join(cwd, '.mill', 'prepare.sh');
   const { environment, stateDir } = environmentOf(cwd, project, number);
   const identity = { ticket: number, path, commit: await git(path, 'rev-parse', 'HEAD'), script: existsSync(script) ? sha256(await readFile(script)) : null, environment, stateDir };
-  try { await ownState(cwd, project, number, path, Boolean(identity.script)); }
+  let fixtures: PreparedSite['fixtures'];
+  try { fixtures = await fixtureIdentity(cwd); await ownState(cwd, project, number, path, Boolean(identity.script)); }
   catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: failure(error) }; }
-  if (!identity.script) return { status: 'ok', ...identity, url: null, ready: null };
+  if (!identity.script) return { status: 'ok', ...identity, fixtures, owner: null, url: null, ready: null };
   const home = options.home ?? homedir();
   let stdout: string;
   try {
@@ -206,7 +218,7 @@ export async function prepareSite(cwd: string, project: ProjectConfig, number: n
     return { status: 'failed', ...identity, url, ready: false, message: `prepare.sh reported a site${url ? ` at ${url}` : ''} that belongs to another ticket, #${site.ticket as number}, not #${number}.` };
   }
   if (!site.ready) return { status: 'not-ready', ...identity, url, ready: false, message: `prepare.sh reported the site${url ? ` at ${url}` : ''} is not ready.\n${stdout}` };
-  return { status: 'ok', ...identity, url, ready: true };
+  return { status: 'ok', ...identity, fixtures, owner: (site.ticket as number | undefined) ?? null, url, ready: true };
 }
 
 /** After setup: repair missing Node dependencies once, then check the test command can start. */

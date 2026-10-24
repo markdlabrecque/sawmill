@@ -435,7 +435,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});
         const result = await retryInfrastructure(async () => {
-          const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, options.home, options.signal, progress.userTesting, progress.site) : undefined;
+          const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, number, options.home, options.signal, progress.userTesting, progress.site) : undefined;
           checkStop(cwd, number);
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {

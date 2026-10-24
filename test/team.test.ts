@@ -98,6 +98,12 @@ async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
     status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout), path: join(y.root, '12') };
 }
 
+/** Docker browser cases, on a site whose prepare.sh reports the ticket that owns it: a URL alone proves nothing. */
+async function ownedDockerSite(y: { cwd: string; projectConfig: string }, url = 'http://localhost:8123') {
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', `test_harness: docker\ntest_url: ${url}`));
+  await writeFile(join(y.cwd, '.mill/prepare.sh'), `printf '{"url":"${url}","ready":true,"ticket":%s}\\n' "$MILL_TICKET"\n`);
+}
+
 test('team run carries real committed red tests through implementation, full review and a merged done ticket', async t => {
   const y = await fixture(t);
   const result = await y.cli('team', 'run', '12', '--json');
@@ -1272,7 +1278,7 @@ test('user-testing repair re-runs every case with the fix diff, since the repair
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit the answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123/form'));
+  await ownedDockerSite(y, 'http://localhost:8123/form');
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   const broken = { case: 'Submit the answer', result: 'broken' as const, step: 'Submit shows an error' };
   let reviews = 0, implementations = 0;
@@ -1319,7 +1325,7 @@ test('a failed user-testing mirror durably retains the bounce and cases, and the
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page\n- Submit answer';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+  await ownedDockerSite(y);
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   const broken = { case: 'Submit answer', result: 'broken' as const, step: 'Submit returns 500.' };
   y.setScript(async (request, sink) => request.role === 'reviewer'
@@ -1547,7 +1553,7 @@ test('questions during repair resume the interrupted implementer or reviewer wit
     const y = await fixture(t);
     y.ticket.body += '\n\n## User test cases\n- Use the API';
     y.tracker.getTicket = async () => structuredClone(y.ticket);
-    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+    await ownedDockerSite(y);
     assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
     let implementations = 0, reviews = 0, asked = false;
     const broken = { case: 'Use the API', result: 'broken' as const, step: 'Missing docs' };
@@ -2316,7 +2322,7 @@ test('completed browser review survives user-testing mirror failure without repe
   const y = await fixture(t);
   y.ticket.body += '\n\n## User test cases\n- Open page';
   y.tracker.getTicket = async () => structuredClone(y.ticket);
-  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8123'));
+  await ownedDockerSite(y);
   assert.equal((await y.cli('run', 'draft', '12', '--replace')).code, 0);
   y.setScript(async (request, sink) => request.role === 'reviewer'
     ? { outcome: { outcome: 'pass', cases: [{ case: 'Open page', result: 'completed' }] } }

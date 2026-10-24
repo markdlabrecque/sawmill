@@ -1,8 +1,13 @@
-import { prepareSite, preparedSite, removeWorktree } from './worktrees.js';
+import { fixtureIdentity, prepareSite, preparedSite, removeWorktree, siteHandoff } from './worktrees.js';
 import { workerVariables } from './direct-child.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
+import { browserProof, caseRuntime, smokeCases, smokeHandoff, smokeRequired, userTestingComment, userTestingResult } from './user-testing.js';
+import { runRole } from './role-runner.js';
+import { createRuntime } from './runtime-factory.js';
+import type { Runtime } from './runtime.js';
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -25,7 +30,7 @@ const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 export interface IntegrationResult {
-  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'ci-failed' | 'infrastructure' | 'stopped';
+  outcome: 'merged' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'smoke-failed' | 'ci-failed' | 'infrastructure' | 'stopped';
   ticket: number;
   message?: string;
   pipeline?: Pipeline;
@@ -78,6 +83,11 @@ function checkSummary(progress: IntegrationProgress): string {
   return `\nRequired checks passed on ${checks.head}: ${runs.join(', ')}`;
 }
 
+/** The browser proof the final gate accepted, for the merge report. */
+function browserSummary(progress: IntegrationProgress): string {
+  return progress.browser?.cases.length ? `\nBrowser proof for ${progress.browser.head}:\n${progress.browser.cases.join('\n')}` : '';
+}
+
 /** Beyond this many reruns at one stage, a ticket's test failures count at once. */
 const rerunCap = 2;
 
@@ -103,12 +113,15 @@ async function fastForward(cwd: string, integration: string, number: number, mer
   }
 }
 
-export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string } = {}): Promise<IntegrationResult> {
+/** `runtime` runs the shared smoke cases after a rebase; the project's runtime when absent. */
+type IntegrateOptions = MirrorOptions & { home?: string; ciPollInterval?: string; runtime?: Runtime };
+
+export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: IntegrateOptions = {}): Promise<IntegrationResult> {
   if (existsSync(join(cwd, '.mill/integrate.lock'))) throw new CliError('Legacy integration lock needs verified manual recovery.');
   return withRunLock(cwd, 'integration', () => integrateLocked(cwd, project, number, tracker, options), true);
 }
 
-async function integrateLocked(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: MirrorOptions & { home?: string; ciPollInterval?: string }): Promise<IntegrationResult> {
+async function integrateLocked(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: IntegrateOptions): Promise<IntegrationResult> {
   if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
   const branch = `mill/${number}`;
   const snapshot = readRun(cwd);
@@ -242,6 +255,37 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         }
         progress.checks = { head, runs };
       }
+      // Integration moved the reviewed code: the project's shared smoke cases run on the re-prepared site.
+      const smoke = await smokeCases(cwd);
+      if (smokeRequired(smoke, team, progress, head) && !(team.smoke?.evidence?.commit === head && team.smoke.cases.every(c => c.result === 'completed'))) {
+        boundary();
+        if (project.runtime === 'codex') throw new Error('Codex browser capability is unsupported, so the shared smoke cases in .mill/smoke-cases.md cannot run.');
+        if (!team.site) throw new Error('Shared smoke cases need the ticket\'s prepared site; none was recorded.');
+        const review = await smokeHandoff(project, smoke, ticket.worktree!, number, team.site, options.home);
+        const prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
+        const ran = await runRole(cwd, project, tracker, number, caseRuntime(options.runtime ?? createRuntime(project.runtime), smoke), {
+          role: 'reviewer', cwd: ticket.worktree!, home: options.home, ...project.roles.reviewer, prompt,
+          handoff: `Shared smoke check for #${number}: ${ticket.title}${siteHandoff(team.site)}${review.handoff}`,
+          ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), browser: true,
+          timeoutMs: Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0),
+        }, options);
+        boundary();
+        if (!ran.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        const outcome = ran.outcome;
+        if (outcome.outcome !== 'pass' && outcome.outcome !== 'bounce') throw new Error(`Shared smoke cases did not finish: ${outcome.outcome === 'infrastructure' ? outcome.error : outcome.outcome}.`);
+        if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('The smoke check changed the ticket worktree or HEAD; refusing to push unchecked work.');
+        team.smoke = userTestingResult(review, outcome)!;
+        await save({ team, report: { stage: 'user-testing', details: `Shared smoke cases after integration moved the code:\n\n${userTestingComment(team.smoke)}`, reachedStage: 'rebase', round: ran.round } });
+        if (outcome.outcome === 'bounce') return result('smoke-failed', outcome.feedback);
+      }
+      // The final gate: browser proof for every required case, applicable to this head, site and fixtures.
+      const proof = browserProof(ticket.body, team, progress, number, head, await fixtureIdentity(cwd), smoke);
+      if (proof.problems.length) {
+        invalidateReview(team);
+        await save({ team, stage: 'reviewer' });
+        throw new Error(`Browser proof is missing or stale for ${head}; a fresh review must run the cases again.\n${proof.cases.join('\n')}`);
+      }
+      progress.browser = { head, cases: proof.cases };
       progress.testedHead = head;
       await advance('push');
       const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
@@ -336,7 +380,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       progress.localRemoved = true;
       await save();
     }
-    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}\nTested head: ${progress.testedHead}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
+    await advance('merged', { integration: { ...progress, reported: true }, state: 'done', mergeCommit, report: { stage: 'merged', details: `${testSummary(project)}${checkSummary(progress)}\nTested head: ${progress.testedHead}${browserSummary(progress)}`, baseCommit: progress.baseCommit, changeRequestUrl: progress.changeRequest?.url } });
     return result('merged');
   } catch (error) {
     if (error instanceof StopRequested) {
