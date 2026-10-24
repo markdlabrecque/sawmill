@@ -5,7 +5,8 @@ import { runCli } from './cli.js';
 const args = process.argv.slice(2);
 const controller = new AbortController();
 const interrupt = () => controller.abort();
-const roleCommand = (args[0] === 'team' && ['review', 'tail'].includes(args[1] ?? '')) || args[0] === 'board';
+// An interrupted update cancels its drain and releases dispatch instead of dying mid-swap.
+const roleCommand = (args[0] === 'team' && ['review', 'tail'].includes(args[1] ?? '')) || args[0] === 'board' || args[0] === 'update';
 if (roleCommand) {
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);

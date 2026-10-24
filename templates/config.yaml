@@ -29,3 +29,7 @@ pause_threshold: 3
 # rebased commit has finished, when ci is wait. Nothing else in mill polls:
 # teams are child processes and the loop is told when one exits.
 ci_poll_interval: 30s
+
+# How long mill update waits for working tickets to finish before it gives
+# up, leaves the installed mill unchanged and releases dispatch.
+update_drain_timeout: 4h

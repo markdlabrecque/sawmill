@@ -12,7 +12,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import type { ProjectConfig } from './config.js';
+import { milliseconds, phaseDeadline, type ProjectConfig } from './config.js';
+import { PhaseTimeout, waitPhase } from './phases.js';
 import { requiredCheckNames } from './verification.js';
 import { CliError, FinalError } from './errors.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
@@ -352,12 +353,22 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         await advance('ci-wait', { report: { stage: 'ci-wait', details: `Waiting for CI on ${head}.`, changeRequestUrl: progress.changeRequest.url } });
         const interval = options.ciPollInterval ?? '30s';
         const ms = Number(interval.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[interval.at(-1)!] ?? 0);
-        for (;;) {
-          const pipeline = await readPipeline();
-          if (pipeline.state === 'failed') return await ciFailed();
-          if (pipeline.state === 'passed') break;
-          await (options.sleep ?? sleep)(ms);
-        }
+        const deadline = phaseDeadline(project, 'ci');
+        // Only this ticket's wait ends; the pushed branch and change request stay for the next attempt.
+        const failed = await waitPhase(cwd, number, 'ci', deadline, `CI on ${head.slice(0, 7)}`, options.home, async () => {
+          const ends = Date.now() + milliseconds(deadline);
+          let seen = false;
+          for (;;) {
+            const pipeline = await readPipeline();
+            if (pipeline.state === 'failed') return true;
+            if (pipeline.state === 'passed') return false;
+            seen ||= pipeline.state === 'pending';
+            if (Date.now() >= ends) throw new PhaseTimeout(`CI timed out after ${deadline}: ${seen ? `the pipeline for ${head} is still pending` : `no pipeline appeared for ${head}`}.\n` +
+              `Fix: ${seen ? 'let the pipeline finish' : 'make CI run for the pushed branch'}, or raise phase_timeouts.ci, then run \`mill integrate ${number}\` to wait again. The pushed branch and change request are kept.`);
+            await (options.sleep ?? sleep)(Math.min(ms, Math.max(0, ends - Date.now())));
+          }
+        });
+        if (failed) return await ciFailed();
       }
       await advance('merge');
       if (project.ci === 'wait') {

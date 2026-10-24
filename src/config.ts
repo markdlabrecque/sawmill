@@ -6,6 +6,10 @@ import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests, typ
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 export type Role = 'test-writers' | 'implementer' | 'reviewer';
+/** Delivery phases outside the roles, each waited on for at most its own deadline. */
+export type Phase = 'setup' | 'prepare' | 'install' | 'readiness' | 'ci' | 'teardown';
+export const phaseDefaults: Record<Phase, string> = { setup: '30m', prepare: '1m', install: '30m', readiness: '15m', ci: '3h', teardown: '10m' };
+export const updateDrainDefault = '4h';
 export interface ProjectConfig {
   name: string;
   tracker: { backend: 'github' | 'gitlab'; repo: string; host?: string };
@@ -24,6 +28,8 @@ export interface ProjectConfig {
   test_harness: 'ddev' | 'docker' | 'none';
   test_url?: string;
   labels: { logjam: string };
+  /** Filled with defaults when loaded; absent only on configs built in code. */
+  phase_timeouts?: Record<Phase, string>;
 }
 export interface MachineConfig {
   concurrency: number;
@@ -31,7 +37,11 @@ export interface MachineConfig {
   pause_threshold: number;
   worktrees?: string;
   ci_poll_interval: string;
+  update_drain_timeout?: string;
 }
+
+export const phaseDeadline = (project: ProjectConfig, phase: Phase) => project.phase_timeouts?.[phase] ?? phaseDefaults[phase];
+export const milliseconds = (duration: string) => Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
 export interface ConfigIssue {
   source: string;
   key: string;
@@ -86,6 +96,7 @@ const projectSchema = object({
     try { return ['http:', 'https:'].includes(new URL(String(value)).protocol); } catch { return false; }
   }, hint: 'expected an absolute HTTP or HTTPS URL' },
   labels: { ...object({ logjam: { ...string, default: 'logjam' } }), default: {} },
+  phase_timeouts: { ...object(Object.fromEntries(Object.entries(phaseDefaults).map(([phase, value]) => [phase, { ...duration, default: value }]))), default: {} },
 });
 const machineSchema = object({
   concurrency: integer(2, 1),
@@ -93,6 +104,7 @@ const machineSchema = object({
   pause_threshold: integer(3, 1),
   worktrees: { ...string, optional: true },
   ci_poll_interval: { ...duration, default: '30s' },
+  update_drain_timeout: { ...duration, default: updateDrainDefault },
 });
 
 function validate(value: unknown, rule: Rule, source: string, key: string, issues: ConfigIssue[]): unknown {
@@ -165,4 +177,11 @@ export async function loadConfig(cwd: string, home: string): Promise<Configurati
   }
   if (issues.length || !project || !machine) return { valid: false, issues };
   return { valid: true, project, machine, issues };
+}
+
+/** The machine config alone, for machine-wide commands; undefined while it is missing or invalid. */
+export async function loadMachineConfig(home: string): Promise<MachineConfig | undefined> {
+  const issues: ConfigIssue[] = [];
+  const machine = await readConfig(join(home, '.config/sawmill/config.yaml'), machineSchema, issues) as MachineConfig | undefined;
+  return issues.length ? undefined : machine;
 }

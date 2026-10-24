@@ -10,7 +10,10 @@ import { CliError } from './errors.js';
 import { readRun, runPath, type PreparedSite, type RunTicket } from './run-store.js';
 import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
-import type { MachineConfig, ProjectConfig } from './config.js';
+import { phaseDeadline, type MachineConfig, type Phase, type ProjectConfig } from './config.js';
+import { bounded, PhaseTimeout, waitPhase } from './phases.js';
+import { recordChild } from './process-ownership.js';
+import { processStart } from './slots.js';
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8' })).stdout.trim();
@@ -107,16 +110,33 @@ async function dropState(cwd: string, project: ProjectConfig, number: number) {
   await rm(environmentOf(cwd, project, number).stateDir, { recursive: true, force: true });
 }
 
-async function hook(cwd: string, project: ProjectConfig, number: number, path: string, name: 'setup' | 'teardown', options: WorktreeOptions) {
+/** One command of a delivery phase, bounded by its deadline. A drafted ticket records the wait, and its worker owns the process group. */
+function phase(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions, name: Phase, label: string, file: string, args: string[], run: { cwd: string; env?: NodeJS.ProcessEnv }) {
+  const deadline = phaseDeadline(project, name);
+  const ticket = existsSync(runPath(cwd)) && readRun(cwd).tickets.some(row => row.number === number) ? number : undefined;
+  const started = ticket === undefined ? undefined : (pid: number) => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true });
+  return waitPhase(cwd, ticket, name, deadline, label, options.home, () => bounded(file, args, { ...run, deadline, label, started }));
+}
+
+/** What ran out of time, the fix and the command that resumes, then the output it left. */
+function timedOut(error: PhaseTimeout, project: ProjectConfig, name: Phase, fix: string, resume: string) {
+  const output = error as PhaseTimeout & { stdout?: string; stderr?: string };
+  return [`${error.message} Its processes were stopped.`, `Fix: ${fix} within phase_timeouts.${name} (${phaseDeadline(project, name)}), or raise it, ${resume}.`, output.stdout, output.stderr].filter(Boolean).join('\n');
+}
+
+async function hook(cwd: string, project: ProjectConfig, number: number, path: string, name: 'setup' | 'teardown', options: WorktreeOptions, resume: string) {
   const script = join(cwd, '.mill', `${name}.sh`);
   if (!existsSync(script)) return;
   const { environment, stateDir } = await ownState(cwd, project, number, path, name === 'setup');
   const home = options.home ?? homedir();
-  try { await execute('bash', [script, path, String(number)], {
-    cwd: join(cwd, '.mill'), encoding: 'utf8',
+  try { await phase(cwd, project, number, options, name, `${name}.sh`, 'bash', [script, path, String(number)], {
+    cwd: join(cwd, '.mill'),
     env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd,
       MILL_ENV: environment, MILL_STATE_DIR: stateDir },
-  }); } catch (error) { throw new CliError(`${name}.sh failed: ${failure(error)}`); }
+  }); } catch (error) {
+    if (error instanceof PhaseTimeout) throw new CliError(timedOut(error, project, name, `make .mill/${name}.sh finish`, resume));
+    throw new CliError(`${name}.sh failed: ${failure(error)}`);
+  }
 }
 
 /** A workspace that cannot work: stop once, before any role, with the fix. Never retried. */
@@ -154,11 +174,11 @@ export async function fixtureIdentity(cwd: string): Promise<{ path: string; sha2
 }
 
 /** The new ticket branch is cut from the local integration branch; refuse it when origin has moved on. */
-async function checkBase(cwd: string, project: ProjectConfig, number: number) {
+async function checkBase(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions) {
   try { await git(cwd, 'remote', 'get-url', 'origin'); } catch { return; }
   const branch = project.integration, remote = `refs/remotes/origin/${branch}`;
   const resume = `then mill run answer ${number}`;
-  try { await execute('git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${remote}`], { cwd, encoding: 'utf8', timeout: 60000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }); }
+  try { await phase(cwd, project, number, options, 'prepare', `Fetching ${branch} from origin`, 'git', ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${remote}`], { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }); }
   catch (error) { throw new PreflightError(`Cannot check that ${branch} is current: fetching it from origin failed.\nFix: make \`git -C ${JSON.stringify(cwd)} fetch origin ${branch}\` succeed, ${resume}.\n${failure(error)}`); }
   const [ahead, behind] = (await git(cwd, 'rev-list', '--left-right', '--count', `refs/heads/${branch}...${remote}`)).split(/\s+/).map(Number);
   if (ahead && behind) throw new PreflightError(`Local ${branch} has commits that aren't on origin/${branch}, and is ${behind} commit(s) behind it.\nFix: put local ${branch} back in line with origin/${branch} by hand (for example \`git rebase origin/${branch}\` in ${cwd}), ${resume}.`);
@@ -222,24 +242,33 @@ export async function prepareSite(cwd: string, project: ProjectConfig, number: n
 }
 
 /** After setup: repair missing Node dependencies once, then check the test command can start. */
-async function checkWorkspace(project: ProjectConfig, number: number, path: string) {
+async function checkWorkspace(cwd: string, project: ProjectConfig, number: number, path: string, options: WorktreeOptions) {
   const resume = `then mill run answer ${number}`;
   const node = existsSync(join(path, 'package.json')), modules = join(path, 'node_modules');
   if (node && existsSync(join(path, 'package-lock.json')) && !existsSync(modules)) {
-    try { await execute('npm', ['ci'], { cwd: path, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
-    catch (error) { throw new PreflightError(`node_modules was missing and \`npm ci\` failed in the worktree.\nFix: make \`npm ci\` succeed in ${JSON.stringify(path)} (or install dependencies in .mill/setup.sh), ${resume}.\n${failure(error)}`); }
+    try { await phase(cwd, project, number, options, 'install', 'Dependency install `npm ci`', 'npm', ['ci'], { cwd: path }); }
+    catch (error) {
+      if (error instanceof PhaseTimeout) throw new PreflightError(timedOut(error, project, 'install', `make \`npm ci\` in ${JSON.stringify(path)} finish (or install dependencies in .mill/setup.sh)`, resume));
+      throw new PreflightError(`node_modules was missing and \`npm ci\` failed in the worktree.\nFix: make \`npm ci\` succeed in ${JSON.stringify(path)} (or install dependencies in .mill/setup.sh), ${resume}.\n${failure(error)}`);
+    }
   }
   if (project.tests === 'none') return;
   if (project.tests.preflight) {
-    try { await execute('bash', ['-c', project.tests.preflight], { cwd: path, encoding: 'utf8' }); }
-    catch (error) { throw new PreflightError(`tests.preflight failed in the worktree: ${project.tests.preflight}\nFix: make it pass in ${JSON.stringify(path)} (usually in .mill/setup.sh), ${resume}.\n${failure(error)}`); }
+    try { await phase(cwd, project, number, options, 'readiness', 'Readiness check (tests.preflight)', 'bash', ['-c', project.tests.preflight], { cwd: path }); }
+    catch (error) {
+      if (error instanceof PhaseTimeout) throw new PreflightError(timedOut(error, project, 'readiness', `make tests.preflight (${project.tests.preflight}) in ${JSON.stringify(path)} finish`, resume));
+      throw new PreflightError(`tests.preflight failed in the worktree: ${project.tests.preflight}\nFix: make it pass in ${JSON.stringify(path)} (usually in .mill/setup.sh), ${resume}.\n${failure(error)}`);
+    }
     return;
   }
   if (node && !existsSync(modules)) throw new PreflightError(`node_modules is missing in the worktree, so the test command cannot run.\nFix: install dependencies in .mill/setup.sh (for example \`npm ci\`), ${resume}.`);
   const program = project.tests.command.trim().split(/\s+/).find(word => !/^[A-Za-z_]\w*=/.test(word));
   if (!program) return;
-  try { await execute('bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd: path, encoding: 'utf8' }); }
-  catch { throw new PreflightError(`The test command cannot run: ${program} was not found in the worktree.\nFix: install ${program} or set it up in .mill/setup.sh, ${resume}.`); }
+  try { await phase(cwd, project, number, options, 'readiness', `Readiness check (${program} on PATH)`, 'bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd: path }); }
+  catch (error) {
+    if (error instanceof PhaseTimeout) throw new PreflightError(timedOut(error, project, 'readiness', `make \`command -v ${program}\` in ${JSON.stringify(path)} finish`, resume));
+    throw new PreflightError(`The test command cannot run: ${program} was not found in the worktree.\nFix: install ${program} or set it up in .mill/setup.sh, ${resume}.`);
+  }
 }
 
 /** Warn, never fail, when this project is Sawmill itself and the running mill was built from a revision older than origin. */
@@ -285,7 +314,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (ticket && !ticket.provisioned && ticket.state !== 'logjam') {
       try {
         await checkFixtures(cwd, number);
-        await hook(cwd, project, number, existing.path, 'setup', options);
+        await hook(cwd, project, number, existing.path, 'setup', options, `then mill run answer ${number}`);
         const prepared = await prepareSite(cwd, project, number, existing.path, options);
         if (prepared.status !== 'ok') throw new CliError(prepared.message!);
       }
@@ -313,15 +342,15 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     await ownState(cwd, project, number, path, false);
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
     else {
-      await checkBase(cwd, project, number);
+      await checkBase(cwd, project, number, options);
       const warning = await millBehind(cwd, project, options.root ?? packageRoot);
       if (warning) warnings.push(warning);
       await git(cwd, 'worktree', 'add', '-b', branch, path, `refs/heads/${project.integration}`);
     }
     created = true;
     if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
-    await hook(cwd, project, number, path, 'setup', options);
-    await checkWorkspace(project, number, path);
+    await hook(cwd, project, number, path, 'setup', options, `then mill run answer ${number}`);
+    await checkWorkspace(cwd, project, number, path, options);
     const prepared = await prepareSite(cwd, project, number, path, options);
     if (prepared.status !== 'ok') throw new CliError(prepared.message!);
     await markBuild(path, options.root ?? packageRoot, false);
@@ -329,7 +358,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     let message = failure(error);
     if (created) {
       try {
-        await hook(cwd, project, number, path, 'teardown', options);
+        await hook(cwd, project, number, path, 'teardown', options, `then mill run answer ${number}`);
         await git(cwd, 'worktree', 'remove', '--force', path);
         created = false;
         await dropState(cwd, project, number);
@@ -387,7 +416,7 @@ export async function removeWorktree(cwd: string, project: ProjectConfig, number
     if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before removal.`);
     if (await git(existing.path, 'status', '--porcelain', '--untracked-files=all')) throw new CliError(`Worktree ${existing.path} is dirty; preserve or commit its work before removal.`);
     await ownState(cwd, project, number, existing.path, false);
-    await hook(cwd, project, number, existing.path, 'teardown', options);
+    await hook(cwd, project, number, existing.path, 'teardown', options, `then run mill worktree remove ${number} again. The worktree and its work are kept`);
     if (options.mergedHead && (await git(existing.path, 'rev-parse', 'HEAD') !== options.mergedHead || await git(existing.path, 'symbolic-ref', '--short', 'HEAD') !== branch)) throw new CliError('Local ticket branch contains newer unmerged work; retained for recovery.');
     await git(cwd, 'worktree', 'remove', existing.path);
     await dropState(cwd, project, number);
@@ -410,7 +439,7 @@ export async function discardWorktree(cwd: string, project: ProjectConfig, numbe
       if (await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
       if (existing.locked) throw new CliError(`Worktree ${existing.path} is locked; unlock it before reset.`);
       await ownState(cwd, project, number, existing.path, false);
-      await hook(cwd, project, number, existing.path, 'teardown', options);
+      await hook(cwd, project, number, existing.path, 'teardown', options, `then run mill run reset ${number} again`);
       await git(cwd, 'worktree', 'remove', '--force', existing.path);
       await dropState(cwd, project, number);
     }
