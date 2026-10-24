@@ -292,7 +292,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       if (positional[0] === 'run' && positional[1] === 'once') {
         if (positional.length !== 2) throw new CliError(usage('run once'), 2);
         const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
-        emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}.`,
+        emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}${result.held ? '; mill update holds dispatch, try again once it finishes' : ''}.`,
           ...result.started.map(row => `${ref(row.ticket)}: worker ${row.worker.pid}`),
           ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;

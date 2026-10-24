@@ -75,7 +75,8 @@ export async function updateMill(source: string, options: UpdateOptions): Promis
   });
   if (!existsSync(join(source, 'package.json'))) return report('failed', `${source} is not a Sawmill checkout: it has no package.json.`);
   if (existsSync(join(root, '.git')) || await realpath(source) === await realpath(root)) {
-    return report('failed', `This mill runs from the source checkout ${root}, not an installation, so mill update will not replace it. Run an installed mill to update.`);
+    return report('failed', `This mill runs from the source checkout ${root}, not an installation, so mill update will not replace it. ` +
+      'A global install linked to a checkout runs from it. Install a packed copy once: in the checkout run npm ci and npm pack, then npm install --global with the .tgz it writes. Then run mill update.');
   }
 
   const id = randomUUID().slice(0, 8);
