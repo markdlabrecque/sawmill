@@ -54,7 +54,9 @@ test('GitHub CI logs with terminal escapes are saved for repair instead of repor
 test('raw GitHub CI downloads still return only the bounded tail and mark truncation', async t => {
   const log = '\u001b[31m' + 'earlier output\n'.repeat(10000) + '\u001b[0m\nAssertionError: actual failure\n';
   const { tracker } = await guardedGh(t, log);
-  const result = await tracker.getJobLog(job, { maxBytes: 1024, timeoutMs: 5000 });
+  const result = await tracker.getJobLog(job, { maxBytes: 1024, timeoutMs: 5000 }).catch(error => {
+    assert.fail(`CI logs containing terminal escapes must be downloadable: ${String(error)}`);
+  });
   assert.equal(result.text, Buffer.from(log).subarray(-1024).toString('utf8'));
   assert.equal(result.bytes, Buffer.byteLength(log));
   assert.equal(result.truncated, true);
