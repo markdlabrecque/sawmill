@@ -18,7 +18,7 @@ import { withRunLock } from './run-lock.js';
 import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
-import { infrastructure, type Runtime, type Outcome } from './runtime.js';
+import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
@@ -416,7 +416,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...project.roles[role], prompt,
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then git -c core.editor=true rebase --continue. Preserve writer patches, then append a separate fix commit.` : ''}`,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
           }, options);
