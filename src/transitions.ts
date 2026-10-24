@@ -268,10 +268,10 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
         switch (write.kind) {
           case 'comment': {
             // A replayed marked report may have landed before its response was lost; one already on the ticket is
-            // not posted again. A failed lookup posts it, as before, rather than holding a completed ticket.
+            // not posted again. A failed lookup holds it like a failed post, so it is never posted unchecked.
             const { marker } = write.payload;
             if (marker && write.attempts > 0 && tracker.listComments &&
-                await tracker.listComments(number).then(comments => comments.some(comment => comment.body.includes(marker)), () => false)) break;
+                (await tracker.listComments(number)).some(comment => comment.body.includes(marker))) break;
             await tracker.addComment(number, write.payload.body); break;
           }
           case 'add-label': await tracker.addLabel(number, write.payload.label); break;

@@ -307,6 +307,39 @@ test('actual dispatcher posts no comment per completed role and recovers a merge
   assert.deepEqual((await y.starts()).map(r => r.role), ['test-writers', 'implementer', 'reviewer']);
 });
 
+test('a merged report whose response is lost is held while comments cannot be read, then found instead of posted again', async t => {
+  const y = await fixture(t, [1], true);
+  await y.release();
+  await writeFile(join(y.root, 'lose-mirror-stage'), 'merged');
+  await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
+  const before = (await y.status()).tickets[0]!;
+  assert.equal(before.state, 'logjam'); assert.equal(before.reason, 'tracker');
+  const reports = async () => (await readFile(join(y.root, 'comments-1.jsonl'), 'utf8')).split('\n').filter(Boolean)
+    .map(line => JSON.parse(line) as { body: string }).filter(comment => comment.body.startsWith('[sawmill:merged]'));
+  const posts = async () => (await readFile(join(y.root, 'tracker.jsonl'), 'utf8')).split('\n').filter(Boolean)
+    .map(line => JSON.parse(line) as string[]).filter(args => args.includes('POST') && args.some(arg => arg.endsWith('/comments'))).length;
+  assert.equal((await reports()).length, 1);
+  assert.equal(await posts(), 1);
+  await rm(join(y.root, 'lose-mirror-stage'));
+  // The lookup fails, so the report is not posted unchecked; the write stays held with the error logged.
+  await writeFile(join(y.root, 'comments-lookup-fail'), 'yes');
+  await y.command(['run', 'answer', '1', '--json']).catch((e: any) => e);
+  assert.equal(await posts(), 1);
+  const held = (await y.status()).tickets[0]!;
+  assert.equal(held.state, 'logjam'); assert.equal(held.reason, 'tracker');
+  assert.match((await y.command(['run', 'log', '1'])).stdout, /mirror failed: Fixture comment lookup outage/);
+  // Once comments can be read, the report already on the ticket is found and not posted again.
+  await rm(join(y.root, 'comments-lookup-fail'));
+  await y.command(['run', 'answer', '1', '--json']);
+  await y.command(['run', '--foreground', '--json']).catch((e: any) => e);
+  const after = (await y.status()).tickets[0]!;
+  assert.equal(after.state, 'done');
+  assert.equal(after.mergeCommit, before.mergeCommit);
+  assert.equal(await posts(), 1);
+  assert.equal((await reports()).length, 1);
+  assert.ok((await reports())[0]!.body.includes(`Operation: dispatch/tool#1 run ${(await y.status()).run.id} ${after.integration.operation?.id}`));
+});
+
 test('process recovery keeps the durable successor of a completed reviewer', async t => {
   const y = await fixture(t, [1], true);
   await y.release();
