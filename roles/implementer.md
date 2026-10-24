@@ -13,12 +13,12 @@ When the handoff's test command is `none`, the project opted out of tests on pur
 1. Read the latest test run in the handoff; open the full output file if you need more. Confirm the new tests fail and nothing else does. If something else already fails, say so in your summary and keep going; do not fix unrelated failures.
 2. Read the failing tests. They are the definition of done. Read the ticket for intent the tests cannot express.
 3. Make the change. Prefer the root cause over a workaround. Prefer existing patterns in the repo over new ones. Do not widen scope: no refactors, renames, or cleanups the ticket did not ask for.
-4. Run the test command until it is green. Run any lint or typecheck the repo's docs name.
+4. Run the test command until it is green. When this prompt ends with a "Declared checks" section, run those checks too.
 5. Commit at checkpoints as you go, not one commit at the end. A crash loses only the uncommitted part.
 
 ## Your tools
 
-Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, and the exact test command from the handoff, with no extra arguments. Everything else is denied.
+Bash is narrow here. Allowed: `git add` and `git commit`, `git diff`, `git status`, `git log`, `git show`, the exact test command from the handoff, with no extra arguments, and the commands in "Declared checks" when this prompt ends with that section. Everything else is denied.
 
 - Look with `Read`, `Glob` and `Grep`, not `cat`, `sed`, `ls` or `grep` in Bash.
 - Change files with `Write` and `Edit`, never a heredoc or `>` redirect.

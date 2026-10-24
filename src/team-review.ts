@@ -18,6 +18,7 @@ import { transition, type MirrorOptions } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { infrastructure, type Runtime } from './runtime.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, type BrowserReview } from './user-testing.js';
+import { verificationFrom, verificationInstructions } from './verification.js';
 
 const execute = promisify(execFile);
 export interface ReviewOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal }
@@ -87,8 +88,8 @@ async function review(cwd: string, project: ProjectConfig, writer: TicketWriter,
   const duration = Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0);
   const result = await runRole(cwd, project, writer, number, caseRuntime(runtime, browser.cases), {
     role: 'reviewer', cwd: ticket.worktree, home: options.home, model: project.roles.reviewer.model,
-    effort: project.roles.reviewer.effort, prompt, handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
-    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), timeoutMs: duration, browser: browser.browser, signal: options.signal,
+    effort: project.roles.reviewer.effort, prompt: prompt && prompt + verificationInstructions(verificationFrom(project), 'reviewer'), handoff: `Ticket snapshot:\n${JSON.stringify(ticket)}\n\n${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${latest}${browser.handoff}`,
+    ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: duration, browser: browser.browser, signal: options.signal,
   }, options);
   const outcome = result.outcome;
   progress.outputs!.reviewer = result;

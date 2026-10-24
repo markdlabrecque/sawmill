@@ -64,10 +64,26 @@ role_timeout: 60m
 # That turns off the test-writers, the red check after them, every test run
 # Mill hands to a role, and the local test run before merge. A missing tests
 # key is still an error, so nobody ends up with no tests by accident.
+#
+# focused is optional: a runner roles may call with test paths under scope,
+# and optionally name_flag with one test name. It supplements the test
+# command and never replaces it in Mill's red, green or merge runs.
 tests:
   command: npm test
   timeout: 30m
   # preflight: test -x node_modules/.bin/tsc
+  # focused:
+  #   command: node --test
+  #   scope: dist/test
+  #   name_flag: --test-name-pattern
+
+# Optional named checks roles may run exactly as written: build, lint and
+# typecheck. Each is one command with literal arguments, no shell syntax.
+# Only declared checks are advertised to roles and allowed.
+# checks:
+#   build: npm run build
+#   lint: npm run lint
+#   typecheck: npx tsc --noEmit
 
 # wait: after the rebase gate, push the branch and wait for the tracker's
 # pipeline on that exact commit before merging; red is one more implementer

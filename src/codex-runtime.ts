@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { authorizeVerification, type Verification } from './verification.js';
 
 const execute = promisify(execFile);
 
@@ -19,6 +20,17 @@ function isTestCommand(command: unknown, testCommand: string | undefined): boole
   if (typeof command !== 'string') return false;
   const match = /^(?:\/[^\s]+\/)?(?:sh|bash|zsh) -l?c (.+)$/.exec(command);
   return match?.[1] === `'${testCommand.replaceAll("'", "'\\''")}'` || match?.[1] === JSON.stringify(testCommand);
+}
+
+/** A declared check or focused test, given directly or as Codex's single quoted shell argument. */
+function isVerificationCommand(command: unknown, verification: Verification | undefined): boolean {
+  if (typeof command !== 'string' || !verification) return false;
+  if (authorizeVerification(verification, command)) return true;
+  const argument = /^(?:\/[^\s]+\/)?(?:sh|bash|zsh) -l?c (.+)$/.exec(command)?.[1] ?? '';
+  let inner: unknown;
+  if (/^'(?:[^']|'\\'')*'$/.test(argument)) inner = argument.slice(1, -1).replaceAll("'\\''", "'");
+  else if (argument.startsWith('"')) { try { inner = JSON.parse(argument); } catch { return false; } }
+  return Boolean(authorizeVerification(verification, inner));
 }
 
 /** Direct codex exec adapter. CLI 0.163.0; see docs/codex-runtime.md for limits. */
@@ -100,7 +112,7 @@ export class CodexRuntime implements Runtime {
             // Ordinary assertion failures are expected while writing tests. Shell launch,
             // permission and timeout failures still count, even for the test command.
             const runtimeError = /command not found|permission denied|timed? out|ENOENT|EACCES/i.test(output) || [126, 127].includes(item.exit_code);
-            if (failed && (!isTestCommand(item.command, request.testCommand) || runtimeError)) {
+            if (failed && ((!isTestCommand(item.command, request.testCommand) && !isVerificationCommand(item.command, request.verification)) || runtimeError)) {
               const key = `command_execution:${String(item.command)}:${output.replace(/\s+/g, ' ').trim().toLowerCase()}`;
               const count = (toolErrors.get(key) ?? 0) + 1;
               toolErrors.set(key, count);
