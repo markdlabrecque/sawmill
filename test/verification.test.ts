@@ -166,6 +166,8 @@ test('Claude Code grants the declared checks from the same representation, and n
     for (const rule of declared) assert.ok(rules.includes(rule.slice(5, -1)), `${role} gets ${rule}`);
     assert.ok(rules.includes('npm test'));
     assert.equal(rules.includes('git add *'), role !== 'reviewer', `${role}: git add`);
+    assert.equal(rules.includes('git rm *'), role !== 'reviewer', `${role}: git rm`);
+    assert.equal(rules.includes('git mv *'), role !== 'reviewer', `${role}: git mv`);
     assert.equal(rules.includes('git commit *'), role !== 'reviewer', `${role}: git commit`);
   }
   const old = await claudeRules({ role: 'reviewer', conflictBase: undefined, testCommand: 'npm test' } as never);

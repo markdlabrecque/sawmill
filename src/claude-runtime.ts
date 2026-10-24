@@ -34,7 +34,7 @@ export class ClaudeCodeRuntime implements Runtime {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', request.model, '--effort', request.effort,
       '--setting-sources', '', '--settings', '{"attribution":{"commit":"","pr":""}}', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
       '--permission-mode', 'dontAsk', '--tools', writer ? 'Read,Glob,Grep,Write,Edit,Bash' : 'Read,Glob,Grep,Bash',
-      '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git commit *)'] : []),
+      '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git rm *)', 'Bash(git mv *)', 'Bash(git commit *)'] : []),
         ...conflictRules, 'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', ...(request.testCommand !== undefined ? [`Bash(${request.testCommand})`] : []), ...claudeVerificationRules(request.verification), ...(request.browser ? browserRules : [])].join(','),
       '--disallowedTools', ['mcp__*', ...(request.browser ? [] : [...browserRules, 'Bash(*/chrome-devtools-axi *)'])].join(',')];
     let resultText: string | undefined;
