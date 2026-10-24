@@ -11,6 +11,7 @@ import { readRun, type RunSnapshot } from '../run-store.js';
 import { ensureScheduler, notifyScheduler } from '../scheduler.js';
 import type { TicketWriter } from '../tracker.js';
 import { activateRun, answerTicket, closeTicket, requestStop, stopRunAtBoundaries } from '../transitions.js';
+import { attemptOf } from './diagnosis.js';
 import { discoverMillyards, runActions, ticketActions, type TicketAction } from './model.js';
 
 export interface CommandReply { code: 200 | 400 | 409 | 500; status: 'ok' | 'invalid' | 'refused' | 'failed'; message: string }
@@ -43,6 +44,7 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
   const number = request.ticket;
   if (ticketAction && (typeof number !== 'number' || !Number.isSafeInteger(number) || number < 1)) return invalid('The request must name a ticket.');
   if (request.message !== undefined && typeof request.message !== 'string') return invalid('The message must be text.');
+  if (request.attempt !== undefined && typeof request.attempt !== 'string') return invalid('The attempt must be text.');
   if (confirm.includes(action) && request.confirmed !== true) return invalid(`Confirm the ${action} first.`);
 
   const cwd = request.millyard;
@@ -68,6 +70,8 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
 
     const ticket = run.tickets.find(row => row.number === number);
     if (!ticket) return refused(`Ticket #${number} is not in this run; reload the board.`);
+    // An action taken from an older diagnosis must not answer or reset newer work.
+    if (request.attempt !== undefined && request.attempt !== attemptOf(ticket)) return refused(`#${ticket.number} has moved on since this view was drawn; nothing was changed. Reload the board and check its diagnosis again.`);
     const rule = ticketActions(ticket, run.pendingWrites.some(write => write.ticket === ticket.number))[action as TicketAction];
     if (!rule.available) return refused(rule.reason!);
     if (action === 'stop') {
