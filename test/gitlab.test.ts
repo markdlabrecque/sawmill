@@ -99,18 +99,36 @@ test('GitLab draft assigns the glab user, leaves a held ticket with its holder, 
   assert.deepEqual(remote.issues.find((row: { iid: number }) => row.iid === 12).assignees, [{ id: 9, username: 'alice' }]);
 });
 
-test('GitLab label draft includes all pages and closed tickets with hydrated threads', async t => {
+test('GitLab label draft includes all pages, omits closed tickets and hydrates threads', async t => {
   const y = await fixture(t);
   y.state.issues.push(issue(11));
   await y.save();
   const result = await y.cli('run', 'draft', '--label', 'batch / ready', '--json');
   assert.equal(result.code, 0, result.stdout);
   const rows = JSON.parse(result.stdout).tickets;
-  assert.deepEqual(rows.map((row: { number: number }) => row.number), [2, 7, 11]);
-  assert.equal(rows[0].trackerState, 'closed');
-  assert.equal(rows[1].comments.at(-1).body, 'Last page');
+  assert.deepEqual(rows.map((row: { number: number }) => row.number), [7, 11]);
+  assert.equal(rows[0].trackerState, 'open');
+  assert.equal(rows[0].comments.at(-1).body, 'Last page');
   assert.equal((await y.status()).run.source.label, 'batch / ready');
   assert.ok((await y.requests()).some(request => request.endpoint.includes('labels=batch+%2F+ready')));
+});
+
+test('GitLab refuses an explicit closed ticket without --include-closed and reports an all-closed label draft', async t => {
+  const y = await fixture(t);
+  const refused = await y.cli('run', 'draft', '2', '--json');
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stdout, /#2.*closed.*--include-closed/i);
+  await assert.rejects(readFile(join(y.cwd, '.mill/run.sqlite')), { code: 'ENOENT' });
+  const allowed = await y.cli('run', 'draft', '2', '--include-closed', '--json');
+  assert.equal(allowed.code, 0, allowed.stdout);
+  assert.equal(JSON.parse(allowed.stdout).tickets[0].trackerState, 'closed');
+  y.state.issues = [issue(2, '', 'closed'), issue(3, '', 'closed')];
+  await y.save();
+  const before = await y.status();
+  const none = await y.cli('run', 'draft', '--label', 'batch / ready', '--replace', '--json');
+  assert.notEqual(none.code, 0, none.stdout);
+  assert.match(none.stdout, /closed/i);
+  assert.deepEqual(await y.status(), before);
 });
 
 test('GitLab spec draft uses only explicit first-line Part of membership, not mentions or related issues', async t => {
@@ -123,8 +141,8 @@ test('GitLab spec draft uses only explicit first-line Part of membership, not me
   const result = await y.cli('run', 'draft', '--spec', '40', '--json');
   assert.equal(result.code, 0, result.stdout);
   const snapshot = JSON.parse(result.stdout);
-  assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [7, 11]);
-  assert.equal(snapshot.tickets[0].comments.at(-1).body, 'Last page');
+  assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [11]);
+  assert.deepEqual(snapshot.edges, [{ blocked: 11, blocker: 7, outsideClosed: true }]);
   assert.deepEqual(snapshot.run.source, { kind: 'spec', number: 40 });
   const empty = await y.cli('run', 'draft', '--spec', '12', '--replace', '--json');
   assert.equal(empty.code, 1); assert.match(empty.stdout, /No direct children/);

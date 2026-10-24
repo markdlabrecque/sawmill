@@ -114,10 +114,12 @@ if (issueMatch && method !== 'GET') {
 }
 if (route === '/issues' && method === 'GET') {
   if (state.forbidIssueReads) fail(500, 'Issue read after draft');
-  if (url.searchParams.get('state') !== 'all' || url.searchParams.get('scope') !== 'all') fail(400, 'Listing must include closed and unassigned issues');
+  // Either every state (filtered by Mill) or only opened issues (filtered by GitLab) is a valid way to skip closed tickets.
+  const wanted = url.searchParams.get('state');
+  if (!['all', 'opened'].includes(wanted) || url.searchParams.get('scope') !== 'all') fail(400, 'Listing must include unassigned issues');
   if (url.searchParams.get('order_by') !== 'created_at') fail(400, 'Unsupported issue order_by; use the documented created_at order');
   const label = url.searchParams.get('labels');
-  list(state.issues.filter(issue => !label || issue.labels.includes(label)));
+  list(state.issues.filter(issue => (!label || issue.labels.includes(label)) && (wanted === 'all' || issue.state === 'opened')));
 }
 if (route === '/labels' && method === 'GET') list(state.availableLabels.map(name => ({ name })));
 if (issueMatch && method === 'GET') {
