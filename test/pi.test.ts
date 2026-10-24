@@ -108,6 +108,24 @@ test('Pi selection reviews through the public CLI with literal model/effort, raw
   assert.match((await y.cli('run', 'log', String(y.ticket.number))).stdout, /\[review-pass\][^]*reviewer: pi-fixture-session/);
 });
 
+for (const mode of ['reported', 'partial', 'absent', 'failed'] as const) {
+  test(`Pi adapter retains ${mode} usage without subscription price estimates`, async t => {
+    const y = await piYard(t);
+    const usage = mode === 'absent' ? undefined : { input: 13, cacheRead: 5, cacheWrite: 2, ...(mode === 'partial' ? {} : { output: 7 }), cost: { total: 9.99 } };
+    await events(y, [session, { type: 'agent_start' },
+      assistant('First turn', { id: 'first', usage }),
+      assistant('First turn', { id: 'first', usage }),
+      { type: 'agent_end', messages: [{ role: 'assistant', usage }], willRetry: false },
+      { type: 'agent_start' }, assistant(fence({ outcome: 'pass' }), { id: 'second', usage }),
+      { type: 'agent_end', messages: [], willRetry: false }, settled], mode === 'failed' ? 'process.exitCode = 1;' : '');
+    const output = JSON.parse((await y.invoke(['team', 'review', '21', '--json'])).stdout);
+    assert.equal(output.outcome.outcome, mode === 'failed' ? 'infrastructure' : 'pass');
+    assert.deepEqual(output.usage, { inputTokens: mode === 'absent' ? null : 40, outputTokens: mode === 'absent' || mode === 'partial' ? null : 14 });
+    assert.equal(output.cost, undefined);
+    assert.ok(output.durationMs >= 0);
+  });
+}
+
 test('Pi native reviewer command rules block writes, shell/interpreter bypasses and browser access', async t => {
   const y = await piYard(t);
   const probes = [

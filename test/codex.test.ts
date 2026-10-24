@@ -71,6 +71,33 @@ test('configured Codex review starts a direct child and persists its completed o
   assert.match((await y.cli('run', 'log', '22')).stdout, /\[review-pass\]/);
 });
 
+for (const mode of ['reported', 'partial', 'absent', 'failed'] as const) {
+  test(`Codex adapter retains ${mode} usage without pricing estimates`, async t => {
+    const y = await fixture(t);
+    const usage = mode === 'absent' ? undefined : { input_tokens: 13, ...(mode === 'partial' ? {} : { output_tokens: 7 }) };
+    const terminal = { type: 'turn.completed', ...(usage ? { usage } : {}), total_cost_usd: 9.99 };
+    await y.events([started, turn, message({ outcome: 'pass' }), terminal], mode === 'failed' ? 'process.exitCode = 1;' : '');
+    const result = await y.invoke();
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.outcome.outcome, mode === 'failed' ? 'infrastructure' : 'pass');
+    assert.deepEqual(output.usage, { inputTokens: mode === 'absent' ? null : 13, outputTokens: mode === 'absent' || mode === 'partial' ? null : 7 });
+    assert.equal(output.cost, undefined);
+    assert.ok(output.durationMs >= 0);
+  });
+}
+
+test('Codex adapter counts terminal usage once, not streamed item updates', async t => {
+  const y = await fixture(t);
+  await y.events([started, turn,
+    { type: 'item.updated', item: { id: 'draft', type: 'agent_message', text: 'Working', usage: { input_tokens: 999, output_tokens: 999 } } },
+    message({ outcome: 'pass' }), message({ outcome: 'pass' }),
+    { type: 'turn.completed', usage: { input_tokens: 13, output_tokens: 7 } }]);
+  const output = JSON.parse((await y.invoke()).stdout);
+  assert.equal(output.outcome.outcome, 'pass');
+  assert.deepEqual(output.usage, { inputTokens: 13, outputTokens: 7 });
+  assert.equal(output.cost, undefined);
+});
+
 test('Codex keeps raw split UTF-8 streams, exact model/effort, role restrictions and handoff', async t => {
   const y = await fixture(t);
   const events = [started, turn, { type: 'future.event', value: 'keep' }, message({ outcome: 'pass', summary: 'café ✅' }), completed];

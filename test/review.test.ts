@@ -120,6 +120,23 @@ async function eventsRuntime(yard: Awaited<ReturnType<typeof reviewYard>>, event
   return processRuntime(yard, `process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write(${JSON.stringify(events.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}); ${extra} });`);
 }
 
+for (const mode of ['reported', 'partial', 'absent', 'failed', 'messages-only'] as const) {
+  test(`Claude adapter retains ${mode} usage without counting messages and totals twice`, async t => {
+    const yard = await reviewYard(t);
+    const usage = { input_tokens: 13, cache_read_input_tokens: 5, cache_creation_input_tokens: 2, ...(mode === 'partial' ? {} : { output_tokens: 7 }) };
+    const message = { type: 'assistant', message: { id: 'usage-message', content: [{ type: 'text', text: 'Working' }], ...(mode === 'absent' ? {} : { usage }) } };
+    const terminal = { ...final(fence({ outcome: 'pass' })), total_cost_usd: 9.99,
+      ...(['absent', 'messages-only'].includes(mode) ? {} : { usage: { ...usage, input_tokens: 23 } }) };
+    const runtime = await eventsRuntime(yard, [init, message, message, terminal], mode === 'failed' ? 'process.exitCode = 1;' : '');
+    const output = JSON.parse((await yard.invoke(['team', 'review', '11', '--json'], { runtime })).stdout);
+    assert.equal(output.outcome.outcome, mode === 'failed' ? 'infrastructure' : 'pass');
+    assert.deepEqual(output.usage, { inputTokens: mode === 'absent' ? null : mode === 'messages-only' ? 20 : 30,
+      outputTokens: mode === 'absent' || mode === 'partial' ? null : 7 });
+    assert.equal(output.cost, undefined);
+    assert.ok(output.durationMs >= 0);
+  });
+}
+
 test('last outcome is authoritative even when its opening is malformed', async t => {
   const yard = await reviewYard(t);
   const runtime = await eventsRuntime(yard, [init, final(fence({ outcome: 'pass' }) + '\n```mill-outcome broken\n{}\n```')]);
