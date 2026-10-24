@@ -1,7 +1,7 @@
 import { directChild } from './direct-child.js';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
-import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { conflictContinueCommand, infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 
 /** Direct Claude stream-json adapter. Fixture-tested against SDK 0.3.308 projections. */
 export class ClaudeCodeRuntime implements Runtime {
@@ -17,7 +17,7 @@ export class ClaudeCodeRuntime implements Runtime {
     if (request.signal?.aborted) return { outcome: infrastructure('Role interrupted before startup.') };
     if (process.platform === 'win32') return { outcome: infrastructure('Claude process-group cleanup is not supported on Windows.') };
     if (request.conflictBase && (request.role !== 'implementer' || !/^[a-f0-9]{40,64}$/.test(request.conflictBase))) return { outcome: infrastructure('Invalid conflict repair capability.') };
-    const conflictRules = request.conflictBase ? [`Bash(git rebase ${request.conflictBase})`, 'Bash(git -c core.editor=true rebase --continue)', 'Bash(git rebase --abort)'] : [];
+    const conflictRules = request.conflictBase ? [`Bash(git rebase ${request.conflictBase})`, `Bash(${conflictContinueCommand})`, 'Bash(git rebase --abort)'] : [];
     const writer = request.role !== 'reviewer';
     const env: NodeJS.ProcessEnv = { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config` } : {}), ...this.options.env };
     const browserRules = ['Bash(chrome-devtools-axi *)'];

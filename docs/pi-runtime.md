@@ -118,7 +118,8 @@ Live startup, provider/model availability and live resume have not been tested.
 
 Only an implementer repairing a CLI-detected rebase conflict receives the exact
 saved integration SHA. Its native policy permits `git rebase <that-sha>`,
-`git -c core.editor=true rebase --continue`, and `git rebase --abort` for that
+`git -c core.commentChar=auto -c core.editor=true rebase --continue` (so
+`#<ticket>:` subjects are not stripped as comments), and `git rebase --abort` for that
 invocation. Other targets, merge, skip, reset and push remain denied. The CLI
 still requires integration ancestry, unchanged writer patches, one final fix
 commit, a fresh review and full local tests. Claude's native allowlist receives
