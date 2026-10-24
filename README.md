@@ -398,7 +398,7 @@ Path: existing-checks
 Reason: Copy-only change; the existing checks cover rendering.
 ```
 
-`mill run draft` refuses a path other than `test-first` or `existing-checks`, or a plan with no reason. It stores the plan with the ticket, and `mill run status` shows a declared plan before work starts. An `existing-checks` ticket starts at the implementer, with no test writers. Review, the final test run and required checks still run and still block. The merge report names the plan and its reason. Roles cannot change a drafted plan. To change one, edit the ticket and draft again.
+`mill run draft` refuses a path other than `test-first` or `existing-checks`, or a plan with no reason. It stores the plan with the ticket, and `mill run status` shows a declared plan before work starts. An `existing-checks` ticket starts at the implementer, with no test writers. Review, the final test run and required checks still run and still block. The merge report names the plan and its reason. Roles cannot change a drafted plan. To change one, edit the ticket and draft again, with a reason that names the coverage that remains or the gap. When the new draft changes a ticket's path from the run it replaces, the ticket keeps a revision with the earlier path, the new path and the new reason. `mill run status` and the merge report show every revision.
 
 ### Browser testing and runtimes
 
