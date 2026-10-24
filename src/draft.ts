@@ -70,9 +70,9 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
     ordered.push(...remaining.splice(next, 1));
   }
-  saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, await checkPolicy());
+  const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, await checkPolicy());
   await registerMillyard(home, cwd);
-  return readRun(cwd);
+  return { ...readRun(cwd), ...(clearedPick === undefined ? {} : { clearedPick }) };
 }
 
 function bodyBlockers(body: string): number[] {

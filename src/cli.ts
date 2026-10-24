@@ -31,7 +31,7 @@ import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
 import { describeCheckPolicy, resolveCheckPolicy } from './check-policy.js';
 import type { ReportStage } from './reporter.js';
-import { activateRun, answerTicket, closeTicket, flushAssignments, requestStop, stopRun, transition } from './transitions.js';
+import { activateRun, answerTicket, closeTicket, flushAssignments, pickTicket, requestStop, stopRun, transition } from './transitions.js';
 import { parseDraftArgs } from './selection.js';
 import { formatRun, formatTicketLog, readRun, readTicketLog, type MirrorWrite, type RunSnapshot } from './run-store.js';
 import { ticketRef } from './links.js';
@@ -169,6 +169,17 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       // Status and draft output agree: the run as stored plus whether a scheduler is serving this home.
       const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home), unresolvedReservations: unresolvedSlots(home) });
+      if (positional[0] === 'pick') {
+        const clear = positional[1] === '--clear';
+        if (positional.length !== 2 || (!clear && (!/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))))) throw new CliError(usage('pick'), 2);
+        const number = clear ? undefined : Number(positional[1]);
+        const result = pickTicket(cwd, config.project, number);
+        notifyScheduler(home);
+        emit({ status: 'ok', ...result }, number !== undefined
+          ? `Picked ${ref(number)} for this run's next available slot.${result.previous !== undefined && result.previous !== number ? ` Replaced pending pick ${ref(result.previous)}.` : ''}`
+          : result.previous !== undefined ? `Cleared pending pick ${ref(result.previous)}.` : 'No pick was pending; nothing to clear.');
+        return 0;
+      }
       if (positional[0] === 'record') {
         const name = `record ${positional[1]}`;
         const words = positional.slice(2);
@@ -374,7 +385,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}${result.held ? '; mill update holds dispatch, try again once it finishes' : ''}.`,
           ...result.started.map(row => `${ref(row.ticket)}: worker ${row.worker.pid}`),
-          ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`), ...describeUnresolved(result.unresolved)].join('\n'));
+          ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`), ...result.notes, ...describeUnresolved(result.unresolved)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'tickets' && ['comment', 'label'].includes(positional[1] ?? '')) {
@@ -442,12 +453,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         };
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
+        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
         if (writer) await flushAssignments(cwd, config.project, writer, options);
         // Drafting registers the millyard but leaves the run inactive until mill run.
         const snapshot = readRun(cwd);
         const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
-        emit(view(snapshot), [table(snapshot), ...policy, 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
+        const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick ${ref(drafted.clearedPick)} because the run was replaced.`];
+        emit({ ...view(snapshot), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...cleared, ...policy, 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
         return 0;
       }
       const message = unknownCommand(positional);

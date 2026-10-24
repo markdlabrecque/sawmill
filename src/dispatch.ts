@@ -12,7 +12,7 @@ import { checkMillyard } from './millyard.js';
 import { readRun, mergeCleanupPending, type RunSnapshot, type WorkerOwnership } from './run-store.js';
 import { dispatchHeld } from './scheduler.js';
 import { claimSlot, processStart, releaseSlot, transferSlot, unresolvedSlots, type SlotLease } from './slots.js';
-import { claimWorker, failWorkerLaunch, flushPending, recordWorker } from './transitions.js';
+import { claimWorker, failWorkerLaunch, flushPending, reconcilePick, recordWorker } from './transitions.js';
 import type { TicketWriter } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { checkFirstStart } from './first-start.js';
@@ -25,6 +25,8 @@ export interface DispatchResult {
   slotsFull: boolean;
   /** A running `mill update` holds dispatch, so the pass started nothing more. */
   held: boolean;
+  /** Changes to the pending pick, also retained in the run log. */
+  notes: string[];
   /** When slots are full, the reservations holding capacity without a known owner. */
   unresolved: { path: string; problem: string }[];
 }
@@ -33,7 +35,7 @@ export type WorkerEvent = { ticket: number; worker: WorkerOwnership };
 export function readyTickets(snapshot: RunSnapshot): number[] {
   return snapshot.tickets.filter(row => row.state === 'queued' && (!row.completion || mergeCleanupPending(row)) && !row.blockers.length &&
     (!row.worker || row.worker.status === 'finished') && !snapshot.pendingWrites.some(write => write.ticket === row.number))
-    .sort((a, b) => a.position - b.position).map(row => row.number);
+    .sort((a, b) => Number(b.number === snapshot.run.pendingPick) - Number(a.number === snapshot.run.pendingPick) || a.position - b.position).map(row => row.number);
 }
 /** Durable results can be polled after the dispatcher process has exited. */
 export function workerEvents(snapshot: RunSnapshot): WorkerEvent[] {
@@ -47,13 +49,18 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   requireTypeSafeKey();
   cwd = await realpath(cwd);
   const snapshot = await dispatchPreflight(cwd, project, options.wait);
-  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false, unresolved: [] };
+  const note = reconcilePick(cwd, snapshot.run.id);
+  const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false, unresolved: [], notes: note ? [note] : [] };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
   for (const ticket of readyTickets(snapshot)) {
     if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
     // Before any slot or claim: a closed ticket is skipped, a failed lookup leaves it queued.
     const first = await checkFirstStart(cwd, ticket, writer);
-    if (first.status === 'skipped') continue;
+    if (first.status === 'skipped') {
+      const note = reconcilePick(cwd, snapshot.run.id);
+      if (note) result.notes.push(note);
+      continue;
+    }
     if (first.status === 'lookup-failed') {
       result.status = 'partial';
       result.failures.push({ ticket, error: first.error });
