@@ -37,11 +37,11 @@ const hookTimeout = 30000;
 const milliseconds = (duration: string) => Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.slice(-1)] ?? 0);
 
 /** One key per thing worth telling: a stop on one attempt, a completion, or one stretch without recorded progress. */
-function due(ticket: RunTicket, stallAfter: number, now: number): { kind: NotificationKind; key: string } | undefined {
+function due(ticket: RunTicket, stallAfter: number | undefined, now: number): { kind: NotificationKind; key: string } | undefined {
   if (ticket.state === 'logjam') return { kind: 'decision-needed', key: `decision-needed:${ticket.number}:${attemptOf(ticket)}` };
   if (ticket.state === 'done') return { kind: 'completed', key: `completed:${ticket.number}` };
   // Only time since the last recorded change counts; nothing here records progress, so a stall is never hidden.
-  if (ticket.state === 'working' && now - Date.parse(ticket.updated) > stallAfter) return { kind: 'stalled', key: `stalled:${ticket.number}:${ticket.updated}` };
+  if (ticket.state === 'working' && stallAfter !== undefined && now - Date.parse(ticket.updated) > stallAfter) return { kind: 'stalled', key: `stalled:${ticket.number}:${ticket.updated}` };
   return undefined;
 }
 
@@ -60,9 +60,9 @@ function runHook(hook: string, cwd: string, event: Notification): Promise<void> 
 /**
  * Sends every event not sent before to `.mill/notify.sh`, one run of the hook per event with the event as JSON on stdin.
  * An event stays recorded only once the hook exits 0, so a failed send is retried next time. Without a hook nothing is sent or recorded.
- * `stallAfter` is how long a working ticket may go without a recorded change before it counts as stalled.
+ * `stallAfter` is how long a working ticket may go without a recorded change before it counts as stalled; without it no stall is sent.
  */
-export async function notify(cwd: string, stallAfter: string): Promise<NotifyResult> {
+export async function notify(cwd: string, stallAfter?: string): Promise<NotifyResult> {
   const hook = notifyHook(cwd);
   if (!existsSync(hook)) return { status: 'no-hook', hook, sent: [], failures: [] };
   const snapshot = readRun(cwd);
@@ -76,7 +76,7 @@ export async function notify(cwd: string, stallAfter: string): Promise<NotifyRes
     const result: NotifyResult = { status: 'ok', hook, sent: [], failures: [] };
     const now = Date.now();
     for (const ticket of snapshot.tickets) {
-      const next = due(ticket, milliseconds(stallAfter), now);
+      const next = due(ticket, stallAfter === undefined ? undefined : milliseconds(stallAfter), now);
       if (!next || !claim.run(runId, next.key, new Date().toISOString()).changes) continue;
       const event: Notification = { kind: next.kind, ticket: ticket.number, title: ticket.title, run: runId, millyard: cwd,
         state: ticket.state, stage: ticket.stage, reason: ticket.reason, lastProgress: ticket.updated };

@@ -35,6 +35,7 @@ import { formatRun, formatTicketLog, readRun, readTicketLog, type MirrorWrite, t
 import { ticketRef } from './links.js';
 import { findCommand, helpText, shortHelp, unknownCommand, usage, version } from './help.js';
 import { resolveMillyard } from './millyard.js';
+import { diagnose } from './view/diagnosis.js';
 import { readView } from './view/model.js';
 import { serveView } from './view/server.js';
 
@@ -239,7 +240,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const snapshot = view(readRun(cwd));
         const { scheduler, unresolvedReservations: unresolved } = snapshot;
         const capacity = unresolved.length ? [`Machine slots: ${listSlots(home).length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
-        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity].join('\n'));
+        // Each stop names its supported next command; mill board --json carries the full diagnosis.
+        const stops = snapshot.tickets.filter(ticket => ticket.state === 'logjam').map(ticket => {
+          const { phase, command, next } = diagnose(ticket, cwd);
+          return `${ref(ticket.number)} stopped at ${phase}${command ? ` running ${command}` : ''}. Next: ${next.command}. ${next.explanation}`;
+        });
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity,
+          ...stops, ...(stops.length ? ['Evidence, identities and log for each stop: mill board, or mill board --json.'] : [])].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {

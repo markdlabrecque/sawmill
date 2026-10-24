@@ -38,6 +38,8 @@ a.tl:focus-visible{outline:2px solid var(--work);outline-offset:2px}
 .rb{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 8px}.rs{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--line)}.rs.running{background:#123a26;color:var(--done)}.rs.stopping{background:#3a3020;color:var(--blk)}
 .pr{font-size:12px;color:var(--blk);margin:0 0 8px}.why{font-size:12px;color:var(--blk);margin-top:2px;white-space:pre-wrap;overflow-wrap:anywhere}.logjam .why{color:#ff9a9a}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.dx{font-size:12px;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}.dx .dxh{color:var(--fg)}.dx .dxi,.dx .dxl{color:var(--dim);font-variant-numeric:tabular-nums}
+.dx .dxn{margin-top:4px}.dx code{color:var(--work);user-select:all}.dx pre{white-space:pre-wrap;max-height:30vh;overflow:auto;margin:4px 0;font-size:11px}.dx summary{cursor:pointer;color:var(--dim);margin-top:4px}
 button.ac{font:13px/1 system-ui,sans-serif;min-height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}button.ac[aria-disabled=true]{color:var(--dim);border-style:dashed;cursor:help}
 .fb{font-size:12px;margin-top:4px;overflow-wrap:anywhere}.fb:empty{display:none}.fb.pending{color:var(--dim)}.fb.ok{color:var(--done)}.fb.failed{color:var(--jam)}.fb.info{color:var(--blk)}
 dialog{width:min(560px,calc(100vw - 24px));background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:16px}dialog::backdrop{background:rgba(0,0,0,.6)}
@@ -72,7 +74,9 @@ function act(key,p,t,a){if(!p||notes.get(key)?.state==='pending')return;
   if(!r.available){note(key,'info',r.reason);return}
   if(a==='answer'){openAnswer(key,p,t);return}
   if(CONFIRM[a]&&!confirm(CONFIRM[a](t)))return;
-  send(key,{action:a,millyard:p.millyard,runId:p.runId,...(t?{ticket:t.number}:{}),...(CONFIRM[a]?{confirmed:true}:{})})}
+  send(key,{action:a,millyard:p.millyard,runId:p.runId,...(t?{ticket:t.number}:{}),...attempt(t),...(CONFIRM[a]?{confirmed:true}:{})})}
+/** A stopped ticket's attempt as this page saw it, so an action never reaches a newer attempt. */
+function attempt(t){return t&&t.diagnosis?{attempt:t.diagnosis.attempt}:{}}
 /** The request names the project, run and ticket as this page saw them; the server refuses it if they have changed. */
 async function send(key,body){note(key,'pending','Sending…');
   try{const r=await fetch('/api/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));
@@ -80,11 +84,11 @@ async function send(key,body){note(key,'pending','Sending…');
   catch(e){note(key,'failed','The board could not be reached: '+e.message);return false}}
 const dlg=document.getElementById('dlg'),dform=document.getElementById('dform'),dm=document.getElementById('dm'),ds=document.getElementById('ds'),dsend=document.getElementById('dsend');let answering=null;
 function openAnswer(key,p,t){answering={key,p,t};document.getElementById('dt').textContent='Answer #'+t.number+' '+t.title;
-  document.getElementById('dq').textContent=t.question?'Question: '+t.question:t.blockage||'Nothing is recorded about what stopped this ticket.';
+  document.getElementById('dq').textContent=(t.question?'Question: '+t.question:t.blockage||'Nothing is recorded about what stopped this ticket.')+(t.diagnosis?'\\n\\nAnswering: '+t.diagnosis.next.explanation:'');
   dm.value='';ds.className='fb';ds.textContent='';dsend.disabled=false;dlg.showModal();dm.focus()}
 document.getElementById('dcancel').onclick=()=>dlg.close();
 dform.onsubmit=async e=>{e.preventDefault();if(!answering||dsend.disabled)return;const {key,p,t}=answering;dsend.disabled=true;ds.className='fb pending';ds.textContent='Sending…';
-  const ok=await send(key,{action:'answer',millyard:p.millyard,runId:p.runId,ticket:t.number,message:dm.value});
+  const ok=await send(key,{action:'answer',millyard:p.millyard,runId:p.runId,ticket:t.number,...attempt(t),message:dm.value});
   if(ok&&answering?.key===key){dlg.close();dm.value='';answering=null;return}
   const n=notes.get(key);ds.className='fb failed';ds.textContent=n?n.message:'The request failed.';dsend.disabled=false};
 dlg.onclose=()=>{if(dsend.disabled)return;answering=null};
@@ -93,6 +97,12 @@ function detail(t,secs){
   if(t.state==='blocked')return 'blocked by '+t.blockers.map(n=>'#'+n).join(', ');
   if(t.state==='logjam')return 'logjam: '+(t.reason||'')+(t.stage?' at '+t.stage:'');
   return t.state}
+/** What stopped the ticket, the code and environment it stopped on, and the supported command that moves it on. */
+function diagnosis(box,t){const d=t.diagnosis;box.hidden=!d;if(!d)return;
+  box.querySelector('.dxh').textContent='Stopped at '+d.phase+(d.command?' running '+d.command:'')+' · last progress '+new Date(d.lastProgress).toLocaleString()+' · attempt '+d.attempt;
+  box.querySelector('.dxi').textContent=Object.entries(d.identities).filter(([,v])=>v).map(([k,v])=>k+' '+(/^[0-9a-f]{40}$/.test(v)?v.slice(0,12):v)).join(' · ')||'No code or environment identity is recorded.';
+  box.querySelector('code').textContent=d.next.command;box.querySelector('.dxn span').textContent=d.next.explanation;
+  box.querySelector('pre').textContent=d.excerpt;box.querySelector('.dxl').textContent=(d.log?'Full log: '+d.log+' · ':'')+'Every step: mill run log '+t.number}
 function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
   for(const p of view.projects){let card=rows.get(p.millyard);
     if(!card){card=document.createElement('div');card.className='p';card.innerHTML='<h2><span class="nm"></span><small></small></h2><div class="path"></div><div class="err"></div><div class="rb"><span class="rs" role="status"></span><button type="button" class="ac" data-a="start-run">Start Run</button><button type="button" class="ac" data-a="stop-run">Stop Run</button></div><div class="pr"></div><div class="fb" role="status"></div><div class="ts"></div>';
@@ -105,11 +115,12 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
     controls(card.querySelector('.rb'),p.millyard,a=>p.runActions[a==='start-run'?'start':'stop']);feedback(card.querySelector(':scope>.fb'),p.millyard);
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
-      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="why"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
+      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="why"></div>'
+          +'<div class="dx" hidden><div class="dxh"></div><div class="dxi"></div><div class="dxn">Next: <code></code> <span></span></div><details><summary>Output</summary><pre></pre><div class="dxl"></div></details></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
         +'<div class="acts">'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
         const mill=p.millyard;row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
       seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
-      controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
+      diagnosis(row.querySelector('.dx'),t);controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
       row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
       row.querySelector('.bb').innerHTML=(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
       row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';

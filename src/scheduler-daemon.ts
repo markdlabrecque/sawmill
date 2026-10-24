@@ -7,6 +7,7 @@ import { loadConfig, type MachineConfig, type ProjectConfig } from './config.js'
 import { dispatchOnce, readyTickets } from './dispatch.js';
 import { recoverWorkers } from './recovery.js';
 import { listMillyards, millyardsPath } from './registry.js';
+import { notify } from './notify.js';
 import { lockHeld, withRunLock } from './run-lock.js';
 import { readRun } from './run-store.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
@@ -71,17 +72,37 @@ function changes() {
   return { waiting, add, close() { clearTimeout(timer); watchers.forEach(watcher => watcher.close()); } };
 }
 
+/** Each millyard's last notification failure, so a broken hook is logged once rather than on every pass. */
+const notifyFailures = new Map<string, string>();
+/** Opt-in operator events through `.mill/notify.sh`; a failed send is retried next pass and never holds dispatch. */
+async function sendNotifications(cwd: string, stallAfter?: string) {
+  let failure = '';
+  try {
+    const result = await notify(cwd, stallAfter);
+    for (const event of result.sent) say(`${cwd}: notified ${event.kind} for #${event.ticket}.`);
+    failure = result.failures.map(({ event, error }) => `${event.kind} for #${event.ticket} not sent: ${error}`).join('; ');
+  } catch (error) { failure = `notifications failed: ${error instanceof Error ? error.message : String(error)}`; }
+  if (failure && notifyFailures.get(cwd) !== failure) say(`${cwd}: ${failure}`);
+  if (failure) notifyFailures.set(cwd, failure);
+  else notifyFailures.delete(cwd);
+}
+
 /** Recovers dead workers and consumes results for one run, returning it when it can take a ticket now. */
 async function inspect(cwd: string): Promise<Candidate | undefined> {
   if (Date.now() < (problems.get(cwd)?.retry ?? 0)) return undefined;
   try {
     const before = readRun(cwd);
+    if (before.run.lifecycle === 'inactive') return undefined;
     // A completed run is still watched while a worker finishes its cleanup, so a crash there is recovered.
-    if (before.run.lifecycle === 'inactive' || (before.run.lifecycle === 'completed' && before.tickets.every(row => !row.worker || row.worker.status === 'finished'))) return undefined;
+    if (before.run.lifecycle === 'completed' && before.tickets.every(row => !row.worker || row.worker.status === 'finished')) {
+      await sendNotifications(cwd);
+      return undefined;
+    }
     const config = await loadConfig(cwd, home!);
     if (!config.valid) throw new Error(config.issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('; '));
     await recoverWorkers(cwd, home!);
     if (before.run.lifecycle !== 'stopped') consumeResults(cwd, config.machine.pause_threshold);
+    await sendNotifications(cwd, config.project.role_timeout);
     const snapshot = readRun(cwd);
     resolved(cwd, 'inspect');
     // A foreground coordinator owns its run while attached; an integrating ticket holds preflight.
