@@ -10,7 +10,9 @@ const url = new URL('https://fixture.invalid/' + args[1]);
 fs.appendFileSync(process.env.HOSTED_LOG, JSON.stringify({ method, endpoint: args[1] }) + '\n');
 const head = cp.execFileSync('git', ['rev-parse', 'mill/12'], { cwd: process.env.HOSTED_CWD, encoding: 'utf8' }).trim();
 const data = JSON.parse(fs.readFileSync(process.env.HOSTED_SCENARIO, 'utf8').replaceAll('HEAD_SHA', head));
-const fail = (status, message) => { process.stderr.write(`glab: ${message} (HTTP ${status})\n`); process.exit(1); };
+// A reply exits only after its output is flushed, so later fall-through code must not fail or exit first.
+let replied = false;
+const fail = (status, message) => { if (replied) return; process.stderr.write(`glab: ${message} (HTTP ${status})\n`); process.exit(1); };
 const route = url.pathname.match(/^\/projects\/([^/]+)(\/.*)$/);
 if (!route) fail(404, 'Not Found');
 const project = decodeURIComponent(route[1]), rest = route[2];
@@ -18,9 +20,9 @@ const counter = process.env.HOSTED_SCENARIO + '.polls';
 const polls = () => Number(fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8') : '0');
 const poll = () => data.polls[Math.min(polls(), data.polls.length) - 1];
 const reply = (body, headers = '', type = 'application/json') => {
+  replied = true;
   process.stdout.write(`HTTP/2.0 200 OK\r\nContent-Type: ${type}\r\n${headers}\r\n`);
-  process.stdout.write(typeof body === 'string' ? body : JSON.stringify(body));
-  process.exit(0);
+  process.stdout.write(typeof body === 'string' ? body : JSON.stringify(body), () => process.exit(0));
 };
 const list = rows => {
   const page = Number(url.searchParams.get('page') || '1');

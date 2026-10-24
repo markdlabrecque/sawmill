@@ -19,8 +19,9 @@ if (/^commits\/[^/]+\/status$/.test(rest)) out(Array.isArray(data.status) ? data
 if ((m = rest.match(/^actions\/jobs\/(\d+)\/logs$/))) {
   if ((data.logFail || []).includes(Number(m[1]))) fail(500, 'Server Error');
   const log = pick(data.logs, m[1]);
-  process.stdout.write(typeof log === 'string' ? log : log.repeat.repeat(log.times));
-  process.exit(0);
+  // Exit only after the write completes, and stop the script here so nothing below runs meanwhile.
+  process.stdout.write(typeof log === 'string' ? log : log.repeat.repeat(log.times), () => process.exit(0));
+  return;
 }
 if ((m = rest.match(/^actions\/jobs\/(\d+)$/))) out(pick(data.jobs, m[1]));
 if ((m = rest.match(/^actions\/runs\/(\d+)$/))) out(pick(data.runs, m[1]));
