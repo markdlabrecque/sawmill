@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import type { Effort, MachineConfig, ProjectConfig, Role } from './config.js';
 import { milliseconds } from './config.js';
 import { CliError } from './errors.js';
 import type { RunTicket } from './run-store.js';
-import type { RuntimeResult } from './runtime.js';
+import { supportedRoutingSelection, type RuntimeResult } from './runtime.js';
 import { redact } from './view/diagnosis.js';
 import { jevModel, typeSafeChoices, type Evidence, type TypeSafeResult } from './typesafe.js';
 
@@ -19,6 +20,7 @@ export interface ExecutionMeasurement {
   requested: ConcreteSelection;
   actual: Actual | null;
   mismatch: boolean;
+  selectionRejected?: boolean;
   outcome: unknown;
   durationMs: number | null;
   usage: RuntimeResult['usage'] | null;
@@ -49,11 +51,7 @@ const familyOf = (model: string, runtime: ProjectConfig['runtime']) => {
 /** Global mappings are explicit approval, not permission to change providers or runtime families.
  * Keep the adapters' own availability and effective-setting checks as a second boundary. */
 function validMapping(selection: ConcreteSelection, family: string, runtime: ProjectConfig['runtime']): boolean {
-  if (!['low', 'medium', 'high', 'max'].includes(selection.effort) || familyOf(selection.model, runtime) !== family) return false;
-  if (family === 'gpt') return /^(?:openai\/)?gpt-[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(selection.model);
-  const model = selection.model.replace(/^anthropic\//, '');
-  return ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8',
-    'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1'].includes(model);
+  return familyOf(selection.model, runtime) === family && supportedRoutingSelection(runtime, selection);
 }
 
 function clean(text: string): string {
@@ -70,7 +68,8 @@ async function evidenceFor(path: string, ticket: RunTicket, limit: number): Prom
   const sources: [string, string][] = [['requirements', [ticket.title, ticket.body, ...ticket.comments.slice(-3).map(c => c.body)].join('\n')]];
   const git = async (...args: string[]) => (await execute('git', args, { cwd: path, maxBuffer: 1024 * 1024 })).stdout;
   const revision = (await git('rev-parse', 'HEAD')).trim();
-  const tracked = (await git('ls-files', '-z')).split('\0').filter(Boolean);
+  const ignored = new Set((await git('ls-files', '--cached', '--ignored', '--exclude-standard', '-z')).split('\0'));
+  const tracked = (await git('ls-files', '-z')).split('\0').filter(file => file && !ignored.has(file));
   const changes = new Set((await git('diff', '--name-only', '-z', 'HEAD^', 'HEAD', '--').catch(() => '')).split('\0'));
   const requirements = sources[0]![1];
   const root = await realpath(path);
@@ -79,9 +78,15 @@ async function evidenceFor(path: string, ticket: RunTicket, limit: number): Prom
     try {
       const target = await realpath(join(path, file));
       const rel = relative(root, target);
-      if (rel.startsWith('..') || isAbsolute(rel) || (await stat(target)).size > 64000) continue;
-      const text = await readFile(target, 'utf8');
-      if (!text.includes('\0')) sources.push([`code/${revision}/${file}`, text]);
+      // Exact canonical identity rejects both file and parent-directory symlink aliases.
+      if (rel !== file || rel.startsWith('..') || isAbsolute(rel)) continue;
+      const handle = await open(join(root, file), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > 64000) continue;
+        const text = await handle.readFile('utf8');
+        if (!text.includes('\0')) sources.push([`code/${revision}/${file}`, text]);
+      } finally { await handle.close(); }
     } catch { /* Missing relevant code is uncertainty, not permission to read elsewhere. */ }
   }
   const perSource = Math.floor(limit / sources.length);
@@ -120,11 +125,18 @@ export async function selectModel(input: {
   };
   if (saved) {
     if (saved.baseline.runtime !== project.runtime) throw new Error('Saved model selection belongs to another runtime; refusing to silently change runtime on resume.');
-    const reused = { ...structuredClone(saved), id: event.id, invocation: event.invocation, timestamp: event.timestamp,
+    const reused: ModelSelection = { ...structuredClone(saved), id: event.id, invocation: event.invocation, timestamp: event.timestamp,
       disposition: 'reused' as const, reusedFrom: saved.reusedFrom ?? saved.id,
       execution: { ...event.execution, requested: { ...saved.execution.requested } } };
     // No new service call or usage: the original evidence remains linked, not billed twice.
     reused.jev = { ...reused.jev, latencyMs: 0, usage: null, cost: null };
+    if (saved.execution.selectionRejected) {
+      // Preserve the rejected resolution and its execution in the original event. Retry only
+      // the historical baseline, never a newly configured baseline or the rejected mapping.
+      reused.disposition = 'baseline';
+      reused.fallbackReason = 'runtime-rejected-model-or-effort';
+      reused.execution.requested = { model: saved.baseline.model, effort: saved.baseline.effort };
+    }
     return reused;
   }
   const fallback = (reason: string) => { event.fallbackReason = reason; return event; };
@@ -199,6 +211,7 @@ export function executionMeasurement(requested: ConcreteSelection, result: Runti
   const usage = result.usage;
   return { requested: { ...requested }, actual,
     mismatch: Boolean(actual && ((actual.model !== null && actual.model !== requested.model) || (actual.effort !== null && actual.effort !== requested.effort))),
+    ...(result.selectionRejected ? { selectionRejected: true } : {}),
     outcome: safeOutcome(result.outcome), durationMs: result.durationMs ?? null,
     usage: usage && tokenCount(usage.inputTokens) && tokenCount(usage.outputTokens) ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : null,
     cost: typeof result.cost === 'number' && Number.isFinite(result.cost) && result.cost >= 0 ? result.cost : null };
