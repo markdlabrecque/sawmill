@@ -16,6 +16,8 @@ export interface IntegrationProgress {
   rebasedHead?: string;
   baseCommit?: string;
   testedHead?: string;
+  /** Required-check evidence for `head`; reset with the rest of the progress on every rebase. */
+  checks?: { head: string; runs: { name: string; command: string; code: number | null; ms: number; sameAs?: string }[] };
   pushedHead?: string;
   pipeline?: Pipeline;
   changeRequest?: { id: number | string; url: string; headCommit: string };
@@ -88,7 +90,7 @@ export interface InfrastructureAttempt {
 }
 /** Last repair request, retained after success for reporting and later case re-runs. */
 export interface RepairContext {
-  source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'ci-failed';
+  source: 'reviewer' | 'protected-tests' | 'rebase-conflict' | 'tests-failed' | 'checks-failed' | 'ci-failed';
   feedback: string;
   baseCommit: string;
   failedCases?: import('./runtime.js').UserCase[];

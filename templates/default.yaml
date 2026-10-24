@@ -85,6 +85,17 @@ tests:
 #   lint: npm run lint
 #   typecheck: npx tsc --noEmit
 
+# Optional checks Mill itself runs on the rebased final head before push, in
+# this order: clean, build, lint, typecheck. Each is a shell command run in the
+# worktree. Any failure, missing command or timeout blocks delivery with its
+# output, and they run even with tests: none. Mill deletes nothing itself: use
+# clean to remove generated output so a stale build cannot pass. Unlike checks
+# above, these are not granted to roles.
+# required_checks:
+#   clean: rm -rf dist
+#   build: npm run build
+#   timeout: 30m
+
 # wait: after the rebase gate, push the branch and wait for the tracker's
 # pipeline on that exact commit before merging; red is one more implementer
 # round. none: merge on green local tests.

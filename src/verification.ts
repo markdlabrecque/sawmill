@@ -3,6 +3,11 @@ import type { ProjectConfig, Role } from './config.js';
 export type CheckName = 'build' | 'lint' | 'typecheck';
 export const checkNames: CheckName[] = ['build', 'lint', 'typecheck'];
 export type Checks = Partial<Record<CheckName, string>>;
+export type RequiredCheckName = 'clean' | CheckName;
+/** The order Mill runs required checks in: the project's clean step first, so stale output cannot pass. */
+export const requiredCheckNames: RequiredCheckName[] = ['clean', ...checkNames];
+/** Shell commands Mill itself runs on the final head before push; any failure blocks delivery. */
+export type RequiredChecks = Partial<Record<RequiredCheckName, string>> & { timeout: string };
 /** A focused runner: `command` followed by paths under `scope`, optionally `name_flag <name>`. */
 export interface FocusedTests { command: string; scope: string; name_flag?: string }
 /**
