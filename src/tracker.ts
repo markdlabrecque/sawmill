@@ -35,6 +35,12 @@ export interface ChangeRequest {
   headCommit: string;
 }
 
+/** The same request read again to settle a merge whose response was lost; the merge commit is set once merged. */
+export interface ReconciledChangeRequest extends ChangeRequest {
+  state: 'open' | 'merged' | 'closed';
+  mergeCommit?: string;
+}
+
 /** A pipeline observation belongs to one exact commit, never an implicit latest head. */
 export interface Pipeline {
   headCommit: string;
@@ -91,6 +97,8 @@ export interface IntegrationTracker extends TicketWriter {
   getJobLog?(job: CiJob, limits: LogLimits): Promise<JobLog>;
   /** One final PR/MR read before merging; never an issue read or a polling loop. */
   getChangeRequest?(id: number | string): Promise<ChangeRequest>;
+  /** Open, merged or closed state of one request, read before an unacknowledged merge is retried. */
+  reconcileChangeRequest?(id: number | string): Promise<ReconciledChangeRequest>;
   findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;
   mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }>;
   deleteRemoteBranch(branch: string): Promise<void>;

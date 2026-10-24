@@ -93,8 +93,12 @@ A superseding successful MR rerun can pass without a new commit. Merged-results
 pipelines on synthetic SHAs do not prove the tested source SHA and remain
 unsupported by this exact-source-head gate.
 
-The existing recovery limits apply: an accepted comment whose response is lost
-may be posted twice, an unacknowledged merge needs reconciliation, and branch
+A merge whose response is lost is reconciled before anything is retried: Sawmill
+saves the merge operation (MR, tested head and target) before the call, then reads
+the same MR again. A confirmed merge of that head is recorded and cleaned up; a
+closed, differently merged or unreadable MR stops with an explanation. The merged
+report carries the operation identity, so a replay finds it rather than posting it
+again. Other comments whose response is lost may still be posted twice, and branch
 deletion has a preflight head check rather than an atomic expected-head API.
 
 ## Live validation

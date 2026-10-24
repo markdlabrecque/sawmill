@@ -52,6 +52,14 @@ if (lookup) {
     state: fs.existsSync(process.env.FIXTURE_DIR + '/closed-' + lookup[1]) ? 'closed' : 'open' }));
   process.exit(0);
 }
+// A comment lookup answers with the comments stored by earlier posts; comments-lookup-fail breaks it.
+const thread = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)\\/comments\\?/) : null;
+if (thread) {
+  if (fs.existsSync(process.env.FIXTURE_DIR + '/comments-lookup-fail')) { console.error('Fixture comment lookup outage'); process.exit(74); }
+  const stored = process.env.FIXTURE_DIR + '/comments-' + thread[1] + '.jsonl';
+  console.log(JSON.stringify([fs.existsSync(stored) ? fs.readFileSync(stored, 'utf8').split('\\n').filter(Boolean).map(line => JSON.parse(line)) : []]));
+  process.exit(0);
+}
 if (!args.includes('--method') || (method === 'GET' && !url.includes('/pulls?'))) process.exit(71);
 let input = '';
 process.stdin.on('data', x => input += x);
@@ -63,6 +71,15 @@ process.stdin.on('end', async () => {
   }
   const failStage = process.env.FIXTURE_DIR + '/fail-mirror-stage';
   if (fs.existsSync(failStage) && body.body?.includes('[sawmill:' + fs.readFileSync(failStage, 'utf8') + ']')) { console.error('Fixture mirror outage'); process.exit(73); }
+  const posted = url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)\\/comments$/);
+  if (posted && method === 'POST') {
+    const stored = process.env.FIXTURE_DIR + '/comments-' + posted[1] + '.jsonl';
+    const id = fs.existsSync(stored) ? fs.readFileSync(stored, 'utf8').split('\\n').filter(Boolean).length + 1 : 1;
+    fs.appendFileSync(stored, JSON.stringify({ id, body: body.body }) + '\\n');
+    // lose-mirror-stage: the host keeps the comment, then its response is lost.
+    const loseStage = process.env.FIXTURE_DIR + '/lose-mirror-stage';
+    if (fs.existsSync(loseStage) && body.body.includes('[sawmill:' + fs.readFileSync(loseStage, 'utf8') + ']')) { console.error('Fixture lost response'); process.exit(73); }
+  }
   const git = (...args) => cp.execFileSync('git', args, {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim();
   let result = {};
   if (url.includes('/pulls?')) result = [];

@@ -24,6 +24,8 @@ export interface IntegrationProgress {
   pushedHead?: string;
   pipeline?: Pipeline;
   changeRequest?: { id: number | string; url: string; headCommit: string };
+  /** Saved before the merge call, so a lost response is reconciled against the same request and head. */
+  operation?: { kind: 'merge'; id: string; changeRequestId: number | string; changeRequestUrl: string; sourceHead: string; targetBranch: string };
   mergedHead?: string;
   remoteDeleted?: boolean;
   fastForwarded?: boolean;
@@ -199,7 +201,7 @@ export function mergeCleanupPending(ticket: Pick<RunTicket, 'completion' | 'inte
 }
 
 export type MirrorWrite =
-  | { kind: 'comment'; payload: { body: string } }
+  | { kind: 'comment'; payload: { body: string; marker?: string } }
   | { kind: 'add-label' | 'remove-label'; payload: { label: string } }
   | { kind: 'close' | 'assign'; payload: Record<string, never> }
   | { kind: 'delete-comment'; payload: { id: number | string } };
