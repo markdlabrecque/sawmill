@@ -60,8 +60,8 @@ test('prepare runs the project hook at the ticket commit and reports identity, a
   assert.equal(report.url, 'https://7-islandhealth.ddev.site');
   assert.equal(report.ready, true);
   const prepared = (await yard.calls()).filter(line => line.startsWith('prepare'));
-  assert.equal(prepared.length, 1);
-  assert.match(prepared[0]!, new RegExp(`^prepare 7 ${report.commit} 7-islandhealth `));
+  assert.equal(prepared.length, 2);
+  assert.match(prepared.at(-1)!, new RegExp(`^prepare 7 ${report.commit} 7-islandhealth `));
 });
 
 test('create prepares the fresh site once after setup seeds it', async t => {
@@ -94,10 +94,15 @@ test('two tickets get separate environment names, state directories and addresse
   const eight = JSON.parse((await yard.cli('worktree', 'prepare', '8', '--json')).stdout);
   assert.notEqual(seven.environment, eight.environment);
   assert.notEqual(seven.url, eight.url);
-  const states = (await yard.calls()).filter(line => line.startsWith('prepare')).map(line => line.split(' ')[4]!);
-  assert.equal(states.length, 2);
+  const lines = (await yard.calls()).filter(line => line.startsWith('prepare'));
+  const states = lines.map(line => line.split(' ')[4]!);
+  assert.equal(states.length, 4);
   assert.ok(states.every(state => state.startsWith('/')), 'state directories are absolute paths');
   assert.equal(new Set(states).size, 2);
+  const stateFor = (ticket: string) => new Set(lines.filter(line => line.split(' ')[1] === ticket).map(line => line.split(' ')[4]!));
+  assert.equal(stateFor('7').size, 1);
+  assert.equal(stateFor('8').size, 1);
+  assert.notEqual([...stateFor('7')][0], [...stateFor('8')][0]);
 });
 
 test('a missing or changed required fixture stops setup before any hook runs, naming the file', async t => {
