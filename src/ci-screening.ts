@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { readResults } from './test-results.js';
 import type { CiJob } from './tracker.js';
@@ -147,7 +148,12 @@ export async function ciScreeningNote(directory: string, job: CiJob, head: strin
   if (options.enabled !== true) return;
   // Exact runner evidence takes precedence, including malformed structured reports.
   // These known shell-start failures remain deterministic environment evidence.
-  if (readResults(text) || /^##\[error\]Process completed with exit code (?:126|127)\.?\s*$/m.test(text)) return;
+  // Provider timestamps/annotations are framing, not runner output. Normalize only
+  // this parsing view; excerpts and their line references still use the saved text.
+  const runnerOutput = stripVTControlCharacters(text).split(/\r?\n/).map(line => line
+    .replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z[ \t]/, '')
+    .replace(/^##\[(?:error|warning|notice)\]/, '')).join('\n');
+  if (readResults(runnerOutput) || /^Process completed with exit code (?:126|127)\.?\s*$/m.test(runnerOutput)) return;
   const started = performance.now();
   const model = options.model ?? jevModel;
   const questionVersion = options.questionVersion ?? ciScreenQuestionVersion;

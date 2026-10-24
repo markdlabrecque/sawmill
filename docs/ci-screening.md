@@ -35,8 +35,11 @@ tracker/run-store capabilities. Tests use this seam, never a live service.
 
 Logs are saved by the existing downloader, with unchanged job-attempt and
 exact-head verification. Recognized `mill-results` and Node test reports
-(including malformed structured results) bypass inference. Exact GitHub runner
-shell-start failure markers for exits 126/127 also bypass inference. Screening
+(including malformed structured results) bypass inference. Provider timestamps,
+terminal escapes and GitHub error/warning/notice annotations are removed only
+from the deterministic parsing view; saved logs, excerpts and line references
+are unchanged. Exact GitHub runner shell-start failure markers for exits
+126/127 also bypass inference. Screening
 does not replace `test-results.ts`, interpret model output as structured test
 evidence, or modify exit-code handling anywhere else.
 
