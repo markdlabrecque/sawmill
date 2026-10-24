@@ -922,3 +922,53 @@ test('a pipeline that never appears is reported differently from one that is sti
   assert.doesNotMatch(result.stdout, /still (running|pending)/i);
   assert.deepEqual(y.tracker.methods, []);
 });
+
+// Declared policy: ci_checks names the hosted checks that must pass and the ones whose failure is advisory.
+async function policyFixture(t: TestContext) {
+  const y = await nativeCiFixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: wait', 'ci: wait\nci_checks:\n  required: [phpunit]\n  advisory: [docs]'));
+  const run = (name: string, status = 'completed', conclusion: string | null = 'success') => ({ head_sha: 'HEAD_SHA', name, status, conclusion });
+  const scenario = (...runs: object[]) => ({ checks: { total_count: runs.length, check_runs: runs }, status: { sha: 'HEAD_SHA', state: 'pending', total_count: 0, statuses: [] } });
+  return { ...y, scenario_path: y.scenario, run, scenario };
+}
+
+test('a green non-required check cannot stand in for a required check that has not appeared', async t => {
+  const y = await policyFixture(t);
+  const waiting = async () => { throw new Error('required check still absent'); };
+  const blocked = await y.invoke(y.scenario(y.run('docs')), waiting);
+  assert.ok(!blocked.requests.some(r => r.endpoint.endsWith('/merge')), blocked.stdout);
+  assert.equal(blocked.value.pipeline?.state, 'pending', blocked.stdout);
+  const delays: number[] = [];
+  const arrived = await y.invoke(y.scenario(y.run('docs')), async ms => { delays.push(ms); await writeFile(y.scenario_path, JSON.stringify(y.scenario(y.run('docs'), y.run('phpunit')))); });
+  assert.deepEqual(delays, [30000]);
+  assert.equal(arrived.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, arrived.stdout);
+});
+
+test('a pending or failed required check blocks delivery even when other checks are green', async t => {
+  const y = await policyFixture(t);
+  const pending = await y.invoke(y.scenario(y.run('docs'), y.run('phpunit', 'in_progress', null)), async () => { throw new Error('required check still pending'); });
+  assert.equal(pending.value.pipeline?.state, 'pending', pending.stdout);
+  assert.ok(!pending.requests.some(r => r.endpoint.endsWith('/merge')));
+  const failed = await y.invoke(y.scenario(y.run('docs'), y.run('phpunit', 'completed', 'failure')));
+  assert.equal(failed.code, 1); assert.equal(failed.value.outcome, 'ci-failed', failed.stdout);
+  assert.ok(!failed.requests.some(r => r.endpoint.endsWith('/merge')));
+});
+
+test('a failing advisory check does not block delivery once required checks pass', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('docs', 'completed', 'failure'), y.run('phpunit')));
+  assert.equal(result.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, result.stdout);
+});
+
+test('duplicate required check names do not let one success hide another failure', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('phpunit'), y.run('phpunit', 'completed', 'failure')));
+  assert.equal(result.value.outcome, 'ci-failed', result.stdout);
+  assert.ok(!result.requests.some(r => r.endpoint.endsWith('/merge')));
+});
+
+test('a required check that was skipped by a conditional workflow still counts as satisfied', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('phpunit', 'completed', 'skipped')));
+  assert.equal(result.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, result.stdout);
+});
