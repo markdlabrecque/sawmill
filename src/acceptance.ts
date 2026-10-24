@@ -17,6 +17,20 @@ export interface AcceptanceWaiver { item: string; reason: string; by: string; ti
 export interface Acceptance { snapshot: string; items: AcceptanceItem[]; waivers?: AcceptanceWaiver[] }
 
 export const acceptanceResults = ['evidenced', 'unresolved', 'waived'] as const;
+export const reportResubmissionLimit = 2;
+/** Invalid reports at one reviewed head/checklist have a budget independent of code repairs. */
+export interface ReportCorrection { head: string; snapshot: string; attempts: number; feedback: string }
+
+/** Unknown IDs are a report-shape error, not evidence that the implementation needs repair. */
+export function acceptanceCorrection(acceptance: Acceptance, outcome: Outcome, head: string, previous?: ReportCorrection): ReportCorrection | undefined {
+  if (outcome.outcome !== 'pass' && outcome.outcome !== 'bounce') return;
+  const unknown = [...new Set(outcome.acceptance?.filter(result => !acceptance.items.some(item => item.id === result.id)).map(result => result.id))];
+  if (!unknown.length) return;
+  return { head, snapshot: acceptance.snapshot,
+    attempts: (previous?.head === head && previous.snapshot === acceptance.snapshot ? previous.attempts : 0) + 1,
+    feedback: `Mill rejected the reviewer report shape: ${unknown.join(', ')} not on the saved acceptance checklist (snapshot ${acceptance.snapshot}). ` +
+      'Resubmit a corrected report using only the saved IDs. Do not change the code or invent acceptance IDs; preserve any real findings in the report.' + acceptanceHandoff(acceptance) };
+}
 
 /** The checkboxes under the ticket's "Done when" marker, a heading or a bold line, up to the next heading or paragraph. */
 export function acceptanceChecklist(body: string): AcceptanceItem[] {
@@ -46,9 +60,10 @@ export function waiverFor(acceptance: Acceptance, id: string): AcceptanceWaiver 
   return acceptance.waivers?.find(waiver => waiver.item === id && waiver.snapshot === acceptance.snapshot);
 }
 
-/** The checklist as the reviewer and implementer see it. Empty when the ticket has none. */
+/** The exact saved checklist as the reviewer and implementer see it, including an empty snapshot. */
 export function acceptanceHandoff(acceptance: Acceptance): string {
-  if (!acceptance.items.length) return '';
+  if (!acceptance.items.length) return `\n\nAcceptance checklist (snapshot ${acceptance.snapshot}): empty; no parsed acceptance items.\n` +
+    'Do not invent AC IDs or acceptance items. Omit `acceptance` or report an empty array; review the ticket requirements without numbering them.';
   const waived = acceptance.items.flatMap(item => {
     const waiver = waiverFor(acceptance, item.id);
     return waiver ? [`${item.id}: waived by ${waiver.by} at ${waiver.time}: ${waiver.reason}`] : [];

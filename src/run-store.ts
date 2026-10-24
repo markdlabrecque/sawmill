@@ -61,6 +61,8 @@ export interface TeamProgress {
   reviewedHead?: string;
   /** Set only for a passing review of this committed head. */
   approvedHead?: string;
+  /** Reviewer-only report resubmissions; never spend an implementation bounce. */
+  reportCorrection?: import('./acceptance.js').ReportCorrection;
   /** Ancestry anchor after a verified rebase; the protected commits then name their rebased copies. */
   checkpointHead?: string;
   repair?: RepairContext;

@@ -4,7 +4,7 @@ import { acceptanceReport } from './acceptance.js';
 import { CliError } from './errors.js';
 import type { RunTicket } from './run-store.js';
 
-export const reportStages = ['worktree-created', 'tests-written', 'implemented', 'user-testing', 'review-pass', 'review-bounce', 'rebase', 'pr-opened', 'ci-wait', 'ci-failed', 'merged', 'retry-cap', 'tests-not-red', 'test-correction','infrastructure', 'stopped', 'aborted'] as const;
+export const reportStages = ['worktree-created', 'tests-written', 'implemented', 'user-testing', 'review-pass', 'review-bounce', 'rebase', 'pr-opened', 'ci-wait', 'ci-failed', 'merged', 'retry-cap', 'tests-not-red', 'test-correction', 'report-shape', 'infrastructure', 'stopped', 'aborted'] as const;
 export type ReportStage = typeof reportStages[number];
 export interface StageReport {
   stage: ReportStage;

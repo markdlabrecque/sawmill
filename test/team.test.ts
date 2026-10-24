@@ -104,6 +104,110 @@ async function ownedDockerSite(y: { cwd: string; projectConfig: string }, url = 
   await writeFile(join(y.cwd, '.mill/prepare.sh'), `printf '{"url":"${url}","ready":true,"ticket":%s}\\n' "$MILL_TICKET"\n`);
 }
 
+// #175: report-shape repairs belong to the reviewer, not the implementation loop.
+for (const savedItems of [[], [{ id: 'AC7', text: 'The saved requirement, not a reconstructed bullet.' }]]) {
+  test(`reviewer handoff states the saved ${savedItems.length ? 'non-empty' : 'empty'} acceptance checklist exactly`, async t => {
+    const y = await fixture(t, 'Return 42 from answer.cjs.\n\n## Done when\n- Return the answer synchronously.\n');
+    const { loadConfig } = await import('../src/config.js');
+    const { readRun } = await import('../src/run-store.js');
+    const { transition } = await import('../src/transitions.js');
+    const config = await loadConfig(y.cwd, y.home);
+    assert.ok(config.valid);
+    const row = readRun(y.cwd).tickets[0]!;
+    const acceptance = { snapshot: 'saved-175-checklist', items: savedItems };
+    assert.ok(await transition(y.cwd, config.project, y.tracker, 12, {
+      team: { ...row.team, acceptance },
+    }));
+    let handoff = '';
+    y.setScript(async (request, sink) => {
+      if (request.role !== 'reviewer') return y.normal(request, sink);
+      handoff = request.handoff;
+      return { outcome: { outcome: 'question', question: 'End the handoff fixture.' } };
+    });
+    await y.cli('team', 'run', '12', '--json');
+    const section = /Acceptance checklist[^]*?(?=\n\n|$)/i.exec(handoff)?.[0];
+    assert.ok(section, 'the reviewer needs an explicit saved-checklist handoff, even when empty');
+    assert.ok(section.includes(acceptance.snapshot), 'identify the saved snapshot');
+    if (savedItems.length) {
+      assert.match(section, /AC7: The saved requirement, not a reconstructed bullet\./);
+      assert.doesNotMatch(section, /AC1:|AC2:/, 'do not renumber or reconstruct the saved checklist');
+    } else {
+      assert.match(section, /empty|no (?:parsed |saved )?acceptance (?:items|criteria)|0 items/i);
+      assert.match(handoff, /(?:do not|must not|never)[^\n]*(?:invent|fabricate|create|make up)[^\n]*(?:AC|acceptance)/i,
+        'an empty checklist must explicitly forbid inventing acceptance IDs');
+    }
+  });
+}
+
+for (const mismatch of [false, true]) {
+  test(`an invented acceptance ID against ${mismatch ? 'a non-empty' : 'an empty'} checklist is corrected by reviewer resubmission without an implementation bounce`, async t => {
+    const y = await fixture(t, mismatch
+      ? 'Return 42 from answer.cjs.\n\n## Done when\n- [ ] Return the answer synchronously.\n'
+      : 'Return 42 from answer.cjs.\n\n## Done when\n- Return the answer synchronously.\n');
+    const reviewerHandoffs: string[] = [];
+    y.setScript(async (request, sink) => {
+      if (request.role !== 'reviewer') {
+        if (request.role === 'implementer' && y.inputs.filter(r => r.role === 'implementer').length > 1) {
+          return { outcome: { outcome: 'no-change', summary: 'The accepted code is already correct.' } };
+        }
+        return y.normal(request, sink);
+      }
+      reviewerHandoffs.push(request.handoff);
+      const revision = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+      const valid = mismatch ? [{ id: 'AC1', result: 'evidenced' as const, evidence: { check: 'node answer.test.cjs', revision } }] : [];
+      return { outcome: { outcome: 'pass', summary: 'Code is correct.', acceptance: reviewerHandoffs.length === 1
+        ? [...valid, { id: 'AC99', result: 'evidenced', evidence: { check: 'node answer.test.cjs', revision } }]
+        : valid } };
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(reviewerHandoffs.length, 2, 'reject the invalid report and ask the reviewer to resubmit; never silently drop IDs');
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(JSON.parse(result.stdout).outcome, 'passed');
+    assert.match(reviewerHandoffs[1]!, /AC99/);
+    assert.match(reviewerHandoffs[1]!, /checklist/i);
+    assert.match(reviewerHandoffs[1]!, /resubmit|correct[^\n]*report|report[^\n]*correct/i);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.bounces, 0, 'report corrections have a separate budget');
+    assert.equal(y.inputs.filter(r => r.role === 'implementer').length, 1);
+    assert.equal(row.state, 'done');
+    assert.equal(y.requests.length, 1);
+    assert.deepEqual((row.team.outputs.reviewer.outcome.acceptance ?? []).map((item: { id: string }) => item.id),
+      mismatch ? ['AC1'] : []);
+  });
+}
+
+test('persistent invented acceptance IDs exhaust a small report-shape budget without code repair or a not-reproduced logjam', async t => {
+  const y = await fixture(t, 'Return 42 from answer.cjs.\n\n## Done when\n- Return the answer synchronously.\n');
+  let reviews = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role !== 'reviewer') {
+      if (request.role === 'implementer' && y.inputs.filter(r => r.role === 'implementer').length > 1) {
+        return { outcome: { outcome: 'no-change', summary: 'The accepted code is already correct.' } };
+      }
+      return y.normal(request, sink);
+    }
+    reviews++;
+    assert.ok(reviews <= 3, 'at most two report resubmissions, independent of implementation bounces');
+    return { outcome: { outcome: 'pass', summary: 'Code is correct.', acceptance: [{ id: 'AC99', result: 'evidenced',
+      evidence: { check: 'node answer.test.cjs', revision: y.git('-C', request.cwd, 'rev-parse', 'HEAD') } }] } };
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.notEqual(result.code, 0, 'an invalid report cannot approve a merge');
+  assert.ok(reviews >= 2 && reviews <= 3, `expected one or two resubmissions; saw ${reviews} reviews`);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.bounces, 0);
+  assert.equal(y.inputs.filter(r => r.role === 'implementer').length, 1, 'no repair of already passing code');
+  assert.equal(y.requests.length, 0);
+  assert.equal(row.team.approvedHead, undefined);
+  assert.notEqual(row.reason, 'not-reproduced');
+  assert.notEqual(row.reason, 'question');
+  assert.notEqual(row.reason, 'retry-cap');
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  assert.match(result.stdout + log, /report[- ]shape|invalid[- ]report|report[- ]invalid|report[- ]format/i,
+    'exhaustion must visibly identify a report-shape failure, not a code failure');
+  assert.doesNotMatch(log, /\[not-reproduced\]/);
+});
+
 test('team run carries real committed red tests through implementation, full review and a merged done ticket', async t => {
   const y = await fixture(t);
   const result = await y.cli('team', 'run', '12', '--json');
