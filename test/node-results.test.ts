@@ -117,11 +117,10 @@ not ok 1 - answer.test.cjs
 # fail 1
 `;
 
-test('a test file that fails as a whole is one scenario with no kind, since Node does not say why', () => {
+test('a test file that fails as a whole leaves the run unreadable, never red evidence, since a missing module looks the same', () => {
   for (const output of [wholeFile, wholeFileTap]) {
-    const results = nodeResults(output)!;
-    assert.deepEqual(results.scenarios.map(s => [s.id, s.status, s.kind]), [['answer.test.cjs', 'fail', undefined]]);
-    assert.equal(redEvidence(undefined, results).valid, true, 'A failure with no kind counts as an assertion');
+    assert.equal(nodeResults(output), undefined);
+    assert.equal(readResults(output), undefined, 'Unverified red: no scenarios to save or name as failing for the intended reason');
   }
 });
 

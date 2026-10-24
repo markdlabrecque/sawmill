@@ -157,13 +157,10 @@ export function greenEvidence(red: Evidence, after: StructuredResults): Evidence
   return { valid: true, scenarios: red.scenarios };
 }
 
-/**
- * A node:test failure is an assertion only when the runner says so; anything else it threw is an error. A test
- * file that failed as a whole (a plain script, or one that did not load) says only 'test failed': no kind, as
- * Node does not report why.
- */
-const failureKind = (block: string[]): Pick<Scenario, 'kind'> => block.some(text => /AssertionError|ERR_ASSERTION/.test(text)) ? { kind: 'assertion' }
-  : block.some(text => /^\s*(?:error: )?'test failed'$/.test(text)) ? {} : { kind: 'error' };
+/** A node:test failure is an assertion only when the runner says so; anything else it threw is an error. */
+const failureKind = (block: string[]): Scenario['kind'] => block.some(text => /AssertionError|ERR_ASSERTION/.test(text)) ? 'assertion' : 'error';
+/** A test file that failed as a whole (a plain script, or one that did not load) says only 'test failed'. */
+const failedWhole = (block: string[]) => block.some(text => /^\s*(?:error: )?'test failed'$/.test(text));
 const blockAfter = (all: string[], i: number, depth: number) => {
   const block: string[] = [];
   for (const text of all.slice(i + 1)) {
@@ -177,12 +174,13 @@ const blockAfter = (all: string[], i: number, depth: number) => {
  * node --test output (spec or TAP) in the contract's shape. Scenario ids are test names; skipped and todo
  * tests are left out, and so is a parent that failed only because a subtest did. The spec reporter may give
  * a failure's details only in its closing "failing tests:" list, so every report of a name is merged; a
- * failure with no details anywhere is a parent.
+ * failure with no details anywhere is a parent. A test file that failed as a whole leaves the run unreadable:
+ * Node does not say why, and a missing module looks the same as a failed assert.
  */
 export function nodeResults(output: string): StructuredResults | undefined {
   const all = lines(output), found = new Map<string, Scenario>();
   const add = (s: Scenario) => { if (!found.has(s.id)) found.set(s.id, s); };
-  let counts: RegExp;
+  let counts: RegExp, whole = false;
   if (/^\s*ℹ fail \d+$/m.test(output)) {
     counts = /^\s*ℹ tests (\d+)$/gm;
     const failed = new Map<string, string[][]>();
@@ -196,7 +194,8 @@ export function nodeResults(output: string): StructuredResults | undefined {
     for (const [id, blocks] of failed) {
       const message = blocks[0]?.[0]!.trim();
       if (!message || blocks.some(block => subtests.test(block[0]!.trim()))) continue;
-      found.set(id, { id, status: 'fail', ...failureKind(blocks.flat()), message });
+      whole ||= failedWhole(blocks.flat());
+      found.set(id, { id, status: 'fail', kind: failureKind(blocks.flat()), message });
     }
   } else if (/^\s*# fail \d+$/m.test(output) && /^\s*(?:not )?ok \d+/m.test(output)) {
     counts = /^\s*# tests (\d+)$/gm;
@@ -205,9 +204,12 @@ export function nodeResults(output: string): StructuredResults | undefined {
       if (!match || match[4]) return;
       if (!match[2]) return add({ id: match[3]!, status: 'pass' });
       const block = blockAfter(all, i, match[1]!.length);
-      if (!block.some(text => /^\s*failureType: '?subtestsFailed'?$/.test(text))) add({ id: match[3]!, status: 'fail', ...failureKind(block) });
+      if (block.some(text => /^\s*failureType: '?subtestsFailed'?$/.test(text))) return;
+      whole ||= failedWhole(block);
+      add({ id: match[3]!, status: 'fail', kind: failureKind(block) });
     });
   } else return undefined;
+  if (whole) return undefined;
   const collected = [...output.matchAll(counts)].reduce((sum, match) => sum + Number(match[1]), 0);
   return { version: 1, status: 'ok', collected, scenarios: [...found.values()] };
 }
