@@ -5,6 +5,7 @@ import { lockHeld } from './run-lock.js';
 import { ensureScheduler, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
+import { describeUnresolved, listSlots, unresolvedSlots } from './slots.js';
 import { listMillyards, registerMillyard } from './registry.js';
 import { tailTicket } from './team-tail.js';
 import { reviewTicket } from './team-review.js';
@@ -222,7 +223,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         }
         const snapshot = view(readRun(cwd));
         const { scheduler } = snapshot;
-        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot)].join('\n'));
+        const slots = listSlots(home), unresolved = unresolvedSlots(home);
+        const capacity = unresolved.length ? [`Machine slots: ${slots.length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
+        emit({ ...snapshot, unresolvedReservations: unresolved }, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
@@ -294,7 +297,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await dispatchOnce(cwd, config.project, config.machine, home, () => ticketWriter(options, config.project, cwd));
         emit(result, [`Started ${result.started.length} team(s)${result.slotsFull ? '; machine slots full' : ''}${result.held ? '; mill update holds dispatch, try again once it finishes' : ''}.`,
           ...result.started.map(row => `${ref(row.ticket)}: worker ${row.worker.pid}`),
-          ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`)].join('\n'));
+          ...result.failures.map(row => `${ref(row.ticket)}: ${row.error}`), ...describeUnresolved(result.unresolved)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
       }
       if (positional[0] === 'tickets' && ['comment', 'label'].includes(positional[1] ?? '')) {

@@ -1,5 +1,5 @@
 import { readRun, type WorkerOwnership } from './run-store.js';
-import { listSlots, releaseSlot, type SlotLease } from './slots.js';
+import { listSlots, reclaimAbandonedSlots, releaseSlot, type SlotLease } from './slots.js';
 import { processAlive, stopDescendants } from './process-ownership.js';
 import { recordWorker } from './transitions.js';
 
@@ -19,8 +19,10 @@ async function recover(cwd: string, worker: WorkerOwnership, ticket: number): Pr
 }
 
 /** Reap machine-wide dead leases using their owning millyard's SQLite row.
- * Never read tickets from a tracker. Invalid/incomplete reservations stay held. */
+ * Never read tickets from a tracker. Reservations left without metadata by a crashed
+ * claim or release are reclaimed under the slot lock; malformed ones stay held. */
 export async function recoverWorkers(cwd: string, home: string): Promise<void> {
+  reclaimAbandonedSlots(home);
   for (const { owner } of listSlots(home)) {
     if (!owner) continue;
     let worker: WorkerOwnership | undefined;
