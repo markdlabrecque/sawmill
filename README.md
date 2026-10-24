@@ -401,6 +401,40 @@ Reason: Copy-only change; the existing checks cover rendering.
 
 `mill run draft` refuses a path other than `test-first` or `existing-checks`, or a plan with no reason. It stores the plan with the ticket, and `mill run status` shows a declared plan before work starts. An `existing-checks` ticket starts at the implementer, with no test writers. Review, the final test run and required checks still run and still block. The merge report names the plan and its reason. Roles cannot change a drafted plan. To change one, edit the ticket and draft again, with a reason that names the coverage that remains or the gap. When the new draft changes a ticket's path from the run it replaces, the ticket keeps a revision with the earlier path, the new path and the new reason. `mill run status` and the merge report show every revision.
 
+### Structured test results
+
+A failing test command does not prove a new test caught the missing behaviour: a missing autoloader, a collection error or zero tests fail too. To give Mill's red check real evidence, wrap the test command so it prints one line anywhere in its output:
+
+```
+mill-results: {"version":1,"status":"ok","collected":12,"scenarios":[{"id":"AnswerTest::testAnswer","status":"fail","kind":"assertion","message":"Failed asserting that 0 matches expected 42."}]}
+```
+
+- `status` is `ok`, `bootstrap-error` or `collection-error`. `collected` is the number of tests the runner found.
+- Each scenario has a stable `id` and `status` `pass` or `fail`. A failure's `kind` is `assertion` (the default), `error` or `compile`. Optional `message` and `artifact` point at the details.
+- A deliberate compile or type failure sets `kind: "compile"`, the `expectedDiagnostic` it was written to produce (such as `TS2339`) and the `diagnostic` it got. Mill never guesses it from stderr.
+
+Without the line, Mill reads `node --test` output (spec or TAP reporter) the same way: each test name is a scenario, an `AssertionError` is an assertion and anything else thrown is an error. Skipped and todo tests are left out. A test file that fails as a whole (a plain script that is not written with `node:test`, or a file that does not load) reports only "test failed", so Mill cannot tell a failed assert from a missing module there. The red check then treats the run like output it cannot read: unverified, with no scenario proven. Write the new tests with `node:test` to get a verified red check.
+
+For PHPUnit, copy [`examples/phpunit/mill-junit.mjs`](examples/phpunit/mill-junit.mjs) into the project (say, as `.mill/mill-junit.mjs`) and wrap the runner. `{report}` becomes a temporary JUnit file outside the worktree:
+
+```yaml
+tests:
+  command: node .mill/mill-junit.mjs -- vendor/bin/phpunit --log-junit {report}
+```
+
+The wrapper keeps the runner's output and exit code and adds the line. No report (a missing `vendor/autoload.php`, a fatal error) is a `bootstrap-error`; a failing run that collected nothing is a `collection-error`; `<failure>` is an assertion and `<error>` an error. The same wrapper reads pytest's report: `node .mill/mill-junit.mjs -- pytest --junitxml={report}`, where a collection failure is a `collection-error`.
+
+When the run fails and its results are readable, the red check:
+
+1. Stops the ticket as an environment problem for a malformed line, a bootstrap or collection error, or zero tests.
+2. Runs the suite once at the commit before the test-writers' work (the baseline), in the ticket worktree, and returns the worktree to the branch. A baseline that fails any scenario, reports a bootstrap or collection error, or times out stops the ticket: it cannot certify new tests. Fix the base branch or environment, then answer the ticket. A healthy baseline is kept for later send-backs. When the baseline output is not readable (say, the command names a test file the test-writers add), the new run is judged on its own.
+3. Accepts red only when every scenario that is new since the baseline and fails did so by assertion or by its declared diagnostic. A scenario that errored or missed its diagnostic goes back to the test-writers, like tests that already pass, up to the same limit.
+4. Saves the accepted scenarios. Each must then pass: a pre-review run that drops or still fails one says so in the reviewer's handoff, and the final run before push fails like a failing test and goes back to the implementer.
+
+When the output is not readable, a failing run still counts as red, as before, but it proves no scenario: the implementer's handoff says the red check is unverified, and no green check follows. To get the stricter checks, print the line or use `node --test`.
+
+A reviewer's test correction renews the proof: Mill runs the corrected test files against the unfixed code the red check accepted. If they now pass there, or no longer fail for the intended reason, the reviewer's handoff says so, and a passing review stops with a question instead of accepting the correction. An accepted correction replaces the saved scenarios. Tests a person approves with `mill run approve-tests` clear them.
+
 ### Browser testing and runtimes
 
 `mill build` detects DDEV before Docker. DDEV uses the ticket site's discovered URL and shipped setup/teardown hooks; an optional `.mill/db.sql` is imported during setup. Docker requires `test_url` and project hooks to provision the site.

@@ -25,6 +25,7 @@ import type { IntegrationTracker, Pipeline } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
+import { greenProblem } from './test-results.js';
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })).stdout.trim();
@@ -227,6 +228,12 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         if (tested.code !== 0) {
           await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
           return result('tests-failed', tested.output || `Tests exited ${tested.code}.`);
+        }
+        // Exit 0 is not enough when a scenario accepted as red was skipped, renamed away or still fails.
+        const green = greenProblem(readRun(cwd).tickets.find(row => row.number === number)!.team.redScenarios, tested.output);
+        if (green) {
+          await save({ report: { stage: 'rebase', details: `Local tests passed but the green check failed. ${green}\n${tested.output}` } });
+          return result('tests-failed', `${green}\n${tested.output}`);
         }
         if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
       }

@@ -46,6 +46,12 @@ export interface TeamProgress {
   redChecks?: number;
   /** Send-back note for the next test-writers run; cleared once the tests are red. */
   redFeedback?: string;
+  /** The unfixed code the red check accepted: the tests at this commit fail. A correction renews its proof here. */
+  redHead?: string;
+  /** Scenarios the red check accepted as failing for the intended reason; each must pass before merge. */
+  redScenarios?: string[];
+  /** A healthy suite run at `commit` (the test base), kept so send-backs need not rerun it. */
+  redBaseline?: { commit: string; results?: import('./test-results.js').StructuredResults };
   outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
   reviewedHead?: string;
   /** Set only for a passing review of this committed head. */
@@ -100,6 +106,8 @@ export interface TestCorrection {
   head?: string;
   /** Mill's test run of `head`. */
   tests?: string;
+  /** The corrected tests run against the unfixed code at `redHead`; a review can accept only valid proof. */
+  red?: import('./test-results.js').Evidence;
 }
 /** Infrastructure invocation history, independent of the repair bounce budget. */
 export interface InfrastructureAttempt {

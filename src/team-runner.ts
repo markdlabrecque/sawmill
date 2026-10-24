@@ -11,7 +11,7 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import type { MachineConfig, ProjectConfig, Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
-import { noTests, reportTestRun, testRunProblem } from './test-results.js';
+import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
 import { checkMillyard } from './millyard.js';
@@ -32,6 +32,7 @@ import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, wri
 const execute = promisify(execFile);
 const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
+const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;
 const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
@@ -272,6 +273,39 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (capped) return { ...capped, integration: result };
       };
       let latest: { head: string; handoff: string } | undefined;
+      const runTests = () => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+      /** Run the suite at another commit in this worktree, optionally with files taken from `overlay.from`, then return to the branch. */
+      const testsAt = async (commit: string, overlay?: { from: string; files: string[] }) => {
+        await git(path, 'switch', '--quiet', '--detach', commit);
+        try {
+          if (overlay) {
+            const present = (await git(path, '--literal-pathspecs', 'ls-tree', '--name-only', '-r', overlay.from, '--', ...overlay.files)).split('\n').filter(Boolean);
+            const removed = overlay.files.filter(file => !present.includes(file));
+            if (present.length) await git(path, '--literal-pathspecs', 'checkout', overlay.from, '--', ...present);
+            if (removed.length) await git(path, '--literal-pathspecs', 'rm', '--quiet', '--ignore-unmatch', '--', ...removed);
+          }
+          return await runTests();
+        } finally { await git(path, 'checkout', '--quiet', '--force', `mill/${number}`); }
+      };
+      /**
+       * The suite before the test-writers' commits. A problem means it cannot certify new tests. Output Mill
+       * cannot read (say, the command names a test file the writers add) is no baseline: the new run stands alone.
+       */
+      const baselineRun = async (config: Exclude<ProjectConfig['tests'], 'none'>): Promise<{ results?: StructuredResults; problem?: string }> => {
+        const base = progress.testBase!;
+        if (progress.redBaseline?.commit === base) return progress.redBaseline;
+        const run = await testsAt(base);
+        checkStop(cwd, number);
+        const { file } = await reportTestRun(cwd, number, config.command, run, config.timeout);
+        const read = readResults(run.output), at = `The baseline run at ${base} (before the new tests)`;
+        const problem = run.timedOut ? `${at} timed out after ${config.timeout}` : run.code === null ? `${at} was killed`
+          : read && !read.ok ? `${at}: ${read.problem}` : read && testRunProblem(run);
+        if (problem) return { problem: `${problem}\nFull output: ${file}` };
+        const results = read?.ok ? read.results : undefined;
+        // Only a healthy baseline is kept; a broken one is rerun once a person has fixed it.
+        if (!results || (results.status === 'ok' && !results.scenarios.some(s => s.status === 'fail'))) progress.redBaseline = { commit: base, ...(results ? { results } : {}) };
+        return { ...(results ? { results } : {}) };
+      };
       /** Tests that already pass guard nothing. True sends the work back to the test-writers. */
       const redCheck = async (): Promise<TeamResult | boolean> => {
         const config = project.tests;
@@ -280,26 +314,54 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         stage = 'tests-written';
         const head = await git(path, 'rev-parse', 'HEAD');
         // A timeout or killed run is not green.
-        // Nor is a command that could not run: red means named failing tests, or output Mill cannot parse.
+        // Nor is a command that could not run: red means named failing tests, or output Mill cannot read.
+        // Malformed results, a bootstrap or collection error, or zero tests are environment problems too.
+        const results = (run: Awaited<ReturnType<typeof tests>>) => run.code ? readResults(run.output) : undefined;
+        const environment = (run: Awaited<ReturnType<typeof tests>>) => {
+          const read = results(run);
+          if (!read?.ok) return read && `${read.problem} This is an environment problem, not a failing test.`;
+          return read.results.status !== 'ok' || !read.results.collected ? redEvidence(undefined, read.results).problem : undefined;
+        };
         const unusable = (run: Awaited<ReturnType<typeof tests>>) => run.timedOut ? `Tests timed out after ${config.timeout}.\n${run.output}`
-          : run.code === null ? `Tests were killed.\n${run.output}` : testRunProblem(run) && `${testRunProblem(run)}\n${run.output}`;
-        const tested = await retryInfrastructure(() => tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true })),
-          unusable, () => ({}));
+          : run.code === null ? `Tests were killed.\n${run.output}` : (testRunProblem(run) ?? environment(run)) && `${testRunProblem(run) ?? environment(run)}\n${run.output}`;
+        const tested = await retryInfrastructure(runTests, unusable, () => ({}));
         checkStop(cwd, number);
         const report = await reportTestRun(cwd, number, config.command, tested, config.timeout);
         const error = unusable(tested);
         if (error) return await stop(infrastructure(`${error}\nFull output: ${report.file}`));
-        if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        const unchanged = async () => {
+          if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        };
+        await unchanged();
+        // Readable results must name new scenarios that failed for the intended reason on a healthy baseline.
+        // Output Mill cannot read still counts as red, as before, but proves no scenario and is marked unverified.
+        const read = results(tested);
+        let evidence: Evidence | undefined;
+        if (read?.ok) {
+          const baseline = await baselineRun(config);
+          await unchanged();
+          evidence = baseline.problem ? undefined : redEvidence(baseline.results, read.results);
+          const problem = baseline.problem ?? (evidence?.environment ? evidence.problem : undefined);
+          if (problem) return await stop(infrastructure(`${problem}\nThis is an environment problem, not a failing test: fix the base branch or the test environment, then answer the ticket.\nNew tests' output: ${report.file}`));
+        }
         latest = { head, handoff: report.handoff };
         delete progress.redPending;
-        if (tested.code !== 0) { delete progress.redFeedback; return false; }
+        if (tested.code !== 0 && evidence?.valid !== false) {
+          delete progress.redFeedback;
+          progress.redHead = head;
+          if (evidence?.scenarios.length) progress.redScenarios = evidence.scenarios; else delete progress.redScenarios;
+          latest.handoff += evidence ? `\nRed check: these new scenarios fail for the intended reason and must pass: ${evidence.scenarios.join(', ')}.`
+            : '\nRed check: unverified. Mill could not read which tests failed, only that the command failed.';
+          return false;
+        }
+        const feedback = evidence?.problem ? `${evidence.problem} ${notMeaningful}` : notRed;
         const checks = progress.redChecks ?? 0;
-        progress.redFeedback = notRed;
+        progress.redFeedback = feedback;
         // The rerun records a fresh baseline, so a legitimate rewrite is not tampering.
         delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
         resume = progress.next = 'test-writers';
         if (checks >= redCheckCap) {
-          const details = `The tests passed without any new code after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
+          const details = `${evidence?.problem ? `The tests did not fail meaningfully (${evidence.problem})` : 'The tests passed without any new code'} after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
           if (!await transition(cwd, project, tracker, number, {
             state: 'logjam', reason: 'tests-not-red', stage, team: progress,
             report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage, round: checks + 1 },
@@ -307,7 +369,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
         }
         progress.redChecks = checks + 1;
-        await save({ report: { stage: 'tests-not-red', details: `${notRed}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
+        await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
         return true;
       };
       /** Mill's own test result for the next role, rerun once a role has moved HEAD. The first test-writers round has none. */
@@ -316,11 +378,30 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (latest?.head === head && !status) return `\n\n${latest.handoff}`;
         const config = project.tests;
         if (next === 'test-writers' || config === 'none') return '';
-        const run = await tests(path, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+        const run = await runTests();
         checkStop(cwd, number);
         if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all') !== status) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
-        latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff };
+        // A passing run must still report every scenario the red check accepted, now passing.
+        const green = run.code === 0 && !run.timedOut ? greenProblem(progress.redScenarios, run.output) : undefined;
+        latest = { head, handoff: (await reportTestRun(cwd, number, config.command, run, config.timeout)).handoff + (green ? `\nGreen check failed: ${green}` : '') };
         return `\n\n${latest.handoff}`;
+      };
+      /** The corrected tests against the unfixed code the red check accepted: they must still fail there, for the intended reason. */
+      const renewRed = async (correction: TestCorrection): Promise<Evidence | undefined> => {
+        const config = project.tests, redHead = progress.redHead;
+        if (config === 'none' || !redHead) return undefined;
+        const run = await testsAt(redHead, { from: correction.head!, files: correction.files });
+        checkStop(cwd, number);
+        if (await git(path, 'rev-parse', 'HEAD') !== correction.head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        const at = `The corrected tests on the unfixed code at ${redHead}`;
+        const failed = (problem: string): Evidence => ({ valid: false, scenarios: [], problem });
+        if (run.timedOut || run.code === null) return failed(`${at} ${run.timedOut ? `timed out after ${config.timeout}` : 'were killed'}.`);
+        if (run.code === 0) return failed(`${at} pass, so they no longer prove the missing behaviour.`);
+        const read = readResults(run.output);
+        if (!read) return { valid: true, scenarios: [] };
+        if (!read.ok) return failed(`${at}: ${read.problem}`);
+        const evidence = redEvidence(progress.redBaseline?.results, read.results);
+        return evidence.valid ? evidence : failed(`${at}: ${evidence.problem}`);
       };
       /** A reviewer's scoped test correction goes to the test-writers, at most `correctionCap` times. */
       const requestCorrection = async (outcome: Extract<Outcome, { outcome: 'test-correction' }>, head: string, round?: number): Promise<TeamResult | undefined> => {
@@ -364,6 +445,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         correction.commits = [...correction.commits ?? [], ...(await git(path, 'rev-list', '--reverse', `${correction.from}..HEAD`)).split('\n').filter(Boolean)];
         correction.head = await git(path, 'rev-parse', 'HEAD');
         correction.tests = (await latestRun('reviewer')).trim();
+        const red = await renewRed(correction);
+        if (red) correction.red = red; else delete correction.red;
       };
       const correctionHandoff = async (role: Role): Promise<string> => {
         const correction = progress.correction;
@@ -376,6 +459,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (role !== 'reviewer' || !correction.head) return '';
         return `\n\nTest correction to verify (${correction.attempts}/${correctionCap}): check that it fixes only the requested mistake, keeps every requirement covered, and that the implementation still meets the ticket. ` +
           `A green run alone does not make weaker tests acceptable. Pass accepts it as the new protected baseline.\n${request}\n\n${correction.tests ?? ''}\n\n` +
+          (correction.red ? `Renewed red proof on the unfixed code at ${progress.redHead}: ${correction.red.valid
+            ? `the corrected tests still fail${correction.red.scenarios.length ? ` (${correction.red.scenarios.join(', ')})` : ''}.`
+            : `${correction.red.problem} Mill will not accept this correction on a pass.`}\n\n` : '') +
           `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}`;
       };
       if (resuming === 'integrate') {
@@ -521,10 +607,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         delete progress.question;
         delete progress.stop;
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.correction?.head) {
-          // Only a fresh passing review moves the protected baseline. The writer commits stay for rebase checks.
           const accepted = progress.correction;
+          // A correction that passes on the unfixed code proves nothing missing; only a person can accept it.
+          if (accepted.red && !accepted.red.valid) return await question(path, 'reviewer', { outcome: 'question', question:
+            `The reviewer passed test correction ${accepted.attempts}/${correctionCap}, but its renewed red proof failed: ${accepted.red.problem} The protected tests are unchanged. ` +
+            `A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.` });
+          // Only a fresh passing review moves the protected baseline. The writer commits stay for rebase checks.
           progress.testCommit = accepted.head;
           progress.testCommits = [...progress.testCommits ?? [], ...accepted.commits ?? []];
+          if (accepted.red?.scenarios.length) progress.redScenarios = accepted.red.scenarios;
           delete progress.correction;
           await save({ report: { stage: 'test-correction', details: `Fresh review at ${beforeRole} accepted test correction ${accepted.attempts}/${correctionCap}: protected baseline moved from ${accepted.baseline} to ${accepted.head}.\n\n` +
             `Files: ${accepted.files.join(', ')}\nMistake: ${accepted.mistake}\nPreserves: ${accepted.preserves}\n\n${accepted.tests ?? ''}`, reachedStage: role, round: result.round } });

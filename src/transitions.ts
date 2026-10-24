@@ -395,6 +395,8 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     delete team.activeRole;
     // A person's approval supersedes any pending reviewer-requested correction.
     delete team.correction;
+    // Approved tests may name other scenarios; the person, not the old red check, vouches for them.
+    delete team.redScenarios;
     team.testCommit = commit;
     if (commits.length) team.testCommits = commits;
     team.next = 'reviewer';
