@@ -1,6 +1,8 @@
 /** How a ticket proves its change: new failing tests first, or the project's existing checks. */
 export type ProofPath = 'test-first' | 'existing-checks';
 export interface ProofPlan { path: ProofPath; reason: string }
+/** A redraft that changed a ticket's path; `reason` is the new plan's, naming the remaining coverage or the gap. */
+export interface ProofPlanRevision { from: ProofPath; to: ProofPath; reason: string }
 
 const paths: ProofPath[] = ['test-first', 'existing-checks'];
 
