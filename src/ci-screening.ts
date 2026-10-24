@@ -55,22 +55,30 @@ const probability = (v: unknown): v is number => typeof v === 'number' && Number
 const tokens = (v: unknown): v is number | null => v === null || (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0);
 const verdict = (v: unknown): v is Verdict => v === 'code-defect' || v === 'environment' || v === 'uncertain';
 function clean(text: string, apiKey?: string): string {
-  return redact((apiKey ? text.split(apiKey).join('[redacted]') : text)
-    .replace(/\b(?:authorization|proxy-authorization)\s*:\s*[^\r\n]*/gi, 'Authorization: [redacted]')
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, '$1 [redacted]')
-    .replace(/(["'])([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|credentials?)[A-Za-z0-9_.-]*)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)/gi, '$1$2$1: "[redacted]"'));
+  const preserveLines = (raw: string, replacement: string) => replacement + '\n'.repeat((raw.match(/\n/g) ?? []).length);
+  const value = (apiKey ? text.split(apiKey).join(preserveLines(apiKey, '[redacted]')) : text)
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+      raw => preserveLines(raw, '[redacted private key]'))
+    .replace(/\b(?:authorization|proxy-authorization)\s*:\s*[^\r\n]*/gi,
+      raw => preserveLines(raw, 'Authorization: [redacted]'))
+    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi,
+      (raw, scheme: string) => preserveLines(raw, `${scheme} [redacted]`))
+    .replace(/(["'])([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|credentials?)[A-Za-z0-9_.-]*)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)/gi,
+      (raw, quote: string, name: string) => preserveLines(raw, `${quote}${name}${quote}: "[redacted]"`))
+    .replace(/\b([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_.-]*|authorization|auth)\s*[=:]\s*("[^"\n]*"|'[^'\n]*'|[^\s"',;]+)/gi,
+      (raw, name: string) => preserveLines(raw, `${name}=[redacted]`));
+  // Remaining display redaction cannot consume a newline and shift source references.
+  return value.split('\n').map(line => redact(line)).join('\n');
 }
 
 /** Preserve saved-log line numbers, including the truncation marker, after redaction. */
 function candidates(text: string, source: string, limit: number, apiKey?: string): Evidence[] {
-  // Redact before splitting/cutting; preserve the line count of multiline secrets.
-  const redacted = text.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-    value => '[redacted private key]' + '\n'.repeat((value.match(/\n/g) ?? []).length));
-  const lines = clean(redacted, apiKey).split('\n');
+  // Redact before splitting/cutting, without shifting saved-log line numbers.
+  const lines = clean(text, apiKey).split('\n');
   const diagnostic = /\b(?:[\w.]*Error|exception|failed|failure|fatal|cannot find|not found|unauthorized|forbidden|ECONN\w+|ETIMEDOUT|ENOTFOUND)\b|error TS\d+|^\s*(?:not ok|✖)/i;
   const starts = lines.flatMap((line, i) => diagnostic.test(line) && !line.startsWith('[sawmill] Log truncated:') ? [i] : []);
   // Sample both ends when there are too many diagnostics; never send the full log.
-  const selected = starts.length > 8 ? [...starts.slice(0, 4), ...starts.slice(-4)] : starts;
+  const selected = (starts.length > 8 ? [...starts.slice(0, 4), ...starts.slice(-4)] : starts).slice(0, limit);
   if (!selected.length) selected.push(Math.max(0, lines.length - 5));
   const perBlock = Math.max(1, Math.floor(limit / selected.length));
   return selected.map((start, index) => {
@@ -153,6 +161,7 @@ export async function ciScreeningNote(directory: string, job: CiJob, head: strin
     || (!options.classify && (model !== jevModel || questionVersion !== ciScreenQuestionVersion))) return fallback('invalid-configuration');
   const source = clean(`job ${job.logId}; ${job.name}; ${job.source}; revision ${head}`, apiKey).slice(0, 1000);
   const evidence = candidates(text, source, limit, apiKey);
+  if (!evidence.length) return fallback('empty-log');
   const request: CiScreeningRequest = { model, questionVersion, questions: [{ jobId: job.logId!, evidence,
     incompleteEvidence: text.startsWith('[sawmill] Log truncated:') || evidence.some(e => e.truncated) || text.length > evidence.reduce((sum, e) => sum + e.text.length, 0) }] };
   // Bind judgments to exact content AND attempt, revision, evidence policy, model and question version.
@@ -167,7 +176,7 @@ export async function ciScreeningNote(directory: string, job: CiJob, head: strin
   ].join('\n');
   try {
     const cached: unknown = JSON.parse(await readFile(file, 'utf8'));
-    if (record(cached) && cached.evidenceIdentity === identity && !cached.fallbackReason) {
+    if (record(cached) && cached.evidenceIdentity === identity && (!cached.fallbackReason || cached.fallbackReason === 'model-uncertain')) {
       const answer = validate({ model: cached.model, answers: [cached.answer] }, request);
       if (answer) return render(answer);
     }
