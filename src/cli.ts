@@ -160,7 +160,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       const ref = (number: number) => ticketRef(config.project.tracker, number, links);
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       // Status and draft output agree: the run as stored plus whether a scheduler is serving this home.
-      const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home) });
+      const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home), unresolvedReservations: unresolvedSlots(home) });
       if (positional[0] === 'team' && positional[1] === 'tail') {
         if (!(positional.length === 3 || (positional.length === 4 && positional[3] === '--no-follow')) || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('team tail'), 2);
         await tailTicket(cwd, Number(positional[2]), { json, follow: positional[3] !== '--no-follow', stdout, signal: options.signal });
@@ -222,10 +222,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         const snapshot = view(readRun(cwd));
-        const { scheduler } = snapshot;
-        const slots = listSlots(home), unresolved = unresolvedSlots(home);
-        const capacity = unresolved.length ? [`Machine slots: ${slots.length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
-        emit({ ...snapshot, unresolvedReservations: unresolved }, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity].join('\n'));
+        const { scheduler, unresolvedReservations: unresolved } = snapshot;
+        const capacity = unresolved.length ? [`Machine slots: ${listSlots(home).length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === '--foreground') {
