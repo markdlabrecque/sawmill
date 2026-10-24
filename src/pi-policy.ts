@@ -57,7 +57,7 @@ export default function policy(pi: PiAPI) {
         show: ['--stat', '--name-only', '--oneline', '--no-ext-diff', '--no-textconv', '--'],
       };
       if (subcommand && flags[subcommand]) allowed = rest.every(token => token.startsWith('-') ? flags[subcommand]!.includes(token) : /^[A-Za-z0-9_./@:+^=-]+$/.test(token));
-      if (writer && subcommand === 'add') allowed = rest.length > 0 && rest.every(token => token === '--' || /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(token));
+      if (writer && ['add', 'rm', 'mv'].includes(subcommand ?? '')) allowed = rest.length > 0 && rest.every(token => token === '--' || (token === '-r' && subcommand === 'rm') || /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(token));
       if (writer && subcommand === 'commit') allowed = rest.length === 2 && rest[0] === '-m' && Boolean(rest[1]?.trim());
       if (request.role === 'implementer' && /^[a-f0-9]{40,64}$/.test(request.conflictBase ?? '')) {
         if (JSON.stringify(args) === JSON.stringify(['git', 'rebase', request.conflictBase])
