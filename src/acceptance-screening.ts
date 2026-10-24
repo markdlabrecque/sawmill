@@ -54,7 +54,7 @@ function clean(text: string, apiKey?: string): string {
   return redact((apiKey ? text.split(apiKey).join('[redacted]') : text)
     .replace(/\b(?:authorization|proxy-authorization)\s*:\s*[^\r\n]*/gi, 'Authorization: [redacted]')
     .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, '$1 [redacted]')
-    .replace(/(["'])([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|credentials?)[A-Za-z0-9_.-]*)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)/gi, '$1$2$1: "[redacted]"'));
+    .replace(/(["'])([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[A-Za-z0-9_.-]*)\1\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}]+)/gi, '$1$2$1: "[redacted]"'));
 }
 
 /** Keep only bounded excerpts on the wire, and references (never excerpts) in diagnostics. */
