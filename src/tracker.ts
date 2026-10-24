@@ -41,7 +41,26 @@ export interface Pipeline {
   state: 'pending' | 'passed' | 'failed' | 'none';
   logUrl?: string;
   diagnostics?: string;
+  /** Failed jobs, listed only for a failed pipeline. */
+  jobs?: CiJob[];
 }
+
+/** One failed CI job. A log id is set only once the job is verified to belong to the tested commit and current attempt. */
+export interface CiJob {
+  name: string;
+  url?: string;
+  /** The workflow run and attempt, or the GitLab pipeline and project, the job ran in. */
+  source: string;
+  logId?: string;
+  /** GitLab's project for the log download. */
+  project?: string;
+  /** Why no log can be fetched for this job. */
+  unavailable?: string;
+}
+
+export interface LogLimits { maxBytes: number; timeoutMs: number }
+/** The last `maxBytes` of a job's log; `bytes` is the full size. */
+export interface JobLog { text: string; bytes: number; truncated: boolean }
 
 /** `held` means someone else is already assigned; Sawmill never takes a ticket from them. */
 export type AssignResult = { status: 'assigned' } | { status: 'held'; by: string };
@@ -66,6 +85,8 @@ export class MergeRefusedError extends Error {}
 export interface IntegrationTracker extends TicketWriter {
   /** Required for ci:wait; ci:none adapters need not provide CI reads. */
   getPipeline?(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline>;
+  /** Download one verified failed job's log through the tracker's own authentication. */
+  getJobLog?(job: CiJob, limits: LogLimits): Promise<JobLog>;
   /** One final PR/MR read before merging; never an issue read or a polling loop. */
   getChangeRequest?(id: number | string): Promise<ChangeRequest>;
   findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest>;

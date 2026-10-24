@@ -77,7 +77,9 @@ test_harness: none
 
 Set every role's model to one your installed runtime supports. Changing only `runtime` leaves the generated Claude model settings in place.
 
-`ci: wait` requires successful CI for the exact ticket commit before merge. Use `ci: none` for projects that rely on local tests only. `test_harness: none` opts out of browser testing; tickets with a `## User test cases` section will be refused.
+`ci: wait` requires successful CI for the exact ticket commit before merge. Use `ci: none` for projects that rely on local tests only.
+
+When CI fails, Sawmill downloads each failed job's CI log through the tracker CLI's existing login and saves it under `.mill/logs/<n>/ci-*.log`. The repair handoff lists the tested commit, each failed job with its run attempt or GitLab pipeline and project, the job URL, and the saved log's absolute path. Only jobs that ran on the tested commit in the current attempt are downloaded; GitLab downstream jobs are labelled diagnostic only and do not change the merge gate. Each log keeps its last 2 MiB and is truncated with a note above that; each download stops after 60 seconds; at most 20 logs and 5 minutes are spent on one failed result. A job whose log is rejected, too slow or fails to download is listed as unavailable with its URL and the reason, and the CI failure still goes to the implementer. A log already saved for a job attempt is reused on later polls; a retried job is a new attempt and is downloaded again. `test_harness: none` opts out of browser testing; tickets with a `## User test cases` section will be refused.
 
 The tracker must let Sawmill push branches, open and merge PRs or MRs, comment on issues, and close them. Create the `logjam` label, or configure `labels.logjam` to name an existing label.
 

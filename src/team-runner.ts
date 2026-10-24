@@ -408,7 +408,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const diff = role !== 'reviewer' ? '' : progress.reviewedHead && progress.repair
           ? `\n\nFix diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', progress.repair.baseCommit, 'HEAD', '--')}`
           : `\n\nFull diff:\n${await fullReviewDiff(path, project.integration)}`;
-        const testRun = await latestRun(role) + await correctionHandoff(role);
+        // Plain text, so the saved CI log paths are readable as written rather than JSON-escaped.
+        const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
+        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure;
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
         await save({});

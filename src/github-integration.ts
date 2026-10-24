@@ -1,9 +1,10 @@
 import { githubRequest } from './github-transport.js';
+import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { MergeRefusedError } from './tracker.js';
-import type { ChangeRequest, IntegrationTracker, Pipeline } from './tracker.js';
+import type { ChangeRequest, CiJob, IntegrationTracker, JobLog, LogLimits, Pipeline } from './tracker.js';
 
 /** PR discovery is separate from ticket reads; runs never refresh issue data. */
 export class GitHubIntegration extends GitHubWriter implements IntegrationTracker {
@@ -71,7 +72,45 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     const pending = observations.filter(row => row.state === 'pending');
     const state = failed.length ? 'failed' : pending.length ? 'pending' : observations.length ? 'passed' : 'none';
     const relevant = failed.length ? failed : pending.length ? pending : observations;
-    return { headCommit: commit, state, diagnostics: relevant.map(row => row.detail).join('\n').slice(0, 65536), logUrl: relevant.find(row => row.url)?.url };
+    return { headCommit: commit, state, diagnostics: relevant.map(row => row.detail).join('\n').slice(0, 65536), logUrl: relevant.find(row => row.url)?.url,
+      ...(state === 'failed' ? { jobs: await this.failedJobs(commit, checks, statuses) } : {}) };
+  }
+
+  /** A check's log is used only when its Actions job ran on this commit in its run's current attempt. */
+  private async failedJobs(commit: string, checks: CheckRun[], statuses: CommitStatus[]): Promise<CiJob[]> {
+    const runs = new Map<number, Promise<unknown>>();
+    const jobs: CiJob[] = [];
+    for (const check of checks) {
+      if (check.status !== 'completed' || ['success', 'skipped', 'neutral'].includes(check.conclusion ?? '')) continue;
+      const url = check.html_url || check.details_url;
+      const job: CiJob = { name: check.name, ...(url ? { url } : {}), source: 'check run' };
+      jobs.push(job);
+      const path = url && URL.canParse(url) ? new URL(url).pathname.match(/^\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)\/job\/(\d+)$/) : null;
+      if (!path || path[1]!.toLowerCase() !== this.trackerConfig.repo.toLowerCase()) { job.unavailable = 'not a GitHub Actions job in this repository'; continue; }
+      const runId = Number(path[2]), jobId = Number(path[3]);
+      try {
+        const detail = await this.request('GET', `actions/jobs/${jobId}`) as ActionsJob | null;
+        if (!runs.has(runId)) runs.set(runId, this.request('GET', `actions/runs/${runId}`));
+        const run = await runs.get(runId) as ActionsRun | null;
+        if (detail?.id !== jobId || detail.run_id !== runId || run?.id !== runId || !Number.isSafeInteger(run.run_attempt)) throw new Error('GitHub returned a mismatched job or run');
+        job.source = `${typeof detail.workflow_name === 'string' ? `${detail.workflow_name} ` : ''}run ${runId} attempt ${run.run_attempt}`;
+        if (detail.head_sha !== commit || run.head_sha !== commit) job.unavailable = `the job ran on commit ${detail.head_sha}, not the tested commit ${commit}`;
+        else if (detail.run_attempt !== run.run_attempt) job.unavailable = `the job is from attempt ${detail.run_attempt}; run ${runId} is on attempt ${run.run_attempt}`;
+        else job.logId = String(jobId);
+      } catch (error) { job.unavailable = `could not verify the job: ${error instanceof Error ? error.message : String(error)}`; }
+    }
+    for (const status of statuses) {
+      if (['failure', 'error'].includes(status.state)) jobs.push({ name: status.context, ...(status.target_url ? { url: status.target_url } : {}), source: 'commit status', unavailable: 'a commit status has no job log' });
+    }
+    return jobs;
+  }
+
+  async getJobLog(job: CiJob, limits: LogLimits): Promise<JobLog> {
+    if (!job.logId || !/^\d+$/.test(job.logId)) throw new Error('GitHub job logs need a verified job id.');
+    const args = ['api', `repos/${this.trackerConfig.repo}/actions/jobs/${job.logId}/logs`, '--method', 'GET'];
+    if (this.trackerConfig.host) args.push('--hostname', this.trackerConfig.host);
+    const { tail, bytes } = await boundedOutput('gh', args, this.directory, limits);
+    return { text: tail.toString('utf8'), bytes, truncated: bytes > tail.length };
   }
 
   async mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }> {
@@ -105,6 +144,8 @@ interface CheckRun {
   details_url?: string;
   output?: { title?: string; summary?: string; text?: string } | null;
 }
+interface ActionsJob { id?: unknown; run_id?: unknown; run_attempt?: unknown; head_sha?: unknown; workflow_name?: unknown }
+interface ActionsRun { id?: unknown; run_attempt?: unknown; head_sha?: unknown }
 interface CommitStatus {
   context: string;
   state: string;

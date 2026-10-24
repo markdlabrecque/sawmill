@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
+import { GitHubIntegration } from '../src/github-integration.js';
+import { GitLabTracker } from '../src/gitlab.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
 import { continueCommand } from './conflict-command.js';
@@ -926,6 +928,171 @@ test('weakening a protected test after a conflict rebase is still caught', async
   assert.notEqual(row.state, 'done');
   assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
   assert.match(y.inputs.at(-1)!.handoff + JSON.stringify(row), /protected|test-writer.*files.*changed/i);
+});
+
+// Hosted CI repair evidence. The tracker is the real GitHub or GitLab adapter talking to a scripted gh/glab;
+// only the change request, merge and branch calls stay local. No live credentials are involved.
+const hostedFixture = (name: string) => new URL(`../../test/fixtures/${name}`, import.meta.url);
+
+async function hostedCi(t: TestContext, y: Awaited<ReturnType<typeof fixture>>, backend: 'github' | 'gitlab', scenario: object) {
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  const bin = join(y.root, 'hosted-bin'); await mkdir(bin);
+  const scenarioFile = join(y.root, 'hosted-scenario.json'), log = join(y.root, 'hosted-requests.jsonl');
+  await writeFile(scenarioFile, JSON.stringify(scenario)); await writeFile(log, '');
+  const tool = backend === 'github' ? 'gh' : 'glab';
+  await writeFile(join(bin, tool), `#!${process.execPath}\n` + await readFile(hostedFixture(`hosted-${tool}.cjs`), 'utf8'));
+  await chmod(join(bin, tool), 0o755);
+  const oldPath = process.env.PATH;
+  Object.assign(process.env, { PATH: `${bin}:${oldPath}`, HOSTED_SCENARIO: scenarioFile, HOSTED_LOG: log, HOSTED_CWD: y.cwd });
+  t.after(() => { process.env.PATH = oldPath; delete process.env.HOSTED_SCENARIO; delete process.env.HOSTED_LOG; delete process.env.HOSTED_CWD; });
+  const config = { backend, repo: 'team/tool' } as never;
+  const real = backend === 'github' ? new GitHubIntegration(config, y.cwd) : new GitLabTracker(config, y.cwd);
+  const tracker = y.tracker as unknown as Record<string, unknown>;
+  delete tracker.getPipeline;
+  Object.setPrototypeOf(tracker, real);
+  return { requests: async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { endpoint: string }) };
+}
+
+/** Run the ticket until the implementer's repair round and return what that round was handed. */
+async function repairHandoff(y: Awaited<ReturnType<typeof fixture>>) {
+  let implementations = 0;
+  y.setScript(async (request, sink) => request.role === 'implementer' && ++implementations > 1
+    ? { outcome: { outcome: 'question', question: 'Stopping after reading the CI evidence.' } } : y.normal(request, sink));
+  const result = await y.cli('team', 'run', '12', '--json');
+  const handoff = y.inputs.filter(input => input.role === 'implementer')[1]?.handoff ?? '';
+  return { result, handoff };
+}
+
+/** Every file the handoff points at inside the ticket's local logs, read back as the implementer would. */
+async function handedLogs(y: Awaited<ReturnType<typeof fixture>>, handoff: string) {
+  const dir = join(y.cwd, '.mill/logs/12');
+  const found = handoff.match(new RegExp(`${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[^\\s\`'")\\]>,]+`, 'g')) ?? [];
+  const logs: { path: string; text: string }[] = [];
+  for (const path of new Set(found.map(path => path.replace(/[.:;]+$/, '')))) {
+    assert.ok(isAbsolute(path), path);
+    try { logs.push({ path, text: await readFile(path, 'utf8') }); } catch { /* not a readable file */ }
+  }
+  return logs;
+}
+
+const ghRun = { id: 500, head_sha: 'HEAD_SHA', run_attempt: 2, status: 'completed', conclusion: 'failure', html_url: 'https://github.com/team/tool/actions/runs/500' };
+const ghJobUrl = (id: number) => `https://github.com/team/tool/actions/runs/500/job/${id}`;
+const ghJob = (id: number, name: string, extra: object = {}) => ({ id, run_id: 500, run_attempt: 2, head_sha: 'HEAD_SHA', name, status: 'completed', conclusion: 'failure', html_url: ghJobUrl(id), ...extra });
+const ghCheck = (id: number, name: string, summary?: string, conclusion = 'failure') => ({ id, head_sha: 'HEAD_SHA', name, status: 'completed', conclusion, html_url: ghJobUrl(id), details_url: ghJobUrl(id), output: summary ? { summary } : {} });
+const ghChecks = (...checks: object[]) => ({ checks: { total_count: checks.length, check_runs: checks }, status: { sha: 'HEAD_SHA', state: 'pending', total_count: 0, statuses: [] } });
+
+test('a failed GitHub Actions run hands the repair round the commit, each failed job, its URL and a readable saved log', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Expected 2, got 3'), ghCheck(9002, 'lint', 'Unused variable'), ghCheck(9003, 'build', undefined, 'success')),
+    runs: { 500: ghRun },
+    jobs: { 9001: ghJob(9001, 'unit'), 9002: ghJob(9002, 'lint'), 9003: ghJob(9003, 'build', { conclusion: 'success' }) },
+    logs: { 9001: 'step 1\nGH-UNIT-LOG: expected 2 but got 3\n', 9002: 'GH-LINT-LOG: no-unused-vars\n', 9003: 'GH-BUILD-LOG passing\n' },
+  });
+  const { handoff } = await repairHandoff(y);
+  assert.ok(handoff.includes(y.git('rev-parse', 'mill/12')), 'names the tested commit');
+  for (const text of ['unit', 'lint', ghJobUrl(9001), ghJobUrl(9002), 'Expected 2, got 3', 'Unused variable']) assert.ok(handoff.includes(text), `${text}\n${handoff}`);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-UNIT-LOG: expected 2 but got 3')), handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-LINT-LOG: no-unused-vars')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GH-BUILD-LOG')), 'passing jobs have no saved log');
+});
+
+test('GitHub logs from another commit or an obsolete attempt are never substituted for the failed job', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Old attempt failed'), ghCheck(9002, 'lint', 'Other commit failed'), ghCheck(9003, 'e2e', 'Timed out')),
+    runs: { 500: ghRun },
+    jobs: { 9001: ghJob(9001, 'unit', { run_attempt: 1 }), 9002: ghJob(9002, 'lint', { head_sha: 'f'.repeat(40) }), 9003: ghJob(9003, 'e2e') },
+    logs: { 9001: 'GH-STALE-ATTEMPT-LOG\n', 9002: 'GH-OTHER-COMMIT-LOG\n', 9003: 'GH-E2E-LOG: timed out\n' },
+  });
+  const { handoff } = await repairHandoff(y);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GH-E2E-LOG')), 'the verified job still gets its log');
+  assert.ok(!(handoff + logs.map(log => log.text).join('\n')).match(/GH-STALE-ATTEMPT-LOG|GH-OTHER-COMMIT-LOG/), 'rejected logs are not shown or saved');
+  for (const id of [9001, 9002]) assert.match(handoff, new RegExp(`${ghJobUrl(id)}[^]*unavailable|unavailable[^]*${ghJobUrl(id)}`, 'i'));
+  assert.match(handoff, /Old attempt failed/); assert.match(handoff, /Other commit failed/);
+});
+
+test('an oversized or undownloadable GitHub log is explicit and keeps the failed CI result', async t => {
+  const y = await fixture(t);
+  const big = { repeat: `GH-BIG-LINE ${'x'.repeat(87)}\n`, times: 120000 };
+  await hostedCi(t, y, 'github', {
+    ...ghChecks(ghCheck(9001, 'unit', 'Huge output'), ghCheck(9002, 'lint', 'Lint exploded')),
+    runs: { 500: ghRun }, jobs: { 9001: ghJob(9001, 'unit'), 9002: ghJob(9002, 'lint') },
+    logs: { 9001: big, 9002: 'never served\n' }, logFail: [9002],
+  });
+  const { result, handoff } = await repairHandoff(y);
+  assert.notEqual(JSON.parse(result.stdout).outcome, 'infrastructure', result.stdout);
+  assert.match(handoff, /truncat/i);
+  assert.ok(handoff.length < 100000, 'the handoff carries a summary, not the log');
+  const saved = (await handedLogs(y, handoff)).filter(log => log.text.includes('GH-BIG-LINE'));
+  assert.ok(saved.length === 1 && saved[0]!.text.length < 12000000, 'the saved copy is bounded');
+  assert.match(handoff, new RegExp(`${ghJobUrl(9002)}[^]*(unavailable)[^]*(500|Server Error)|(500|Server Error)[^]*unavailable[^]*${ghJobUrl(9002)}`, 'i'));
+  assert.match(handoff, /Lint exploded/);
+});
+
+const glJobUrl = (id: number, project = 'team/tool') => `https://gitlab.com/${project}/-/jobs/${id}`;
+const glJob = (id: number, name: string, status: string, extra: object = {}) => ({ id, name, status, stage: 'test', allow_failure: false, web_url: glJobUrl(id), ...extra });
+const glTrigger = (downstream: object | null, status = 'failed') => ({ id: 300, status, allow_failure: false, web_url: glJobUrl(300), downstream_pipeline: downstream });
+
+test('a failed GitLab pipeline hands over logs for current failed jobs across pages, retries and downstream projects', async t => {
+  const y = await fixture(t);
+  const shards = Array.from({ length: 100 }, (_, i) => i + 1);
+  const hosted = await hostedCi(t, y, 'gitlab', { polls: [{
+    pipelines: { 100: { status: 'failed', project_id: 71 }, 200: { status: 'failed', project_id: 72 } },
+    triggers: { 100: [glTrigger({ id: 200, project_id: 72 })] },
+    jobs: {
+      // Every shard failed once and then passed on retry; only the final attempt counts.
+      100: [...shards.map(i => glJob(1000 + i, `shard-${i}`, 'failed')), ...shards.map(i => glJob(2000 + i, `shard-${i}`, 'success')),
+        glJob(401, 'lint', 'failed'), glJob(402, 'lint', 'success'), glJob(501, 'unit', 'failed'), glJob(502, 'flaky', 'failed', { allow_failure: true })],
+      200: [glJob(601, 'integration', 'failed', { web_url: glJobUrl(601, 'team/downstream') })],
+    },
+  }], traces: { 501: 'GL-UNIT-TRACE: expected 2 got 3\n', 601: 'GL-DOWNSTREAM-TRACE: contract broken\n', 401: 'GL-OLD-LINT-TRACE\n', 502: 'GL-FLAKY-TRACE\n' } });
+  const { handoff } = await repairHandoff(y);
+  for (const text of [y.git('rev-parse', 'mill/12'), 'unit', glJobUrl(501), 'integration', glJobUrl(601, 'team/downstream')]) assert.ok(handoff.includes(text), `${text}\n${handoff}`);
+  assert.match(handoff, /\b200\b/); assert.match(handoff, /\b72\b/);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-UNIT-TRACE')), handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-DOWNSTREAM-TRACE')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GL-OLD-LINT-TRACE')), 'a job that passed on retry is not a failure');
+  assert.ok(!(await hosted.requests()).some(request => /jobs\/(401|1\d\d\d)\/trace/.test(request.endpoint)), 'retried attempts are not downloaded');
+});
+
+test('GitLab polling downloads an unchanged failed attempt once and refreshes it for a new attempt', async t => {
+  const y = await fixture(t);
+  const running = { pipelines: { 100: { status: 'running', project_id: 71 } }, jobs: { 100: [glJob(11, 'unit', 'failed'), glJob(13, 'slow', 'running')] } };
+  const hosted = await hostedCi(t, y, 'gitlab', { polls: [running, running, {
+    pipelines: { 100: { status: 'failed', project_id: 71 } },
+    jobs: { 100: [glJob(11, 'unit', 'failed'), glJob(12, 'unit', 'failed'), glJob(13, 'slow', 'success')] },
+  }], traces: { 11: 'GL-ATTEMPT-ONE\n', 12: 'GL-ATTEMPT-TWO\n' } });
+  const { handoff } = await repairHandoff(y);
+  const requests = (await hosted.requests()).map(request => request.endpoint);
+  assert.ok(requests.filter(endpoint => endpoint.includes('/merge_requests/1')).length >= 3, 'CI was polled until it failed');
+  assert.ok(requests.filter(endpoint => /jobs\/11\/trace/.test(endpoint)).length <= 1, 'the unchanged attempt is not downloaded on every poll');
+  assert.equal(requests.filter(endpoint => /jobs\/12\/trace/.test(endpoint)).length, 1);
+  const logs = await handedLogs(y, handoff);
+  assert.ok(logs.some(log => log.text.includes('GL-ATTEMPT-TWO')), handoff);
+  assert.ok(!logs.some(log => log.text.includes('GL-ATTEMPT-ONE')), 'the obsolete attempt is not handed over');
+});
+
+test('a failed downstream job still does not gate a merge when the root pipeline passes, even with its log missing', async t => {
+  const y = await fixture(t);
+  await hostedCi(t, y, 'gitlab', { polls: [{
+    pipelines: { 100: { status: 'success', project_id: 71 }, 200: { status: 'failed', project_id: 72 } },
+    triggers: { 100: [glTrigger({ id: 200, project_id: 72 }, 'success')] },
+    jobs: { 100: [glJob(501, 'unit', 'success')], 200: [glJob(601, 'integration', 'failed', { web_url: glJobUrl(601, 'team/downstream') })] },
+  }], traces: {} });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'passed');
+});
+
+test('the docs state the size and time bounds on CI log retrieval', async () => {
+  const docs = (await Promise.all(['docs/operating-mill.md', 'docs/gitlab.md', 'README.md'].map(file => readFile(new URL(`../../${file}`, import.meta.url), 'utf8')))).join('\n\n');
+  const paragraph = docs.split(/\n\s*\n/).find(text => /CI (?:job )?logs?/i.test(text) && /\d+\s*(?:KiB|MiB|KB|MB|bytes)/i.test(text) && /\d+\s*(?:seconds?|minutes?|s|m)\b/i.test(text));
+  assert.ok(paragraph, 'a paragraph on CI logs gives a size bound and a time bound');
+  assert.match(paragraph, /truncat/i);
 });
 
 test('review, local tests and CI failures share one cap and retain the final CI diagnostics', async t => {
