@@ -16,6 +16,7 @@ export interface ProjectConfig {
   integration: string;
   runtime: 'claude-code' | 'pi' | 'codex';
   roles: Record<Role, { model: string; effort: Effort }>;
+  model_routing?: { enabled: boolean };
   role_timeout: string;
   /** none: the project has no tests, on purpose. No red check, no test run before merge. */
   tests: { command: string; timeout: string; preflight?: string; focused?: FocusedTests } | 'none';
@@ -35,7 +36,17 @@ export interface ProjectConfig {
   /** Filled with defaults when loaded; absent only on configs built in code. */
   phase_timeouts?: Record<Phase, string>;
 }
+export interface RoutingPolicy {
+  policy_version: string;
+  model: string;
+  question_version: string;
+  timeout: string;
+  max_evidence_chars: number;
+  min_confidence: number;
+  families: Partial<Record<'gpt' | 'claude', Partial<Record<string, { model: string; effort: Effort }>>>>;
+}
 export interface MachineConfig {
+  model_routing?: RoutingPolicy;
   concurrency: number;
   infrastructure_retries: number;
   pause_threshold: number;
@@ -71,7 +82,7 @@ export interface ConfigIssue {
 }
 
 interface Rule {
-  type: 'string' | 'number' | 'object' | 'list';
+  type: 'string' | 'number' | 'boolean' | 'object' | 'list';
   fields?: Record<string, Rule>;
   optional?: boolean;
   default?: unknown;
@@ -102,6 +113,7 @@ const projectSchema = object({
   }, hint: 'expected a valid git branch name' },
   runtime: choice('claude-code', 'pi', 'codex'),
   roles: object({ 'test-writers': role, implementer: role, reviewer: role }),
+  model_routing: { ...object({ enabled: { type: 'boolean' } }), optional: true },
   role_timeout: { ...duration, default: '60m' },
   tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true }, focused: { ...object({
     command: literal,
@@ -134,7 +146,18 @@ const projectSchema = object({
   labels: { ...object({ logjam: { ...string, default: 'logjam' } }), default: {} },
   phase_timeouts: { ...object(Object.fromEntries(Object.entries(phaseDefaults).map(([phase, value]) => [phase, { ...duration, default: value }]))), default: {} },
 });
+const tierMapping = object(Object.fromEntries(['low', 'medium', 'high'].flatMap(model =>
+  ['low', 'medium', 'high'].map(effort => [`${model}-${effort}`, { ...role, optional: true }]))));
 const machineSchema = object({
+  model_routing: { ...object({
+    policy_version: { ...string, check: value => /^[a-zA-Z0-9.-]{1,80}$/.test(String(value)) },
+    model: { ...choice('jev-1.14.0') },
+    question_version: choice('coding-tiers-v1'),
+    timeout: { ...duration, default: '10s', check: value => /^[1-9]\d*s$/.test(String(value)) && milliseconds(String(value)) <= 60000 },
+    max_evidence_chars: { ...integer(4000, 1), check: value => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 16000 },
+    min_confidence: { type: 'number', check: value => Number.isFinite(value) && Number(value) >= 0 && Number(value) <= 1 },
+    families: object({ gpt: { ...tierMapping, optional: true }, claude: { ...tierMapping, optional: true } }),
+  }), optional: true },
   concurrency: integer(2, 1),
   infrastructure_retries: integer(3, 0),
   pause_threshold: integer(3, 1),

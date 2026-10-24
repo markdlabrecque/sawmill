@@ -56,9 +56,16 @@ export interface Attempt {
   phaseDurations: Unknown;
 }
 
-export interface RecordExport { schema: number; attempts: Attempt[]; totals: { attempts: number; tickets: number; merged: number; manual: number; stopped: number; inProgress: number } }
+/** Additive dispatch telemetry on live exports. `Attempt` remains the compact schema-1
+ * summary contract used by historical, human-labeled evaluation fixtures. */
+export interface RoutingAttempt extends Attempt {
+  selections: import('./model-routing.js').ModelSelection[];
+  invocations: NonNullable<import('./run-store.js').TeamProgress['invocations']>;
+}
 
-type Summary = Pick<Attempt, 'ended' | 'heads' | 'completion' | 'policy' | 'environment' | 'results'> & { findings: Omit<Findings, 'humanActions'> };
+export interface RecordExport { schema: number; attempts: RoutingAttempt[]; totals: { attempts: number; tickets: number; merged: number; manual: number; stopped: number; inProgress: number } }
+
+type Summary = Pick<RoutingAttempt, 'ended' | 'heads' | 'completion' | 'policy' | 'environment' | 'results' | 'selections' | 'invocations'> & { findings: Omit<Findings, 'humanActions'> };
 
 const secretPatterns: [RegExp, string][] = [
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, '[redacted]'],
@@ -206,6 +213,8 @@ function summarize(cwd: string, row: RunTicket, events: LogEvent[]): Summary {
       reviewApproved: team.approvedHead ?? null,
     },
     findings,
+    selections: team.selections ?? [],
+    invocations: team.invocations ?? [],
   };
 }
 
@@ -262,9 +271,10 @@ export function exportRecords(cwd: string): RecordExport {
       heads: summary.heads ?? { source: null, base: null, delivered: null, mergeCommit: null },
       completion: summary.completion ?? { kind: 'in-progress', reason: null, stage: null },
       policy: summary.policy ?? { proofPlan: unknown }, environment: summary.environment ?? { node: unknown, mill: unknown }, results: summary.results ?? {},
+      selections: summary.selections ?? [], invocations: summary.invocations ?? [],
       findings, cost: unknown, humanMinutes: row.minutes === null ? unknown : Number(row.minutes),
       escapedDefects: row.defects === null ? unknown : JSON.parse(String(row.defects)) as string[], phaseDurations: unknown,
-    } satisfies Attempt;
+    } satisfies RoutingAttempt;
   });
   const count = (kind: Attempt['completion']['kind']) => attempts.filter(attempt => attempt.completion.kind === kind).length;
   return { schema: recordSchema, attempts, totals: { attempts: attempts.length, tickets: new Set(attempts.map(attempt => attempt.ticket)).size,
@@ -295,6 +305,12 @@ export function reportRecords(cwd: string): { data: object; text: string } {
     `Human minutes: ${minutes === unknown ? 'unknown' : `${minutes}${coverage(noted.length)}`}.`,
     `Escaped defects: ${defects === unknown ? 'unknown' : `${defects}${coverage(linked.length)}`}.`,
     'Cost: unknown. Phase durations: unknown.',
+    ...(attempts.some(attempt => attempt.selections.length) ? [
+      'Routing baselines are contemporaneous counterfactual configurations, not observed baseline executions. No causal quality or savings comparison is established.',
+      `Routing: ${attempts.reduce((n, a) => n + a.selections.filter(s => s.disposition === 'applied').length, 0)} applied decisions; ` +
+      `${attempts.reduce((n, a) => n + a.selections.filter(s => s.disposition === 'reused').length, 0)} reused invocations. ` +
+      'Compare whole deliveries, including Jev usage, all role invocations, repairs, review bounces and escaped defects. Capacity and billed costs are separate; unreported measurements are unknown.',
+    ] : []),
     ...tickets.flatMap(ticket => [`#${ticket}: ${plural(attempts.filter(attempt => attempt.ticket === ticket).length, 'attempt')}`,
       ...attempts.filter(attempt => attempt.ticket === ticket).map(attempt => `  ${attempt.id.slice(0, 8)} ${attempt.completion.kind}${attempt.completion.reason ? ` (${attempt.completion.reason})` : ''}` +
         `${attempt.previous ? ` after ${attempt.previous.slice(0, 8)}` : ''}, started ${attempt.started}, ended ${attempt.ended ?? 'not yet'}; ` +

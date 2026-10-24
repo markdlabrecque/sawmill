@@ -1,6 +1,8 @@
 import { requireTypeSafeKey } from './typesafe.js';
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
+import { exportRecords } from './attempt-record.js';
+import { executionMeasurement, requireRoutingCredentials, selectModel } from './model-routing.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -40,7 +42,7 @@ const correctionCap = 2;
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 const changedFiles = async (cwd: string, from: string, to: string, ...files: string[]) =>
   (await execute('git', ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', from, to, '--', ...files], { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.split('\0').filter(Boolean);
-export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal; acceptanceScreening?: AcceptanceScreeningOptions }
+export interface TeamOptions extends MirrorOptions { runtime?: Runtime; home?: string; signal?: AbortSignal; acceptanceScreening?: AcceptanceScreeningOptions; typeSafeChoices?: typeof import('./typesafe.js').typeSafeChoices }
 export interface TeamResult {
   outcome: 'passed' | 'retry-cap' | 'aborted' | 'infrastructure' | 'stopped' | 'skipped';
   ticket: number;
@@ -57,6 +59,7 @@ export interface TeamResult {
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
   requireTypeSafeKey();
+  requireRoutingCredentials(project);
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;
@@ -524,14 +527,29 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
         const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site;
         const duration = project.role_timeout;
-        progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces };
+        progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces,
+          ...(entry?.role === role && entry.bounces === current().bounces && entry.selectionId ? { selectionId: entry.selectionId } : {}) };
         await save({});
         const result = await retryInfrastructure(async () => {
           const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, number, options.home, options.signal, progress.userTesting, progress.site) : undefined;
           checkStop(cwd, number);
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
+          const saved = progress.selections?.find(event => event.id === progress.activeRole?.selectionId);
+          const routed = role !== 'reviewer' && (project.model_routing?.enabled || saved);
+          const attempt = routed ? exportRecords(cwd).attempts.filter(attempt => attempt.ticket === number).at(-1) : undefined;
+          if (routed && !attempt) throw new Error('Cannot persist model selection without a delivery attempt.');
+          const selection = routed ? await selectModel({ path, project, machine, ticket: current(), attempt: attempt!, role,
+            invocation: (progress.selections?.filter(event => event.role === role).length ?? 0) + 1,
+            transport: options.typeSafeChoices, saved }) : undefined;
+          const selected = selection?.execution.requested ?? project.roles[role];
+          if (selection) {
+            (progress.selections ??= []).push(selection);
+            progress.activeRole!.selectionId ??= selection.id;
+            // Commit both the concrete choice and original baseline before any vendor starts.
+            await save({});
+          }
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
-            role, cwd: path, home: options.home, ...project.roles[role], prompt: prompt + verificationInstructions(verificationFrom(project), role),
+            role, cwd: path, home: options.home, ...selected, prompt: prompt + verificationInstructions(verificationFrom(project), role),
             handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
@@ -543,6 +561,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
+          const execution = executionMeasurement(selected, invoked);
+          if (selection) selection.execution = execution;
+          (progress.invocations ??= []).push({ role, round: invoked.round, ...(selection ? { selectionId: selection.id } : {}), execution });
+          // Local execution evidence must survive questions and failed session mirrors as well as success.
+          if (!await transition(cwd, project, tracker, number, { team: progress }, [], options)) invoked.mirrored = false;
           return invoked;
         }, result => result.outcome.outcome === 'infrastructure' ? result.outcome.error : undefined,
         result => ({ roleResult: result }), result => result.outcome.outcome === 'question');
@@ -651,7 +674,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         resume = progress.next = correcting ? 'reviewer' : role === 'test-writers' ? 'implementer' : role === 'implementer' ? 'reviewer' : 'integrate';
         await save({ stage: completed, report: correcting
           ? { stage: 'test-correction', details: `Test correction ${correcting.attempts}/${correctionCap} committed at ${correcting.head}. A fresh review must accept it before it replaces the protected baseline ${correcting.baseline}.\n\n${correcting.tests}`, reachedStage: role, round: result.round }
-          : { stage: completed, details: JSON.stringify({ ...result, model: project.roles[role].model, effort: project.roles[role].effort }), reachedStage: role, round: result.round } });
+          : { stage: completed, details: JSON.stringify({ ...result, model: progress.invocations?.at(-1)?.execution.requested.model ?? project.roles[role].model, effort: progress.invocations?.at(-1)?.execution.requested.effort ?? project.roles[role].effort }), reachedStage: role, round: result.round } });
         checkStop(cwd, number);
         // Mirroring yields to external I/O. Recheck evidence before dispatching again.
         if (await changedTests(path, progress)) {

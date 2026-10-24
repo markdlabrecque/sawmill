@@ -54,6 +54,11 @@ export interface RuntimeResult {
   effectiveModel?: string;
   effectiveEffort?: string;
   diagnostics?: string[];
+  /** Measured at the invocation boundary, not estimated from the requested profile. */
+  durationMs?: number;
+  usage?: { inputTokens: number | null; outputTokens: number | null };
+  /** Provider-reported billed USD only; subscriptions and missing usage remain unknown. */
+  cost?: number;
 }
 /** External runtime boundary. Implementations must settle only after child cleanup. */
 export interface Runtime { run(request: RuntimeRequest, sink: RuntimeSink): Promise<RuntimeResult> }
