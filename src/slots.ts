@@ -22,7 +22,7 @@ export const slotsPath = (home: string) => join(home, '.local/state/sawmill/slot
 /** Claims, releases and recovery serialize on one SQLite write lock beside the slots.
  * The kernel drops it when its holder exits, so a crash never leaves it held, and a
  * reservation without metadata seen under it has no live claimant mid-claim or mid-release. */
-function withSlotLock<T>(root: string, work: () => T): T {
+export function withSlotLock<T>(root: string, work: () => T): T {
   mkdirSync(root, { recursive: true });
   const db = new DatabaseSync(`${root}.sqlite`);
   try {
