@@ -78,8 +78,8 @@ export interface Scenario {
 /** Version 1 of the `mill-results: <json>` line a project's test wrapper prints. */
 export interface StructuredResults { version: 1; status: 'ok' | 'bootstrap-error' | 'collection-error'; collected: number; scenarios: Scenario[] }
 export type ParsedResults = { ok: true; results: StructuredResults } | { ok: false; problem: string };
-/** Whether a run proves new scenarios fail for the intended reason, or are green afterwards. */
-export interface Evidence { valid: boolean; scenarios: string[]; problem?: string }
+/** Whether a run proves new scenarios fail for the intended reason, or are green afterwards. `environment` marks a problem no test rewrite can fix. */
+export interface Evidence { valid: boolean; scenarios: string[]; problem?: string; environment?: boolean }
 
 const statuses = ['ok', 'bootstrap-error', 'collection-error'];
 const kinds = ['assertion', 'compile', 'error'];
@@ -121,7 +121,7 @@ function unproven(s: Scenario): string | undefined {
   return undefined;
 }
 
-const invalid = (problem: string): Evidence => ({ valid: false, scenarios: [], problem });
+const invalid = (problem: string, environment = false): Evidence => ({ valid: false, scenarios: [], problem, ...(environment ? { environment } : {}) });
 
 /**
  * Red evidence: on a healthy baseline, the run collected tests and every scenario that is new since the
@@ -129,12 +129,12 @@ const invalid = (problem: string): Evidence => ({ valid: false, scenarios: [], p
  * baseline, every failing scenario counts as new.
  */
 export function redEvidence(baseline: StructuredResults | undefined, after: StructuredResults): Evidence {
-  if (after.status !== 'ok') return invalid(`The test run reported a ${after.status}. This is an environment problem, not a failing test.`);
-  if (!after.collected || !after.scenarios.length) return invalid('The test run collected 0 tests. This is an environment problem, not a failing test.');
+  if (after.status !== 'ok') return invalid(`The test run reported a ${after.status}. This is an environment problem, not a failing test.`, true);
+  if (!after.collected || !after.scenarios.length) return invalid('The test run collected 0 tests. This is an environment problem, not a failing test.', true);
   if (baseline) {
-    if (baseline.status !== 'ok') return invalid(`The baseline run reported a ${baseline.status}, so it cannot certify new tests.`);
+    if (baseline.status !== 'ok') return invalid(`The baseline run reported a ${baseline.status}, so it cannot certify new tests.`, true);
     const broken = baseline.scenarios.filter(s => s.status === 'fail').map(s => s.id);
-    if (broken.length) return invalid(`The baseline already fails (${broken.join(', ')}), so it cannot certify new tests.`);
+    if (broken.length) return invalid(`The baseline already fails (${broken.join(', ')}), so it cannot certify new tests.`, true);
   }
   const known = new Set(baseline?.scenarios.map(s => s.id));
   const failing = after.scenarios.filter(s => s.status === 'fail' && !known.has(s.id));
@@ -155,6 +155,73 @@ export function greenEvidence(red: Evidence, after: StructuredResults): Evidence
     ...(missing.length ? [`No longer reported: ${missing.join(', ')}.`] : []),
   ].join(' '));
   return { valid: true, scenarios: red.scenarios };
+}
+
+/** A node:test failure is an assertion only when the runner says so; anything else it threw is an error. */
+const failureKind = (block: string[]): Scenario['kind'] => block.some(text => /AssertionError|ERR_ASSERTION/.test(text)) ? 'assertion' : 'error';
+const blockAfter = (all: string[], i: number, depth: number) => {
+  const block: string[] = [];
+  for (const text of all.slice(i + 1)) {
+    if (text.trim() && indent(text) <= depth) break;
+    block.push(text);
+  }
+  return block;
+};
+
+/**
+ * node --test output (spec or TAP) in the contract's shape. Scenario ids are test names; skipped and todo
+ * tests are left out, and so is a parent that failed only because a subtest did. The spec reporter may give
+ * a failure's details only in its closing "failing tests:" list, so every report of a name is merged; a
+ * failure with no details anywhere is a parent.
+ */
+export function nodeResults(output: string): StructuredResults | undefined {
+  const all = lines(output), found = new Map<string, Scenario>();
+  const add = (s: Scenario) => { if (!found.has(s.id)) found.set(s.id, s); };
+  let counts: RegExp;
+  if (/^\s*ℹ fail \d+$/m.test(output)) {
+    counts = /^\s*ℹ tests (\d+)$/gm;
+    const failed = new Map<string, string[][]>();
+    all.forEach((line, i) => {
+      const match = /^(\s*)([✔✖﹣]) (.+?)(?: \([\d.]+m?s\))?( # (?:SKIP|TODO)\b.*)?$/.exec(line);
+      if (!match || match[4] || match[2] === '﹣' || match[3] === 'failing tests:') return;
+      if (match[2] === '✔') return add({ id: match[3]!, status: 'pass' });
+      const block = blockAfter(all, i, match[1]!.length).filter(text => text.trim());
+      failed.set(match[3]!, [...failed.get(match[3]!) ?? [], ...block.length ? [block] : []]);
+    });
+    for (const [id, blocks] of failed) {
+      const message = blocks[0]?.[0]!.trim();
+      if (!message || blocks.some(block => subtests.test(block[0]!.trim()))) continue;
+      found.set(id, { id, status: 'fail', kind: failureKind(blocks.flat()), message });
+    }
+  } else if (/^\s*# fail \d+$/m.test(output) && /^\s*(?:not )?ok \d+/m.test(output)) {
+    counts = /^\s*# tests (\d+)$/gm;
+    all.forEach((line, i) => {
+      const match = /^(\s*)(not )?ok \d+ - (.+?)(\s#\s*(?:SKIP|TODO)\b.*)?$/.exec(line);
+      if (!match || match[4]) return;
+      if (!match[2]) return add({ id: match[3]!, status: 'pass' });
+      const block = blockAfter(all, i, match[1]!.length);
+      if (!block.some(text => /^\s*failureType: '?subtestsFailed'?$/.test(text))) add({ id: match[3]!, status: 'fail', kind: failureKind(block) });
+    });
+  } else return undefined;
+  const collected = [...output.matchAll(counts)].reduce((sum, match) => sum + Number(match[1]), 0);
+  return { version: 1, status: 'ok', collected, scenarios: [...found.values()] };
+}
+
+/** A run's results: the wrapper's `mill-results` line, else node:test output. Undefined when Mill cannot read the run. */
+export function readResults(output: string): ParsedResults | undefined {
+  const structured = parseStructuredResults(output);
+  if (structured) return structured;
+  const node = nodeResults(output);
+  return node && { ok: true, results: node };
+}
+
+/** Why a passing run does not turn the accepted red scenarios green. Undefined when they all pass or Mill cannot read the run. */
+export function greenProblem(red: string[] | undefined, output: string): string | undefined {
+  const read = red?.length ? readResults(output) : undefined;
+  if (!read) return undefined;
+  if (!read.ok) return read.problem;
+  const green = greenEvidence({ valid: true, scenarios: red! }, read.results);
+  return green.valid ? undefined : `The scenarios accepted as red are not all green. ${green.problem}`;
 }
 
 /** The "Test command" a role's handoff shows when the project opted out of tests. */
