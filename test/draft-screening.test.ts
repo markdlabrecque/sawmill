@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import type { Ticket } from '../src/tracker.js';
 
@@ -46,6 +47,8 @@ interface Report {
 async function screen(tickets: Ticket[], options: Options): Promise<Report> {
   // Variable import keeps the baseline buildable until this feature exists.
   const modulePath = '../src/draft-screening.js';
+  assert.ok(existsSync(new URL(modulePath, import.meta.url)),
+    'Draft screening requires the screenDraft helper; advisory screening is not implemented');
   const api = await import(modulePath) as {
     screenDraft(tickets: Ticket[], options: Options): Promise<Report>;
   };
