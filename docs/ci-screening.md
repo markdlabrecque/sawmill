@@ -70,9 +70,11 @@ The production model is pinned to **jev-1.14.0**, question version
 including untrusted-data instructions, AbortSignal, no retries and no debug
 payload logging. Defaults allow 10 seconds per request; config permits 1–60,000
 ms. A wall-clock deadline applies even if an injected classifier ignores abort.
-At most 20 saved jobs receive screening per report, within the existing shared
-five-minute log/report budget. An exhausted budget cannot delay or dismiss the
-failed-CI outcome.
+All deterministic log collection finishes before screening starts, retaining
+its existing five-minute download budget. At most 20 saved jobs then receive
+screening within a separate five-minute budget. Screening timeouts cannot
+prevent later jobs' logs from being downloaded or remove saved-log feedback.
+An exhausted screening budget leaves those jobs unscreened and CI failed.
 
 ## Provenance, security and cache
 
@@ -129,6 +131,12 @@ retention: **2/2**. Distractor leakage in the selected-only fixture: **0**.
 These are deterministic/mock measurements, not measured semantic performance.
 The focused run took 110 ms overall; its timeout fixture took 33 ms with a 30 ms
 deadline. These include local test overhead and are not live service latency.
+
+**AC5 remains unresolved:** no consented paired repair sessions have been
+measured (sample size **0**). The mock excerpt-selection baseline does not
+satisfy the repair-effort requirement. A human user must supply/approve
+representative cases and participants for the paired evaluation below, or
+explicitly waive AC5 through Mill; this document is not a waiver.
 
 Repair effort is a separate paired measurement: for each consented,
 human-labeled log, compare the unchanged handoff against the screened handoff,
