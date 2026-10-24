@@ -55,8 +55,13 @@ if (route === '/merge_requests' && method === 'POST') {
   if (body.source_branch !== 'mill/7' || body.target_branch !== 'integration') fail(400, 'Wrong MR branches');
   state.mr = { title: body.title, description: body.description };
   state.openCount = (state.openCount || 0) + 1;
-  fs.writeFileSync(statePath, JSON.stringify(state)); reply(mr());
+  // loseCreateResponse: the MR is created once, then its response is lost.
+  const lose = state.loseCreateResponse; delete state.loseCreateResponse;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (lose) fail(502, 'Fixture lost response');
+  reply(mr());
 }
+if (route === '/merge_requests/42' && method === 'GET' && state.failMrReads) fail(503, 'Fixture MR read unavailable');
 if (route === '/merge_requests/42' && method === 'GET') reply({ ...mr(), ...(state.finalMrHead ? { sha: state.finalMrHead } : {}) });
 const pipelineRoute = route.match(/^\/pipelines\/(\d+)(?:\/(trigger_jobs|bridges))?$/);
 if (pipelineRoute && method === 'GET') {
@@ -76,6 +81,11 @@ if (route === '/merge_requests/42/merge' && method === 'PUT') {
     if (state.pipelineOnRefusal) { state.pipelines = state.pipelineOnRefusal; fs.writeFileSync(statePath, JSON.stringify(state)); }
     fail(state.mergeRefusal, 'Fixture merge refusal');
   }
+  // dropMerge: the MR takes these fields instead of merging, then the response is lost.
+  if (state.dropMerge) {
+    state.mr = { ...state.mr, ...state.dropMerge }; delete state.dropMerge;
+    fs.writeFileSync(statePath, JSON.stringify(state)); fail(502, 'Fixture lost response');
+  }
   const host = state.cwd + '/../hosting';
   git('clone', '--branch', 'integration', state.remote, host);
   git('-C', host, 'config', 'user.name', 'Fixture Hosting'); git('-C', host, 'config', 'user.email', 'fixture@example.invalid');
@@ -85,8 +95,13 @@ if (route === '/merge_requests/42/merge' && method === 'PUT') {
   const mergeCommit = git('-C', host, 'rev-parse', 'HEAD');
   git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
   state.mergeCount = (state.mergeCount || 0) + 1;
-  state.mr = { ...state.mr, state: 'merged', merge_commit_sha: mergeCommit };
-  fs.writeFileSync(statePath, JSON.stringify(state)); reply(mr());
+  // A merged MR keeps its source head; squashCommitOnly reports the commit only as squash_commit_sha.
+  state.mr = { ...state.mr, state: 'merged', sha: body.sha, ...(state.squashCommitOnly ? { merge_commit_sha: null, squash_commit_sha: mergeCommit } : { merge_commit_sha: mergeCommit }) };
+  // loseMergeResponse: the merge lands once, then its response is lost.
+  const lose = state.loseMergeResponse; delete state.loseMergeResponse;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (lose) fail(502, 'Fixture lost response');
+  reply(mr());
 }
 if (route === '/repository/branches/mill%2F7' && method === 'DELETE') {
   if (state.deleteFailure) fail(503, 'Branch delete unavailable');

@@ -219,7 +219,78 @@ test('GitLab integrate opens then reuses a refused MR and merges the expected he
   assert.equal((await y.hostState()).mergeCount, 1);
 });
 
-const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') => ({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
+const mergeRequests = (requests: { method: string; endpoint: string }[]) => ({
+  opens: requests.filter(request => request.method === 'POST' && /\/merge_requests$/.test(request.endpoint)).length,
+  merges: requests.filter(request => request.endpoint.endsWith('/merge')).length,
+  reads: requests.filter(request => request.method === 'GET' && /\/merge_requests\/42$/.test(request.endpoint)).length,
+});
+
+test('GitLab confirms a merge whose response was lost on the same MR and records it with one merge', async t => {
+  for (const squashCommitOnly of [false, true]) {
+    await t.test(squashCommitOnly ? 'squash_commit_sha' : 'merge_commit_sha', async sub => {
+      const y = await approved(sub);
+      await y.changeHost({ loseMergeResponse: true, squashCommitOnly });
+      const result = await y.cli('integrate', '7', '--json');
+      assert.equal(result.code, 0, result.stdout);
+      const value = JSON.parse(result.stdout), remote = await y.hostState();
+      assert.equal(value.outcome, 'merged');
+      assert.equal(value.mergeCommit, squashCommitOnly ? remote.mr.squash_commit_sha : remote.mr.merge_commit_sha);
+      assert.equal(remote.mergeCount, 1); assert.equal(remote.issues[0].state, 'closed');
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged'); assert.equal(row.mergeCommit, value.mergeCommit);
+      assert.equal(y.git('rev-parse', 'HEAD'), value.mergeCommit);
+      assert.deepEqual(mergeRequests(await y.requests()), { opens: 1, merges: 1, reads: 1 });
+    });
+  }
+});
+
+test('GitLab stops a lost merge as infrastructure with no completion when the MR is closed, locked or unreadable', async t => {
+  const cases = [
+    { name: 'closed without merging', host: { dropMerge: { state: 'closed' } }, explain: /closed without merging/ },
+    { name: 'locked', host: { dropMerge: { state: 'locked' } }, explain: /locked/ },
+    { name: 'unreadable', host: { loseMergeResponse: true, failMrReads: true }, explain: /Could not confirm[^]*Fixture MR read unavailable/ },
+  ];
+  for (const { name, host, explain } of cases) {
+    await t.test(name, async sub => {
+      const y = await approved(sub);
+      await y.changeHost(host);
+      const result = await y.cli('integrate', '7', '--json');
+      assert.equal(result.code, 1, result.stdout);
+      const value = JSON.parse(result.stdout);
+      assert.equal(value.outcome, 'infrastructure'); assert.match(value.message, explain);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.completion, null); assert.equal(row.mergeCommit, null);
+      assert.equal(mergeRequests(await y.requests()).merges, 1);
+      if (name !== 'unreadable') return;
+      // The host merged; once it can be read, a restart confirms that merge instead of merging again.
+      await y.changeHost({ failMrReads: false });
+      const again = await y.cli('integrate', '7', '--json');
+      assert.equal(again.code, 0, again.stdout);
+      assert.equal(JSON.parse(again.stdout).mergeCommit, (await y.hostState()).mr.merge_commit_sha);
+      assert.equal((await y.status()).tickets[0].completion, 'merged');
+      assert.equal((await y.hostState()).mergeCount, 1);
+      assert.equal(mergeRequests(await y.requests()).merges, 1);
+    });
+  }
+});
+
+test('GitLab reuses an MR whose create response was lost instead of opening another', async t => {
+  const y = await approved(t);
+  await y.changeHost({ loseCreateResponse: true });
+  const first = await y.cli('integrate', '7', '--json');
+  assert.equal(first.code, 1, first.stdout);
+  assert.equal(JSON.parse(first.stdout).outcome, 'infrastructure');
+  assert.equal((await y.hostState()).openCount, 1);
+  const second = await y.cli('integrate', '7', '--json');
+  assert.equal(second.code, 0, second.stdout);
+  assert.equal(JSON.parse(second.stdout).outcome, 'merged');
+  const remote = await y.hostState();
+  assert.equal(remote.openCount, 1); assert.equal(remote.mergeCount, 1);
+  assert.equal(mergeRequests(await y.requests()).opens, 1);
+  assert.equal(mergeRequests(await y.requests()).merges, 1);
+});
+
+const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') =>({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
 
 test('GitLab ci wait reports a later-page failed native trigger and its descendant and never merges', async t => {
   const y = await approved(t, 'wait');
