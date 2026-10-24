@@ -2,7 +2,7 @@ import { requireTypeSafeKey } from './typesafe.js';
 import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { exportRecords } from './attempt-record.js';
-import { executionMeasurement, requireRoutingCredentials, selectModel } from './model-routing.js';
+import { executionMeasurement, selectModel } from './model-routing.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -59,7 +59,6 @@ export interface TeamResult {
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
   requireTypeSafeKey();
-  requireRoutingCredentials(project);
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;
