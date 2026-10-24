@@ -153,7 +153,7 @@ export class PiRuntime implements Runtime {
     if (retryPending || retryError) failure ??= retryError ?? 'Pi ended with an unsettled retry.';
     if (finalStop !== 'stop') failure ??= finalStop === 'error' ? providerFailure(assistantError ?? 'Assistant error')
       : finalStop === 'length' ? 'Pi terminal assistant response truncated at the output limit.' : `Pi terminal assistant failure: ${String(finalStop)}. ${assistantError ?? ''}`;
-    const selectionRejected = Boolean((!ready && !sessionId && selectionUnavailable(stderr)) ||
+    const selectionRejected = Boolean((!ready && selectionUnavailable(stderr)) ||
       (finalStop === 'error' && assistantError && selectionUnavailable(assistantError)) || (retryError && selectionUnavailable(retryError)));
     return { outcome: failure ? infrastructure(failure) : parseOutcome(finalText ?? '', request.role), sessionId, effectiveModel, effectiveEffort,
       ...usage.result(), ...(selectionRejected ? { selectionRejected: true } : {}),

@@ -30,7 +30,7 @@ export interface ModelSelection {
   id: string; project: string; ticket: number; attempt: string; role: Role; invocation: number; timestamp: string;
   evidenceId: string; evidence: Evidence[];
   baseline: ConcreteSelection & { runtime: ProjectConfig['runtime']; family: string };
-  jev: { model: string; questionVersion: string; latencyMs: number; usage: TypeSafeResult['usage'] | null; cost: null };
+  jev: { model: string; questionVersion: string; called?: boolean; latencyMs: number; usage: TypeSafeResult['usage'] | null; cost: null };
   recommendation: { model: string; effort: string; probabilities: Record<string, Record<string, number>>; confidence: Record<string, number> } | null;
   policyVersion: string; policy: { minConfidence: number | null; tierDefinitionVersion: string }; resolved: ConcreteSelection | null;
   disposition: 'applied' | 'baseline' | 'reused'; fallbackReason?: string; reusedFrom?: string;
@@ -118,7 +118,7 @@ export async function selectModel(input: {
     id: randomUUID(), project: input.attempt.project, ticket: ticket.number, attempt: input.attempt.id, role,
     invocation: input.invocation, timestamp: new Date().toISOString(),
     evidenceId: '', evidence: [], baseline,
-    jev: { model: policy?.model ?? jevModel, questionVersion: policy?.question_version ?? 'coding-tiers-v1', latencyMs: 0, usage: null, cost: null },
+    jev: { model: policy?.model ?? jevModel, questionVersion: policy?.question_version ?? 'coding-tiers-v1', called: false, latencyMs: 0, usage: null, cost: null },
     recommendation: null, policyVersion: policy?.policy_version ?? 'unconfigured',
     policy: { minConfidence: policy?.min_confidence ?? null, tierDefinitionVersion: 'coding-tiers-v1' }, resolved: null, disposition: 'baseline',
     execution: { requested: { ...project.roles[role] }, actual: null, mismatch: false, outcome: null, durationMs: null, usage: null, cost: null },
@@ -129,7 +129,7 @@ export async function selectModel(input: {
       disposition: 'reused' as const, reusedFrom: saved.reusedFrom ?? saved.id,
       execution: { ...event.execution, requested: { ...saved.execution.requested } } };
     // No new service call or usage: the original evidence remains linked, not billed twice.
-    reused.jev = { ...reused.jev, latencyMs: 0, usage: null, cost: null };
+    reused.jev = { ...reused.jev, called: false, latencyMs: 0, usage: null, cost: null };
     if (saved.execution.selectionRejected) {
       // Preserve the rejected resolution and its execution in the original event. Retry only
       // the historical baseline, never a newly configured baseline or the rejected mapping.
@@ -158,6 +158,7 @@ export async function selectModel(input: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const started = performance.now();
   try {
+    event.jev.called = true;
     const response = await Promise.race([
       Promise.resolve().then(() => (input.transport ?? typeSafeChoices)({ model: policy.model, questionVersion: policy.question_version, questions }, { apiKey, timeoutMs, signal: controller.signal })),
       new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),
@@ -180,8 +181,10 @@ export async function selectModel(input: {
     if ([model, effort].some(a => a.confidence < policy.min_confidence || a.probabilities[a.tier]! < policy.min_confidence || Object.values(a.probabilities).some(p => p > a.probabilities[a.tier]!))) return fallback('low-confidence');
     const resolved = policy.families[baseline.family as 'gpt' | 'claude']?.[`${model.tier}-${effort.tier}`];
     if (!resolved) return fallback('unmapped-tier');
+    // Retain the rejected concrete candidate too; execution.requested remains the baseline
+    // until every family/model/effort check has passed.
+    event.resolved = { model: clean(resolved.model).slice(0, 200), effort: resolved.effort };
     if (!validMapping(resolved, baseline.family, project.runtime)) return fallback('invalid-mapping-family-model-or-effort');
-    event.resolved = { ...resolved };
     event.execution.requested = { ...resolved };
     event.disposition = 'applied';
     return event;

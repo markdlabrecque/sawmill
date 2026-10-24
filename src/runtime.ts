@@ -77,7 +77,8 @@ export function supportedRoutingSelection(runtime: ProjectConfig['runtime'], sel
 /** Only explicit vendor availability/setting diagnostics authorize retrying the baseline.
  * Transport, permissions, tool errors and credential failures must not masquerade as rejection. */
 export function selectionUnavailable(detail: string): boolean {
-  return /(?:model[^\n]{0,100}(?:not found|does not exist|not available|unavailable|not supported|unsupported|not have access)|(?:unsupported|unknown|invalid)[^\n]{0,30}(?:model|reasoning effort|thinking level)|(?:reasoning effort|thinking level)[^\n]{0,80}(?:not supported|unsupported|invalid))/i.test(detail);
+  return /\b(?:model_not_found|unsupported_model|unsupported_reasoning_effort|invalid_model|invalid_effort)\b/i.test(detail) ||
+    /(?:model[^\n]{0,100}(?:not found|does not exist|not available|unavailable|not supported|does not support|unsupported|not have access)|(?:unsupported|unknown|invalid)[^\n]{0,30}(?:model|reasoning effort|thinking level)|(?:reasoning effort|thinking level)[^\n]{0,80}(?:not supported|unsupported|invalid))/i.test(detail);
 }
 
 /** Aggregate reported invocation usage, keeping missing dimensions unknown. No tariff estimates:
@@ -89,8 +90,8 @@ export class RuntimeUsage {
   add(input: unknown, output: unknown): void {
     const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
     this.samples++;
-    this.input = this.input !== null && count(input) ? this.input + input : null;
-    this.output = this.output !== null && count(output) ? this.output + output : null;
+    this.input = this.input !== null && count(input) && count(this.input + input) ? this.input + input : null;
+    this.output = this.output !== null && count(output) && count(this.output + output) ? this.output + output : null;
   }
   result(): Pick<RuntimeResult, 'usage'> {
     return this.samples ? { usage: { inputTokens: this.input, outputTokens: this.output } } : {};
