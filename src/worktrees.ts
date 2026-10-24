@@ -220,12 +220,19 @@ export async function prepareSite(cwd: string, project: ProjectConfig, number: n
   const home = options.home ?? homedir();
   let stdout: string;
   try {
-    ({ stdout } = await execute('bash', [script, path, String(number)], {
-      cwd: join(cwd, '.mill'), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    ({ stdout } = await phase(cwd, project, number, options, 'site', 'prepare.sh', 'bash', [script, path, String(number)], {
+      cwd: join(cwd, '.mill'),
       env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd,
         MILL_COMMIT: identity.commit, MILL_ENV: environment, MILL_STATE_DIR: stateDir },
     }));
-  } catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh failed: ${failure(error)}` }; }
+  } catch (error) {
+    if (error instanceof PhaseTimeout) {
+      const drafted = existsSync(runPath(cwd)) && readRun(cwd).tickets.some(row => row.number === number);
+      const resume = drafted ?`then mill run answer ${number}` : `then run mill worktree prepare ${number} again`;
+      return { status: 'failed', ...identity, url: null, ready: false, message: timedOut(error, project, 'site', 'make .mill/prepare.sh finish', resume) };
+    }
+    return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh failed: ${failure(error)}` };
+  }
   let site: { url?: unknown; ready?: unknown; ticket?: unknown } | undefined;
   try { site = JSON.parse(stdout.trim().split('\n').at(-1) ?? ''); } catch { site = undefined; }
   if (!site || typeof site !== 'object' || typeof site.ready !== 'boolean' || (site.url !== undefined && typeof site.url !== 'string') ||

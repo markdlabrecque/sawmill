@@ -148,6 +148,37 @@ test('a failed preparation after a rebase is an environment logjam, and the reru
   assert.equal(y.inputs.filter(input => input.role === 'reviewer').length, 1, 'the resume does not review again');
 });
 
+test('a hung preparation after a rebase is killed at its deadline, releases integration and resumes once fixed', async t => {
+  const y = await team(t);
+  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nphase_timeouts:\n  site: 1s\n`);
+  y.setDuringReview(async () => {
+    await y.advanceIntegration();
+    await writeFile(join(y.cwd, '.mill/prepare.sh'), 'echo $$ > "$MILL_MILLYARD/../prepare-pid"\nexec sleep 60\n');
+  });
+  const failed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(failed.code, 1, failed.stdout);
+  const row = await y.row();
+  assert.equal(row.state, 'logjam');
+  assert.equal(row.reason, 'environment');
+  const log = (await y.cli('run', 'log', '12')).stdout;
+  assert.match(log, /prepare\.sh timed out after 1s/);
+  assert.match(log, /mill run answer 12/);
+  const pid = Number(await readFile(join(y.root, 'prepare-pid'), 'utf8'));
+  let gone = false;
+  for (let i = 0; i < 100 && !gone; i++) {
+    try { process.kill(pid, 0); await new Promise(resolve => setTimeout(resolve, 20)); } catch { gone = true; }
+  }
+  assert.ok(gone, 'the prepare process is killed');
+  assert.equal(y.git('ls-remote', '--heads', 'origin', 'refs/heads/mill/12'), '', 'nothing is pushed before the site is prepared');
+
+  // Integration takes its lock again on the resume, so the stopped wait released it.
+  await writeFile(join(y.cwd, '.mill/prepare.sh'), prepareHook);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal((await y.row()).state, 'done');
+});
+
 test('a failed preparation before review stops the ticket in environment logjam before the reviewer runs', async t => {
   const y = await team(t);
   // Fail only once the implementer has committed: create's own preparation succeeds.

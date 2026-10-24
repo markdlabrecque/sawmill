@@ -118,12 +118,14 @@ merge_method: squash
 # How long each delivery phase outside the roles may wait before Mill stops
 # it, kills its own processes and leaves a recoverable stop naming the command
 # that resumes. setup and teardown bound .mill/setup.sh and .mill/teardown.sh;
-# prepare the fetch of the integration branch; install the `npm ci` repair;
-# readiness the workspace preflight; ci the wait for the pipeline when ci is
-# wait. Suffixes: s, m, h. Shown with their defaults.
+# prepare the fetch of the integration branch; site each run of
+# .mill/prepare.sh; install the `npm ci` repair; readiness the workspace
+# preflight; ci the wait for the pipeline when ci is wait. Suffixes: s, m, h.
+# Shown with their defaults.
 # phase_timeouts:
 #   setup: 30m
 #   prepare: 1m
+#   site: 30m
 #   install: 30m
 #   readiness: 15m
 #   ci: 3h

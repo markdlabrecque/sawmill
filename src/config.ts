@@ -7,8 +7,8 @@ import { nameFlag, simpleCommand, testScope, type Checks, type FocusedTests, typ
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 export type Role = 'test-writers' | 'implementer' | 'reviewer';
 /** Delivery phases outside the roles, each waited on for at most its own deadline. */
-export type Phase = 'setup' | 'prepare' | 'install' | 'readiness' | 'ci' | 'teardown';
-export const phaseDefaults: Record<Phase, string> = { setup: '30m', prepare: '1m', install: '30m', readiness: '15m', ci: '3h', teardown: '10m' };
+export type Phase = 'setup' | 'prepare' | 'site' | 'install' | 'readiness' | 'ci' | 'teardown';
+export const phaseDefaults: Record<Phase, string> = { setup: '30m', prepare: '1m', site: '30m', install: '30m', readiness: '15m', ci: '3h', teardown: '10m' };
 export const updateDrainDefault = '4h';
 export interface ProjectConfig {
   name: string;
