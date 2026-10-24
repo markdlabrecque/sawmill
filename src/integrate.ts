@@ -376,8 +376,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       let merged: { mergeCommit: string };
       try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
       catch (error) {
-        // A refusal is acknowledged by the server. A lost response is ambiguous
-        // and must never be reclassified as a repairable check failure.
+        // A refusal is acknowledged by the server, so it leaves nothing to reconcile; the next save drops the operation.
+        // A lost response is ambiguous and must never be reclassified as a repairable check failure.
+        if (error instanceof MergeRefusedError) delete progress.operation;
         if (project.ci === 'wait' && error instanceof MergeRefusedError) {
           const current = await tracker.getChangeRequest!(progress.changeRequest.id);
           if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
