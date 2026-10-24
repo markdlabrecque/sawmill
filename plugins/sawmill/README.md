@@ -56,6 +56,10 @@ approved, records accepted learning in `.mill/learning.md` with a follow-up
 measurement, and checks those entries against a later batch. It never starts or
 changes a run, edits prompts, tests or gates, or uploads transcripts.
 
+Its judgment is evaluated by hand against seven representative cases in
+[skills/learn/evals](skills/learn/evals/README.md), each a saved record export
+with the report it should produce. The test suite checks only their structure.
+
 Layout and installation follow the official [manifest reference](https://code.claude.com/docs/en/plugins-reference),
 [marketplace instructions](https://code.claude.com/docs/en/plugin-marketplaces),
 and [skill reference](https://code.claude.com/docs/en/skills).
