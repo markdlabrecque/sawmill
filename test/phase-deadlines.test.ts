@@ -135,7 +135,9 @@ test('status shows what a ticket is waiting on, its deadline and elapsed time wh
   const creating = y.cli('worktree', 'create', '7', '--json');
   let waiting;
   for (let i = 0; i < 300 && !waiting; i++) {
-    waiting = (await y.row()).wait;
+    const wait = (await y.row()).wait;
+    // The fetch of the integration branch is a 'prepare' wait that runs first; keep polling past it.
+    if (wait?.phase === 'setup') waiting = wait;
     if (!waiting) await new Promise(resolve => setTimeout(resolve, 30));
   }
   assert.ok(waiting, 'status reports the wait');
