@@ -12,7 +12,9 @@ const plugin = join(repo, 'plugins/sawmill');
 const skillPath = join(plugin, 'skills/learn/SKILL.md');
 
 async function frontmatter(path: string) {
-  const lines = (await readFile(path, 'utf8')).split('\n');
+  const text = await readFile(path, 'utf8').catch(() => undefined);
+  assert.notEqual(text, undefined, `${path} exists`);
+  const lines = text!.split('\n');
   assert.equal(lines[0], '---');
   const end = lines.indexOf('---', 1);
   assert.ok(end > 1, 'skill has closed YAML frontmatter');
@@ -45,9 +47,8 @@ test('every file the learn skill links to ships beside it', async () => {
   for (const link of links) {
     const target = resolve(dirname(skillPath), link);
     assert.ok(target.startsWith(plugin + '/'), `${link} stays inside the plugin`);
-    await readFile(target, 'utf8');
-  }
-});
+    assert.notEqual(await readFile(target, 'utf8').catch(() => undefined), undefined, `${link} exists`);
+  }});
 
 test('plugin manifest describes the learn skill and the packed package contains it', async () => {
   const manifest = JSON.parse(await readFile(join(plugin, '.claude-plugin/plugin.json'), 'utf8'));
