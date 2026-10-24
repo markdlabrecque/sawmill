@@ -38,7 +38,7 @@ interface Handoff {
 }
 
 const noTests = 'tests: none\n';
-const archiveCheck = 'd=$(mktemp -d) && git archive HEAD | tar -x -C "$d" && test -e "$d/assets/app.css" && echo ARCHIVE-OK';
+const archiveCheck = 'd=$(mktemp -d) && git archive HEAD | tar -x -C "$d" && test -e "$d/assets/app.css" && printf "ARCHIVE-%s\\n" OK';
 const steps = `release:
   steps:
     - id: config-import
@@ -76,7 +76,7 @@ const changed = {
   'assets/app.css': 'a{}\n',
 };
 
-async function fixture(t: TestContext, options: { required?: string; release?: string; body?: string; files?: Record<string, string> } = {}) {
+async function fixture(t: TestContext, options: { required?: string; release?: string; body?: string; files?: Record<string, string>; waive?: Record<string, string>; evidenced?: string[] } = {}) {
   const ticket: Ticket = { number: 9, title: 'Ship the story field', body: options.body ?? '', labels: [], state: 'open', comments: [], blockedBy: [] };
   const requests: (ChangeRequest & { body: string })[] = [];
   const tracker = {
@@ -121,10 +121,16 @@ async function fixture(t: TestContext, options: { required?: string; release?: s
     await writeFile(join(path, file), content);
   }
   y.git('-C', path, 'add', '.'); y.git('-C', path, 'commit', '-m', 'Add story field');
+  for (const [id, reason] of Object.entries(options.waive ?? {})) {
+    const waived = await y.cli('run', 'waive', '9', id, '--reason', reason);
+    assert.equal(waived.code, 0, waived.stdout);
+  }
+  const revision = y.git('-C', path, 'rev-parse', 'HEAD');
+  const acceptance = (options.evidenced ?? []).map(id => ({ id, result: 'evidenced', evidence: { check: 'npm test', revision } }));
   let reviewed = '';
   assert.equal(await runCli(['team', 'review', '9', '--json'], {
     cwd: y.cwd, home: y.home, tracker, sleep: async () => {},
-    runtime: { async run(_request, sink) { sink.session('review-session'); return { outcome: { outcome: 'pass' } }; } },
+    runtime: { async run(_request, sink) { sink.session('review-session'); return { outcome: { outcome: 'pass', ...(acceptance.length ? { acceptance } : {}) } } as never; } },
     stdout: value => { reviewed += value; },
   }), 0, reviewed);
   const integrate = () => y.cli('integrate', '9', '--json');
@@ -138,7 +144,7 @@ async function fixture(t: TestContext, options: { required?: string; release?: s
 }
 
 test('a handoff for a schema change names the delivered revision, applicable steps and what is still pending', async t => {
-  const y = await fixture(t, { release: steps });
+  const y = await fixture(t, { required: "  build: 'true'\n", release: steps });
   const merged = await y.integrate();
   assert.equal(merged.code, 0, merged.stdout);
   const row = await y.status();
@@ -255,19 +261,21 @@ test('a required artifact check that fails names itself and its exit code', asyn
 
 test('acceptance items appear with their waiver and an unwaived item stays pending', async t => {
   const body = 'Ship it.\n\n**Done when:**\n\n- [ ] The field exists.\n- [ ] Existing content keeps its value.\n';
-  const y = await fixture(t, { body, release: steps });
-  const waived = await y.cli('run', 'waive', '9', 'AC2', '--reason', 'Content preservation is checked by the editors.');
-  assert.equal(waived.code, 0, waived.stdout);
-  await y.integrate();
-  const handoff = await y.handoff().catch(() => undefined);
-  assert.ok(handoff, 'A merged ticket yields a handoff');
+  const y = await fixture(t, { body, release: steps, evidenced: ['AC1'], waive: { AC2: 'Content preservation is checked by the editors.' } });
+  const merged = await y.integrate();
+  assert.equal(merged.code, 0, merged.stdout);
+  const handoff = await y.handoff();
   const [first, second] = handoff.acceptance.items as [Handoff['acceptance']['items'][number], Handoff['acceptance']['items'][number]];
   assert.equal(second.id, 'AC2');
   assert.equal(second.status, 'waived');
   assert.match(second.reason ?? '', /editors/);
   assert.equal(first.id, 'AC1');
-  assert.notEqual(first.status, 'waived');
-  assert.equal(handoff.releaseReady, false);
+  assert.equal(first.status, 'verified');
+  assert.match(first.reason ?? '', /npm test/);
+  assert.match(first.reason ?? '', /[0-9a-f]{40}/);
+  assert.equal(handoff.releaseReady, false, 'The release steps are still pending');
+  const pending = (handoff as Handoff & { pending: string[] }).pending;
+  for (const id of ['config-import', 'update-db', 'resave-home']) assert.ok(pending.includes(id), id);
 });
 
 test('the handoff never claims release-ready or deployed while evidence is missing, and reading it changes nothing', async t => {
