@@ -306,6 +306,8 @@ mill run close 12
 | `~/.config/sawmill/config.yaml` | Machine-wide concurrency, retry budget, pause threshold, worktree root, and CI interval. |
 | `.mill/setup.sh` | Prepare a new or incompletely provisioned ticket worktree. |
 | `.mill/teardown.sh` | Release project resources before removing a worktree. |
+| `.mill/prepare.sh` | Optional: bring a ticket's site up to date with its current commit without reseeding. |
+| `.mill/fixtures.json` | Optional: required local fixtures and their SHA-256 hashes, checked before setup. |
 | `.mill/logs/<ticket>/` | Raw role streams, stderr, sessions, and worker logs. |
 
 Machine defaults are two concurrent tickets across all millyards, three infrastructure retries, a pause threshold of three consecutive infrastructure results, and a 30-second CI polling interval. A success from a live team clears a pause. Otherwise the run stays paused, and status shows why. Restarting the scheduler or running `mill run` again does not clear the pause. Fix the cause, then run `mill run stop` and `mill run` to retry queued work. `mill run --foreground` also retries it.
@@ -331,6 +333,14 @@ set -euo pipefail
 cd "$MILL_WORKTREE"
 npm ci
 ```
+
+### Site preparation and fixtures
+
+Setup seeds a ticket's site once. An optional `.mill/prepare.sh` then brings it into agreement with the worktree's current commit: database updates, configuration, caches, built assets. It runs right after setup, and again whenever you run `mill worktree prepare <ticket>`, for example after a rebase. It must be safe to repeat and must never reseed.
+
+It gets the hook variables above plus `MILL_COMMIT`, `MILL_ENV` (`<ticket>-<project>`, the DDEV name) and `MILL_STATE_DIR` (`.mill/env/<ticket>`, a directory that belongs to this ticket alone). Its last line of output must be JSON such as `{"url": "https://155-islandhealth.ddev.site", "ready": true}`. `mill worktree prepare <ticket> --json` reports the commit, script hash, environment, URL and readiness. A failed or not-ready preparation exits 1 with its output; a drafted ticket goes to `logjam` with reason `environment`. Running it again resumes.
+
+List required local inputs, such as a sanitized database dump, in `.mill/fixtures.json` as `[{"path": ".mill/db.sql", "sha256": "<hex>"}]`, with paths relative to the millyard. A missing or changed fixture stops worktree creation before any hook runs, naming the file and the expected hash.
 
 ### Workspace preflight
 

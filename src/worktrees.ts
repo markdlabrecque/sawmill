@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -85,6 +86,27 @@ async function hook(cwd: string, project: ProjectConfig, number: number, path: s
 /** A workspace that cannot work: stop once, before any role, with the fix. Never retried. */
 class PreflightError extends CliError {}
 
+const sha256 = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
+
+/** `.mill/fixtures.json` lists the local inputs setup needs, by millyard-relative path and SHA-256. */
+async function checkFixtures(cwd: string, number: number) {
+  const list = join(cwd, '.mill', 'fixtures.json');
+  if (!existsSync(list)) return;
+  const resume = `then mill run answer ${number}`;
+  let fixtures: unknown;
+  try { fixtures = JSON.parse(await readFile(list, 'utf8')); }
+  catch (error) { throw new PreflightError(`.mill/fixtures.json is not valid JSON: ${failure(error)}`); }
+  if (!Array.isArray(fixtures) || !fixtures.every(fixture => typeof fixture?.path === 'string' && typeof fixture?.sha256 === 'string')) {
+    throw new PreflightError('.mill/fixtures.json must be a list of {"path": "<millyard-relative path>", "sha256": "<hex digest>"}.');
+  }
+  for (const { path, sha256: expected } of fixtures as { path: string; sha256: string }[]) {
+    const file = resolve(cwd, path);
+    if (!existsSync(file)) throw new PreflightError(`Required fixture ${path} is missing from the millyard.\nFix: put the sanitized fixture at ${file} (sha256 ${expected}), ${resume}.`);
+    const actual = sha256(await readFile(file));
+    if (actual !== expected.toLowerCase()) throw new PreflightError(`Required fixture ${path} has changed: .mill/fixtures.json expects sha256 ${expected}, the file has ${actual}.\nFix: restore the expected fixture, or record its new hash in .mill/fixtures.json, ${resume}.`);
+  }
+}
+
 /** The new ticket branch is cut from the local integration branch; refuse it when origin has moved on. */
 async function checkBase(cwd: string, project: ProjectConfig, number: number) {
   try { await git(cwd, 'remote', 'get-url', 'origin'); } catch { return; }
@@ -95,6 +117,49 @@ async function checkBase(cwd: string, project: ProjectConfig, number: number) {
   const [ahead, behind] = (await git(cwd, 'rev-list', '--left-right', '--count', `refs/heads/${branch}...${remote}`)).split(/\s+/).map(Number);
   if (ahead && behind) throw new PreflightError(`Local ${branch} has commits that aren't on origin/${branch}, and is ${behind} commit(s) behind it.\nFix: put local ${branch} back in line with origin/${branch} by hand (for example \`git rebase origin/${branch}\` in ${cwd}), ${resume}.`);
   if (behind) throw new PreflightError(`Base branch ${branch} is ${behind} commit(s) behind origin/${branch}.\nFix: run \`git pull --ff-only origin ${branch}\` in ${cwd}, ${resume}.`);
+}
+
+export interface Preparation {
+  status: 'ok' | 'failed' | 'not-ready';
+  ticket: number;
+  path: string;
+  commit: string;
+  /** SHA-256 of .mill/prepare.sh, or null when the project has none. */
+  script: string | null;
+  environment: string;
+  stateDir: string;
+  url: string | null;
+  ready: boolean | null;
+  message?: string;
+}
+
+/**
+ * Runs .mill/prepare.sh to bring the ticket's site into agreement with the worktree's current commit.
+ * Setup seeds once; prepare must be idempotent and never reseed. Its last stdout line is {"url", "ready"}.
+ */
+async function prepare(cwd: string, project: ProjectConfig, number: number, path: string, options: WorktreeOptions): Promise<Preparation> {
+  const script = join(cwd, '.mill', 'prepare.sh');
+  const environment = `${number}-${project.name}`, stateDir = join(cwd, '.mill', 'env', String(number));
+  const identity = { ticket: number, path, commit: await git(path, 'rev-parse', 'HEAD'), script: existsSync(script) ? sha256(await readFile(script)) : null, environment, stateDir };
+  if (!identity.script) return { status: 'ok', ...identity, url: null, ready: null };
+  await mkdir(stateDir, { recursive: true });
+  const home = options.home ?? homedir();
+  let stdout: string;
+  try {
+    ({ stdout } = await execute('bash', [script, path, String(number)], {
+      cwd: join(cwd, '.mill'), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), MILL_WORKTREE: path, MILL_TICKET: String(number), MILL_PROJECT: project.name, MILL_MILLYARD: cwd,
+        MILL_COMMIT: identity.commit, MILL_ENV: environment, MILL_STATE_DIR: stateDir },
+    }));
+  } catch (error) { return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh failed: ${failure(error)}` }; }
+  let site: { url?: unknown; ready?: unknown } | undefined;
+  try { site = JSON.parse(stdout.trim().split('\n').at(-1) ?? ''); } catch { site = undefined; }
+  if (!site || typeof site !== 'object' || typeof site.ready !== 'boolean' || (site.url !== undefined && typeof site.url !== 'string')) {
+    return { status: 'failed', ...identity, url: null, ready: false, message: `prepare.sh must end its output with a line like {"url": "https://...", "ready": true}.\n${stdout}` };
+  }
+  const url = (site.url as string | undefined) ?? null;
+  if (!site.ready) return { status: 'not-ready', ...identity, url, ready: false, message: `prepare.sh reported the site${url ? ` at ${url}` : ''} is not ready.\n${stdout}` };
+  return { status: 'ok', ...identity, url, ready: true };
 }
 
 /** After setup: repair missing Node dependencies once, then check the test command can start. */
@@ -159,7 +224,12 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   if (existing && await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
   if (existing) {
     if (ticket && !ticket.provisioned && ticket.state !== 'logjam') {
-      try { await hook(cwd, project, number, existing.path, 'setup', options); }
+      try {
+        await checkFixtures(cwd, number);
+        await hook(cwd, project, number, existing.path, 'setup', options);
+        const prepared = await prepare(cwd, project, number, existing.path, options);
+        if (prepared.status !== 'ok') throw new CliError(prepared.message!);
+      }
       catch (error) {
         await transition(cwd, project, tracker!, number, {
           state: 'logjam', reason: 'environment', worktree: existing.path, branch, provisioned: false,
@@ -180,6 +250,7 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
   let created = false;
   const warnings: string[] = [];
   try {
+    await checkFixtures(cwd, number);
     if (await hasBranch(cwd, branch)) await git(cwd, 'worktree', 'add', path, branch);
     else {
       await checkBase(cwd, project, number);
@@ -191,6 +262,8 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     if (tracker) await transition(cwd, project, tracker, number, { worktree: path, branch, provisioned: false }, [], options);
     await hook(cwd, project, number, path, 'setup', options);
     await checkWorkspace(project, number, path);
+    const prepared = await prepare(cwd, project, number, path, options);
+    if (prepared.status !== 'ok') throw new CliError(prepared.message!);
     await markBuild(path, options.root ?? packageRoot, false);
   } catch (error) {
     let message = failure(error);
@@ -214,6 +287,24 @@ export async function createWorktree(cwd: string, project: ProjectConfig, machin
     report: { stage: 'worktree-created', details: `Worktree: ${path}\nBranch: ${branch}` },
   }, [], options);
   return { status: ok && ticket?.state !== 'logjam' ? 'ok' as const : 'logjam' as const, ticket: number, path, branch, reused: false, ...(warnings.length ? { warnings } : {}) };
+}
+
+/** Prepare the ticket's existing site at its current commit; a drafted ticket that fails goes to environment logjam. */
+export async function prepareWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {
+  cwd = resolve(cwd);
+  const ticket = member(cwd, project, number);
+  const tracker = ticket ? writer(options) : undefined;
+  const branch = `mill/${number}`;
+  if (branch === project.integration) throw new CliError('The integration branch cannot also be the ticket branch.', 2);
+  const existing = (await worktrees(cwd)).find(tree => tree.branch === `refs/heads/${branch}`);
+  if (!existing || !existsSync(existing.path)) throw new CliError(`${branch} has no worktree to prepare; create it with mill worktree create ${number}.`);
+  if (await realpath(existing.path) === await realpath(cwd)) throw new CliError('The ticket branch is checked out in the millyard; it is not a ticket sandbox.');
+  const result = await prepare(cwd, project, number, existing.path, options);
+  if (result.status !== 'ok' && tracker) await transition(cwd, project, tracker, number, {
+    state: 'logjam', reason: 'environment',
+    report: { stage: 'infrastructure', details: 'Site preparation failed.', error: result.message, reason: 'environment', reachedStage: 'prepare' },
+  }, [], options);
+  return result;
 }
 
 export async function removeWorktree(cwd: string, project: ProjectConfig, number: number, options: WorktreeOptions = {}) {
