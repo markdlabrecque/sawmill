@@ -216,6 +216,29 @@ test('untrusted evidence is bounded and redacted before transport and cannot iss
   assert.equal(readRun(y.cwd).tickets[0]!.state, 'working');
 });
 
+test('quoted access_key and private_key values distinct from the API key are redacted across review screening', async t => {
+  const secrets = { access_key: 'fixture-access-value-169', private_key: 'fixture-private-value-169' };
+  const c = { ...labeled('supported'), source: labeled('supported').source + `\n// ${JSON.stringify(secrets)}\n` };
+  const y = await fixture(t, [c]);
+  const sent: Request[] = [];
+  const result = await y.review(enabled(async request => {
+    sent.push(structuredClone(request)); return reply(request, 'supported');
+  }));
+  assert.ok(sent.length, 'the quoted credentials must pass through the review/classifier boundary');
+  const source = sent.flatMap(r => r.questions).flatMap(q => q.evidence)
+    .filter(e => e.source.includes('test/supported.cjs')).map(e => e.text).join('\n');
+  assert.match(source, /"access_key": "\[redacted\]"/);
+  assert.match(source, /"private_key": "\[redacted\]"/);
+  const retained = JSON.stringify(result) + (await y.cli('run', 'log', '11')).stdout
+    + JSON.stringify(readRun(y.cwd));
+  for (const secret of Object.values(secrets)) {
+    assert.notEqual(secret, 'fixture-secret-169');
+    assert.ok(!JSON.stringify(sent).includes(secret), 'classifier requests must not contain the credential');
+    assert.ok(!retained.includes(secret), 'retained review diagnostics must not contain the credential');
+  }
+  diagnostic(result, 'AC1', 'supported');
+});
+
 for (const failure of ['timeout', 'service-failure', 'malformed', 'forged-evidence', 'uncertain'] as const) {
   test(`${failure} leaves acceptance review advisory with visible insufficient evidence and safe diagnostics`, async t => {
     const y = await fixture(t, [labeled('service-failure')]);
