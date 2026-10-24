@@ -11,7 +11,7 @@ import { lockHeld, withRunLock } from './run-lock.js';
 import { readRun } from './run-store.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { claimScheduler, dispatchHeld, readScheduler, releaseScheduler, schedulerPath } from './scheduler.js';
-import { listSlots, processStart, slotsPath } from './slots.js';
+import { describeUnresolved, listSlots, processStart, slotsPath, unresolvedSlots } from './slots.js';
 import { consumeResults } from './transitions.js';
 
 // Internal process entry point started by ensureScheduler; `mill scheduler stop` ends it.
@@ -102,6 +102,14 @@ async function admit({ cwd, project, machine }: Candidate): Promise<boolean> {
   } catch (error) { report(cwd, 'admit', error); return false; }
 }
 
+/** Names reservations without a known owner once, rather than on every pass. */
+let unresolvedNote = '';
+function reportFull() {
+  const note = describeUnresolved(unresolvedSlots(home!)).join(' ');
+  if (note && note !== unresolvedNote) say(`Machine slots full. ${note}`);
+  unresolvedNote = note;
+}
+
 /** Round-robin admission: one ticket per project per round, least recently served first,
  * each run keeping its own ticket order, until the shared limit is reached. */
 async function pass(watching: (path: string) => void) {
@@ -118,7 +126,8 @@ async function pass(watching: (path: string) => void) {
   // While mill update swaps the installation, recover and consume results but start nothing.
   while (runnable.length && !stopping && !dispatchHeld(home!)) {
     for (const candidate of [...runnable]) {
-      if (stopping || listSlots(home!).length >= candidate.machine.concurrency) return;
+      if (stopping) return;
+      if (listSlots(home!).length >= candidate.machine.concurrency) { reportFull(); return; }
       if (await admit(candidate)) turns.set(candidate.cwd, ++turn);
       else runnable.splice(runnable.indexOf(candidate), 1);
     }
