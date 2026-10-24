@@ -12,7 +12,7 @@ test('an abandoned empty reservation next to a live worker is recovered without 
   await mkdir(slotDirectory(y.home, '1'), { recursive: true });
   const second = await y.once();
   assert.deepEqual(second.started.map((row: { ticket: number }) => row.ticket), [1, 3]);
-  assert.equal(second.slotsFull, false);
+  assert.equal(second.slotsFull, true);
   const live = await until(y.starts, rows => rows.length === 2);
   assert.equal(new Set(live.map(row => row.number)).size, 2);
   const first = live.find(row => row.number === 1)!;
