@@ -8,10 +8,9 @@ in the orphan-restart test. Neither failure reproduced in the full local run
 after the CI-log fix: 794 main tests and 3 process-permissions tests passed.
 A local pass does not establish that either race is fixed.
 
-No test or fixture was changed by the implementer. The corrections below need
-the test writers; changing production lifecycle semantics to satisfy fixture
-ordering would hide the problem rather than fix it. Hosted CI remains required;
-its workflow and the CI gate are unchanged.
+The reviewer-directed repair implements both fixture corrections below without
+changing production lifecycle semantics or the protected CI-log tests. Hosted CI
+remains required; its workflow and the CI gate are unchanged.
 
 ## CLI interruption: readiness is published too early
 
@@ -28,13 +27,13 @@ or persisted as a session. The test therefore permits interruption before the
 session exists but unconditionally expects that session afterwards. The
 runtime cannot recover a session ID the vendor has not yet emitted.
 
-Recommended scoped correction: retain the PID check and cleanup assertions,
-but wait for `fixture-session` in the persisted ticket session IDs before
-sending SIGTERM. Use bounded condition polling with an explicit readiness
-assertion, not a fixed sleep. Keep the vendor alive until interrupted rather
-than using the 1500 ms natural-exit timer, and register cleanup immediately
-after spawning the CLI so readiness failures also reap it. Preserve the
-interruption outcome, vendor-death and saved-session assertions.
+Implemented in `ecd1473`: the PID check and cleanup assertions remain, but the
+test waits for `fixture-session` in the persisted ticket session IDs before
+sending SIGTERM. Both readiness checks use bounded condition polling, not a
+fixed sleep. The vendor stays alive until interrupted rather than exiting
+naturally after 1500 ms. Cleanup is registered immediately after spawning the
+CLI so readiness failures also reap it. The interruption outcome, vendor-death
+and saved-session assertions remain.
 
 ## Orphan restart: parsing an in-progress append
 
@@ -50,12 +49,15 @@ Trimming loses the distinction between a complete newline-terminated record
 and that prefix, so JSON.parse can throw before the polling predicate runs.
 Synchronous writing in the child does not synchronize an independent reader.
 
-Recommended scoped correction: parse only newline-terminated records and leave
-an unfinished final fragment for the next poll. Continue rejecting malformed
-*terminated* records; do not catch all JSON errors or substitute an empty
-result. Preserve all restart, descendant cleanup, saved-work and original
-writer-checkpoint assertions. Exercise the reader against a deliberately
-split record so validation does not rely on reproducing hosted scheduling.
+Implemented in `eae3efa`: `starts()` parses only newline-terminated records and
+leaves an unfinished final fragment for the next poll. Malformed *terminated*
+records still throw. All restart, descendant cleanup, saved-work and original
+writer-checkpoint assertions remain unchanged. The new deterministic
+`test/dispatch-fixture.test.ts` reads a deliberately split record, then valid
+JSON without its newline, then the completed line, and finally a malformed
+terminated record. It failed before the reader fix with the reported
+unterminated-string error and passes afterwards.
+
 If multiwriter interleaving is observed, publish individual event files by
 temporary-file rename instead of sharing an append stream.
 
@@ -75,3 +77,12 @@ marks truncation. No temporary log download or unbounded buffer is introduced.
 Both new regression tests in `test/ci-logs.test.ts` pass: the saved log keeps
 its original escape bytes and an oversized response returns only the bounded
 tail with the original byte count and truncation flag.
+
+## Repair verification
+
+At `eae3efa`, the focused CLI interruption, split-record and orphan-restart
+checks pass. The full clean test command passes 795 main tests and 3
+process-permissions tests; build and typecheck pass. An earlier full-suite
+invocation was cut short by the tool's 120-second timeout; rerunning with a
+600-second allowance completed successfully. No assertions were weakened or
+tests retired.
