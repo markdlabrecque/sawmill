@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { createWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
 import { approveTests } from './approve-tests.js';
+import { waiveItem } from './waive.js';
 import { build, moveMillyard } from './build.js';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -289,6 +290,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await approveTests(cwd, config.project, Number(positional[2]));
         emit(result, [`Approved the tests of ${ref(result.ticket)} at ${result.commit} as the protected baseline (by ${result.by}).`,
           `Resume it at review with mill run answer ${result.ticket}.`].join('\n'));
+        return 0;
+      }
+      if (positional[0] === 'run' && positional[1] === 'waive') {
+        if (positional.length !== 6 || positional[4] !== '--reason' || !positional[5]?.trim() || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2])) || !/^AC[1-9]\d*$/.test(positional[3] ?? '')) throw new CliError(usage('run waive'), 2);
+        const result = await waiveItem(cwd, config.project, Number(positional[2]), positional[3]!, positional[5]!);
+        emit(result, [`Waived ${result.item} of ${ref(result.ticket)} for checklist ${result.snapshot} (by ${result.by}): ${result.reason}`,
+          `A review may now pass it unproved; the tests, review and CI still apply. Resume a stuck ticket with mill run answer ${result.ticket}.`].join('\n'));
         return 0;
       }
       if (positional[0] === 'run' && positional[1] === 'once') {

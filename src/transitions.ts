@@ -1,3 +1,4 @@
+import { acceptanceFor, type AcceptanceWaiver } from './acceptance.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
@@ -402,6 +403,26 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     const time = new Date().toISOString();
     db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, time, JSON.stringify({ testsApproved: { by, commit, previous } }));
     return { commit, previous, by, time };
+  });
+}
+
+/** A person waives one acceptance item of the saved checklist snapshot. A later waiver of the
+ * same item replaces it; the log keeps every one, with who made it and why. */
+export function waiveRow(cwd: string, project: ProjectConfig, number: number, item: string, reason: string, by: string): AcceptanceWaiver {
+  checkTracker(cwd, project);
+  return transaction(cwd, db => {
+    const ticket = requireTicket(db, number);
+    if (ticket.state === 'done' || ticket.completion) throw new CliError(`Ticket #${number} is done; there is nothing left to waive.`);
+    const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
+    const acceptance = acceptanceFor({ body: String(ticket.body), team });
+    if (!acceptance.items.some(entry => entry.id === item)) {
+      throw new CliError(acceptance.items.length ? `${item} is not on the acceptance checklist of #${number}: ${acceptance.items.map(entry => entry.id).join(', ')}.` : `Ticket #${number} has no acceptance checklist to waive.`, 2);
+    }
+    const waiver: AcceptanceWaiver = { item, reason, by, time: new Date().toISOString(), snapshot: acceptance.snapshot };
+    team.acceptance = { ...acceptance, waivers: [...(acceptance.waivers ?? []).filter(entry => entry.item !== item || entry.snapshot !== acceptance.snapshot), waiver] };
+    update(db, number, { team });
+    db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, waiver.time, JSON.stringify({ waived: waiver }));
+    return waiver;
   });
 }
 

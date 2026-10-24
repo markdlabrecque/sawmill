@@ -1,3 +1,4 @@
+import { acceptanceFor, acceptanceHandoff, refusePass } from './acceptance.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
@@ -228,9 +229,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
       let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
-      if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD') };
+      // A person's waivers outlive a fresh start; only mill run reset drops them.
+      if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD'), ...(progress.acceptance ? { acceptance: progress.acceptance } : {}) };
       if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       delete progress.recovery;
+      const acceptance = acceptanceFor({ ...current(), team: progress });
+      if (acceptance.items.length) progress.acceptance = acceptance;
       const bounce = async (outcome: Extract<Outcome, { outcome: 'bounce' }>, source: NonNullable<TeamProgress['repair']>['source'], reviewRound?: number): Promise<TeamResult | undefined> => {
         delete progress.question;
         delete progress.stop;
@@ -425,7 +429,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...project.roles[role], prompt: prompt + verificationInstructions(verificationFrom(project), role),
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, signal: options.signal,
           }, options);
@@ -441,6 +445,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         guard();
         if (!result.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+        // The same checklist decides every round; an unmet item is a bounce, never a pass.
+        const refused = role === 'reviewer' && result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
+        if (refused) result.outcome = refused;
         if (result.outcome.outcome === 'no-change') {
           checkStop(cwd, number);
           // Only an ordinary repair can be left unchanged; a conflict repair must rebase.

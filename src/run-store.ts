@@ -57,6 +57,8 @@ export interface TeamProgress {
   infrastructureAttempts?: InfrastructureAttempt[];
   /** Accumulated user-case results across repair reviews. */
   userTesting?: import('./user-testing.js').UserTesting;
+  /** The ticket's acceptance checklist snapshot and the human waivers recorded against it. */
+  acceptance?: import('./acceptance.js').Acceptance;
 }
 /** The original writer commits stay in `testCommits`; `testCommit` moves only when a review accepts `head`. */
 export interface TestCorrection {
@@ -346,6 +348,7 @@ export function formatTicketLog(entries: LogEntry[]): string {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
     if (event.stateLookupError !== undefined) return `${time} state check failed: ${String(event.stateLookupError)}`;
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
+    if (event.waived) { const { item, reason, by, snapshot } = event.waived as import('./acceptance.js').AcceptanceWaiver; return `${time} ${item} waived by ${by} for checklist ${snapshot}: ${reason}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }
     if (event.flaky) { const { stage, tests } = event.flaky as { stage: string; tests: string[] }; return `${time} [${stage}] flaky: ${tests.join(', ') || '(unnamed)'}`; }
     if (!event.change) return `${time} ${JSON.stringify(event)}`;
