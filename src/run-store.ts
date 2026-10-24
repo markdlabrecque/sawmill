@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import type { Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { ticketRef } from './links.js';
+import { defaultProofPlan, proofPlan, type ProofPlan } from './proof-plan.js';
 import type { AssignResult, Ticket, TicketComment, Pipeline } from './tracker.js';
 import type { RunSelection } from './selection.js';
 
@@ -152,6 +153,8 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   timeInStageSeconds: number | null;
   /** Absent when the run was drafted without assignment. */
   assignment?: Assignment;
+  /** Chosen at draft from the ticket body; roles cannot change it. Absent only in hand-built rows. */
+  proofPlan?: ProofPlan;
 }
 export interface RunEdge { blocked: number; blocker: number; outsideClosed: boolean }
 export interface RunSnapshot {
@@ -221,6 +224,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     for (const column of ['include_closed', 'skipped_closed']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
+    if (!db.prepare('PRAGMA table_info(tickets)').all().some(row => row.name === 'proof_plan')) db.exec('ALTER TABLE tickets ADD COLUMN proof_plan TEXT');
     if (!replace && db.prepare('SELECT id FROM pending_writes LIMIT 1').get()) throw new CliError(pendingRunMessage);
     if (!replace && db.prepare("SELECT number FROM tickets WHERE state IN ('working', 'logjam') LIMIT 1").get()) throw new CliError(activeRunMessage);
     // Nothing is written yet and the lock keeps other writers out, so the file on disk is the old run as committed.
@@ -233,8 +237,8 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     const now = new Date().toISOString();
     db.prepare('INSERT INTO run (id, created, base_branch, source, tracker, include_closed, skipped_closed) VALUES (?, ?, ?, ?, ?, ?, ?)').run(randomUUID(), now, project.integration, JSON.stringify(source), JSON.stringify(project.tracker),
       closed.includeClosed ? 'yes' : null, closed.skippedClosed?.length ? JSON.stringify(closed.skippedClosed) : null);
-    const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
-    tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now));
+    const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated,proof_plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+    tickets.forEach((ticket, position) => insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position, 'queued', now, now, JSON.stringify(proofPlan(ticket.body))));
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?)');
     for (const edge of edges) insertEdge.run(edge.blocked, edge.blocker, Number(edge.outsideClosed));
     const insertWrite = db.prepare("INSERT INTO pending_writes (ticket, kind, payload) VALUES (?, 'assign', '{}')");
@@ -289,6 +293,8 @@ export function readRunFile(file: string): RunSnapshot {
       created: String(row.created), updated: String(row.updated), stageStarted: row.stage_started as string | null,
       blockers: [], timeInStageSeconds: row.stage_started ? Math.max(0, Math.floor((Date.now() - Date.parse(String(row.stage_started).replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z'))) / 1000)) : null,
       ...(row.assignment ? { assignment: JSON.parse(String(row.assignment)) as Assignment } : {}),
+      // A run drafted before proof plans existed ran every ticket test-first.
+      proofPlan: row.proof_plan ? JSON.parse(String(row.proof_plan)) as ProofPlan : defaultProofPlan,
     }));
     const states = new Map(tickets.map(ticket => [ticket.number, ticket.completion ? 'done' : ticket.state]));
     for (const ticket of tickets) {
@@ -330,6 +336,8 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
   };
   return [snapshot.run.loop?.pausedReason, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
     ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref)),
+    // The undeclared default stays implicit; a ticket's own plan is shown before work starts.
+    ...snapshot.tickets.map(({ number, proofPlan: plan }) => plan && plan.reason !== defaultProofPlan.reason ? `${ref(number)}: proof plan ${plan.path}: ${plan.reason}` : undefined),
     snapshot.run.skippedClosed?.length ? `Skipped closed tickets: ${snapshot.run.skippedClosed.map(ref).join(', ')}.` : undefined].filter(Boolean).join('\n');
 }
 

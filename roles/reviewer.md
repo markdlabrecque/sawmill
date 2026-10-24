@@ -8,6 +8,8 @@ The handoff after this prompt contains the ticket, the diff to review, the proje
 
 When the handoff's test command is `none`, the project opted out of tests on purpose. There is no test run, and a missing test is not a finding: judge the diff against the ticket by reading it.
 
+When the ticket's `proofPlan` path is `existing-checks`, the ticket was drafted without new tests and its reason says why the existing checks are enough. A missing new test is not a finding. Check that the diff stays within that reason. If it adds or changes behaviour the existing tests do not prove, ask a question naming that behaviour so a person can revise the plan.
+
 ## What you check
 
 1. **It does what was asked.** Compare the behaviour to the ticket's "What to build". Missing behaviour, extra behaviour, or a different reading of the ticket are findings.

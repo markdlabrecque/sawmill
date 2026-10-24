@@ -70,8 +70,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = ticket.stage ?? 'worktree-create';
-    // With tests: none there is nothing to write, so the flow starts at the implementer.
-    const testsOff = project.tests === 'none';
+    // With tests: none, or a drafted existing-checks plan, there is nothing to write, so the flow starts
+    // at the implementer. Review and the final tests and required checks still run.
+    const testsOff = project.tests === 'none' || ticket.proofPlan?.path === 'existing-checks';
     const firstRole: Role = testsOff ? 'implementer' : 'test-writers';
     const integrationStage = ['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'ci-failed', 'merge', 'merge-accepted', 'remote-delete', 'fast-forward', 'merged'].includes(stage);
     let resume: Role | 'integrate' = ticket.team.stop?.resume ?? ticket.team.question?.role ?? ticket.team.next ?? ticket.team.activeRole?.role ??

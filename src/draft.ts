@@ -2,6 +2,7 @@ import { checkMillyard } from './millyard.js';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { registerMillyard } from './registry.js';
+import { proofPlan } from './proof-plan.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
@@ -40,6 +41,10 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     try { return { ticket, section: userTestSection(ticket.body) }; }
     catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
   });
+  for (const ticket of tickets) {
+    try { proofPlan(ticket.body); }
+    catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   if (project.test_harness === 'none') {
     const cases = sections.filter(({ section }) => section.present).map(({ ticket }) => ticket);
     if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
