@@ -59,6 +59,18 @@ export interface TeamProgress {
   userTesting?: import('./user-testing.js').UserTesting;
   /** The ticket's acceptance checklist snapshot and the human waivers recorded against it. */
   acceptance?: import('./acceptance.js').Acceptance;
+  /** The site last prepared for review or after a rebase: what verification checked. */
+  site?: PreparedSite;
+}
+/** Identity and readiness of a ticket's prepared site. */
+export interface PreparedSite {
+  commit: string;
+  /** SHA-256 of .mill/prepare.sh, or null when the project has none. */
+  script: string | null;
+  environment: string;
+  stateDir: string;
+  url: string | null;
+  ready: boolean | null;
 }
 /** The original writer commits stay in `testCommits`; `testCommit` moves only when a review accepts `head`. */
 export interface TestCorrection {
