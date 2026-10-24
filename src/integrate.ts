@@ -1,3 +1,4 @@
+import { requireTypeSafeKey } from './typesafe.js';
 import { fixtureIdentity, prepareSite, preparedSite, removeWorktree, siteHandoff } from './worktrees.js';
 import { workerVariables } from './direct-child.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
@@ -131,6 +132,7 @@ async function fastForward(cwd: string, integration: string, number: number, mer
 type IntegrateOptions = MirrorOptions & { home?: string; ciPollInterval?: string; runtime?: Runtime };
 
 export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: IntegrateOptions = {}): Promise<IntegrationResult> {
+  requireTypeSafeKey();
   if (existsSync(join(cwd, '.mill/integrate.lock'))) throw new CliError('Legacy integration lock needs verified manual recovery.');
   return withRunLock(cwd, 'integration', () => integrateLocked(cwd, project, number, tracker, options), true);
 }
