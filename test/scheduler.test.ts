@@ -97,6 +97,31 @@ test('a killed scheduler is reported unavailable and a new one adopts live work 
   assert.equal((await y.starts()).length, 1, 'The live worker is kept, not claimed again');
 });
 
+for (const restart of [false, true]) {
+  test(`appended work dispatches under the shared slot limit${restart ? ' after scheduler restart' : ''} without interrupting its worker`, async t => {
+    const y = await fixture(t, [1]);
+    await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 1\n');
+    await y.command(['run']);
+    await until(y.starts, rows => rows.length === 1);
+    const before = await y.status();
+    const appended = await y.cli('run', 'draft', '3', '--json');
+    assert.equal(appended.code, 0, appended.stdout);
+    assert.equal((await y.status()).run.id, before.run.id);
+    assert.deepEqual((await y.status()).tickets[0]!.worker, before.tickets[0]!.worker);
+    if (restart) {
+      process.kill((await scheduler(y))!.pid!, 'SIGKILL');
+      await until(async () => (await scheduler(y))?.available, value => value === false);
+      await y.command(['run']);
+    }
+    await pause(1000);
+    assert.deepEqual((await y.starts()).map(row => row.number), [1], 'Append must not exceed capacity or relaunch the live worker');
+    await writeFile(join(y.root, 'release-1'), 'yes');
+    await until(y.starts, rows => rows.some(row => row.number === 3));
+    assert.deepEqual((await y.starts()).map(row => row.number), [1, 3]);
+    assert.equal((await y.status()).run.id, before.run.id);
+  });
+}
+
 test('two projects share one scheduler and take fair turns under a capacity of one', async t => {
   const a = await fixture(t, [1, 3]);
   const b = await fixture(t, [1]);

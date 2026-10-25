@@ -454,12 +454,14 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
         const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
-        if (writer) await flushAssignments(cwd, config.project, writer, options);
-        // Drafting registers the millyard but leaves the run inactive until mill run.
+        if (writer && drafted.added.length) await flushAssignments(cwd, config.project, writer, { ...options, tickets: drafted.added });
         const snapshot = readRun(cwd);
+        if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);
         const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
         const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick ${ref(drafted.clearedPick)} because the run was replaced.`];
-        emit({ ...view(snapshot), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...cleared, ...policy, 'The run is inactive; inspect it with mill run status, then start it with mill run.'].join('\n'));
+        emit({ ...view(snapshot), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...cleared, ...policy,
+          ...drafted.alreadyPresent.map(number => `${ref(number)} is already present; left unchanged.`),
+          snapshot.run.lifecycle === 'inactive' ? 'The run is inactive; inspect it with mill run status, then start it with mill run.' : `The run remains ${snapshot.run.lifecycle}.`].join('\n'));
         return 0;
       }
       const message = unknownCommand(positional);

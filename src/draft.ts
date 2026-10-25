@@ -13,7 +13,11 @@ import { userTestSection, requireBrowserCapability } from './user-testing.js';
 export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false,
   checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined) {
   await checkMillyard(cwd, project.integration);
-  checkDraftable(cwd, replace);
+  const previous = checkDraftable(cwd, replace);
+  const existing = previous && previous.run.lifecycle !== 'completed' && !replace ? previous : undefined;
+  if (existing && (existing.run.baseBranch !== project.integration || JSON.stringify(existing.run.tracker) !== JSON.stringify(project.tracker))) {
+    throw new CliError('Configured tracker or integration branch does not match the drafted run; restore its configuration.', 2);
+  }
   let tickets: Ticket[];
   if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
   else if (selection.kind === 'label') {
@@ -24,16 +28,18 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     tickets = await tracker.listChildren(selection.number);
   }
   tickets = [...new Map(tickets.map(ticket => [ticket.number, ticket])).values()];
+  const alreadyPresent = tickets.filter(ticket => existing?.tickets.some(row => row.number === ticket.number)).map(ticket => ticket.number);
+  tickets = tickets.filter(ticket => !alreadyPresent.includes(ticket.number));
   const closed = includeClosed ? [] : tickets.filter(ticket => ticket.state === 'closed');
   const refs = (rows: Ticket[]) => rows.map(ticket => `#${ticket.number}`).join(', ');
   if (selection.kind === 'numbers' && closed.length) {
     throw new CliError(`${refs(closed)} ${closed.length === 1 ? 'is' : 'are'} closed on the tracker. Leave ${closed.length === 1 ? 'it' : 'them'} out, or pass --include-closed to draft ${closed.length === 1 ? 'it' : 'them'} anyway; the tracker issue stays closed.`);
   }
   tickets = tickets.filter(ticket => !closed.includes(ticket));
-  if (!tickets.length && closed.length) {
+  if (!tickets.length && closed.length && !alreadyPresent.length) {
     throw new CliError(`Every selected ticket is closed: skipped ${refs(closed)}. Nothing was drafted and the current run is unchanged; pass --include-closed to draft closed tickets anyway.`);
   }
-  if (!tickets.length) {
+  if (!tickets.length && !alreadyPresent.length) {
     const message = selection.kind === 'label' ? `No tickets found with label ${JSON.stringify(selection.label)}.`
       : selection.kind === 'spec' ? `No direct children found for spec #${selection.number}.` : 'No tickets selected.';
     throw new CliError(`${message} Choose another selector or use explicit ticket numbers.`);
@@ -52,27 +58,42 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
   }
   for (const ticket of tickets) requireBrowserCapability(project, ticket);
-  const edges: RunEdge[] = tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false })));
-  const selected = new Set(numbers);
+  const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers]);
+  const edges: RunEdge[] = [
+    ...existing?.edges.map(edge => ({ ...edge, outsideClosed: selected.has(edge.blocker) ? false : edge.outsideClosed })) ?? [],
+    ...tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false }))),
+  ];
   // A skipped closed ticket is an already satisfied blocker, not runnable work.
   const outside = new Map<number, Ticket>(closed.map(ticket => [ticket.number, ticket]));
   for (const edge of edges) {
-    if (selected.has(edge.blocker)) continue;
+    if (selected.has(edge.blocker) || edge.outsideClosed) continue;
     const blocker = outside.get(edge.blocker) ?? await tracker.getTicket(edge.blocker);
     outside.set(edge.blocker, blocker);
     if (blocker.state !== 'closed') throw new CliError(`Ticket #${edge.blocked} has open blocker #${edge.blocker} outside the run.`);
     edge.outsideClosed = true;
   }
-  const remaining = [...tickets].sort((a, b) => a.number - b.number);
-  const ordered: Ticket[] = [];
+  // Detect cycles over the complete graph, including old satisfied outside links
+  // that become internal when their ticket is appended.
+  const remaining = [...selected];
+  const visited = new Set<number>();
   while (remaining.length) {
-    const next = remaining.findIndex(ticket => edges.every(edge => edge.blocked !== ticket.number || edge.outsideClosed || ordered.some(done => done.number === edge.blocker)));
-    if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(ticket => `#${ticket.number}`).join(', ')}.`);
-    ordered.push(...remaining.splice(next, 1));
+    const next = remaining.findIndex(number => edges.every(edge => edge.blocked !== number || edge.outsideClosed || visited.has(edge.blocker)));
+    if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(number => `#${number}`).join(', ')}.`);
+    visited.add(remaining.splice(next, 1)[0]!);
   }
-  const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, await checkPolicy());
+  // Existing order is fixed; only additions are topologically sorted.
+  const additions = [...tickets].sort((a, b) => a.number - b.number);
+  const ordered: Ticket[] = [];
+  const available = new Set(existing?.tickets.map(ticket => ticket.number));
+  while (additions.length) {
+    const next = additions.findIndex(ticket => edges.every(edge => edge.blocked !== ticket.number || edge.outsideClosed || available.has(edge.blocker)));
+    const ticket = additions.splice(next, 1)[0]!;
+    ordered.push(ticket);
+    available.add(ticket.number);
+  }
+  const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, tickets.length ? await checkPolicy() : undefined, previous);
   await registerMillyard(home, cwd);
-  return { ...readRun(cwd), ...(clearedPick === undefined ? {} : { clearedPick }) };
+  return { snapshot: readRun(cwd), added: ordered.map(ticket => ticket.number), alreadyPresent, ...(clearedPick === undefined ? {} : { clearedPick }) };
 }
 
 function bodyBlockers(body: string): number[] {

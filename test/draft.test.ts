@@ -118,8 +118,8 @@ test('draft refuses open outside blockers, allows closed ones, and preserves an 
   const accepted = await yard.cli('run', 'draft', '2', '--json');
   assert.equal(accepted.code, 0, accepted.stdout);
   const result = JSON.parse(accepted.stdout);
-  assert.deepEqual(result.tickets.map((row: Ticket) => row.number), [2]);
-  assert.equal(result.tickets[0].state, 'queued');
+  assert.deepEqual(result.tickets.map((row: Ticket) => row.number), [1, 2]);
+  assert.equal(result.tickets[1].state, 'queued');
   assert.deepEqual(result.edges, [{ blocked: 2, blocker: 99, outsideClosed: true }]);
   tracker.offline = true;
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), result);
@@ -172,22 +172,21 @@ test('draft refuses user test cases without a harness and accepts them with Dock
 });
 
 for (const state of ['working', 'logjam']) {
-  test(`draft protects a ${state} run until replace is explicit`, async (t) => {
+  test(`draft appends to a ${state} run and refuses explicit replacement`, async (t) => {
     const tracker = new FakeTracker([ticket(1), ticket(2)]);
     const yard = await configured(t, tracker);
     assert.equal((await yard.cli('run', 'draft', '1')).code, 0);
     const db = new DatabaseSync(join(yard.cwd, '.mill/run.sqlite'));
     db.prepare('UPDATE tickets SET state = ? WHERE number = 1').run(state);
     db.close();
-    tracker.offline = true;
-    const refused = await yard.cli('run', 'draft', '2', '--json');
-    assert.equal(refused.code, 1, refused.stdout);
-    assert.match(refused.stdout, /working.*logjam.*--replace/);
-    assert.equal(JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0].state, state);
-    tracker.offline = false;
+    const appended = await yard.cli('run', 'draft', '2', '--json');
+    assert.equal(appended.code, 0, appended.stdout);
+    const snapshot = JSON.parse(appended.stdout);
+    assert.deepEqual(snapshot.tickets.map((row: Ticket) => row.number), [1, 2]);
+    assert.equal(snapshot.tickets[0].state, state);
     const replaced = await yard.cli('run', 'draft', '--replace', '2', '--json');
-    assert.equal(replaced.code, 0, replaced.stdout);
-    assert.deepEqual(JSON.parse(replaced.stdout).tickets.map((row: Ticket) => row.number), [2]);
+    assert.notEqual(replaced.code, 0, replaced.stdout);
+    assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), snapshot);
   });
 }
 

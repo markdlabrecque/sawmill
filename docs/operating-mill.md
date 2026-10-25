@@ -15,6 +15,8 @@ These rules are for the person working around a live run. Each rule comes from a
 
 `mill run draft` registers the millyard but leaves the new run **inactive**, so you can inspect it with `mill run status` first. Nothing starts it but you. Run `mill run` once to activate it. That also starts the shared **scheduler** if none is running. One scheduler serves every active run of your user on this machine. It keeps a run moving as tickets unblock, answers arrive and slots free up, and it gives each project a fair turn under the shared `concurrency` limit. Running `mill run` again is harmless.
 
+To add work, run `mill run draft <numbers...>` (or use `--label` or `--spec`) again. New tickets append in blocked-by order after the existing queue; existing tickets are reported as already present and keep their state and checkpoints. Validation finishes before any additions are saved. Active runs pick up additions through ordinary scheduler dispatch without interrupting workers; inactive, stopped and paused runs keep their execution intent. A completed run is archived and drafting creates a new inactive run. You cannot replace a run in progress, even with `--replace`; that option is only for an inactive draft with no working or logjam tickets.
+
 `mill run status` shows the run's state on its first line:
 
 | State | Meaning | What starts work again |
