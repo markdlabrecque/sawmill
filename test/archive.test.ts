@@ -105,9 +105,9 @@ test('a project with a finished run and a current run is in both places, runs ne
   assert.deepEqual(snapshot.archive[0]!.runs.map(run => run.runId), [second, first]);
 });
 
-test('the page has an Active Section, a collapsible Archive Section and search boxes', () => {
-  assert.match(page, /Active Section/);
-  assert.match(page, /Archive Section/);
+test('the page labels active runs and keeps the archive collapsible with search boxes', () => {
+  assert.match(page, /<h2[^>]*id="act">Active runs<\/h2>/);
+  assert.match(page, /<details[^>]*id="arc"><summary[^>]*>Archive /);
   assert.match(page, /type=["']?search|<input/);
   assert.match(page, /Escape/);
 });
