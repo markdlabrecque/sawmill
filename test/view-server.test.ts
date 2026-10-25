@@ -57,6 +57,7 @@ test('laneOf puts each state and stage on its lane', () => {
   const cases: [Parameters<typeof laneOf>[0], string][] = [
     [{ state: 'queued', stage: null, role: null }, 'queued'],
     [{ state: 'blocked', stage: null, role: null }, 'queued'],
+    [{ state: 'queued', stage: 'review-pass', role: null }, 'review'],
     [{ state: 'working', stage: 'tests-written', role: 'implementer' }, 'implement'],
     [{ state: 'working', stage: 'team-launch', role: 'test-writers' }, 'tests'],
     [{ state: 'working', stage: 'review-pass', role: null }, 'review'],

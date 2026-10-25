@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test from 'node:test';
+import { readBuildIdentity } from '../src/build-identity.js';
+import { runCli } from '../src/cli.js';
+import { dispatchHeld } from '../src/scheduler.js';
+import { listSlots } from '../src/slots.js';
+import { installation, scriptedInstaller, sourceCheckout } from './build-fixtures.js';
+import { fixture, until } from './dispatch-fixture.js';
+
+test('cancelling an update mid-drain leaves the installation unchanged, releases dispatch and keeps the working ticket', async t => {
+  const y = await fixture(t, [1]);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 1\n');
+  const running = y.command(['run', '--foreground', '--json']).catch((error: unknown) => error);
+  await until(y.starts, rows => rows.length === 1);
+  const source = await sourceCheckout(t);
+  const installed = await installation(t);
+  const controller = new AbortController();
+  let out = '';
+  // Without cancellation the update waits for the worker until its drain deadline; let it finish so the test fails instead of hanging.
+  const guard = setTimeout(() => { void y.release(); }, 8000);
+  t.after(() => clearTimeout(guard));
+  const update = runCli(['update', source.root, '--json'], { root: installed.root, home: y.home, cwd: y.cwd, exec: scriptedInstaller().exec, signal: controller.signal, stdout: text => { out += text; } });
+  await until(async () => dispatchHeld(y.home), held => held);
+  controller.abort();
+  assert.equal(await update, 1, out);
+  const report = JSON.parse(out);
+  assert.equal(report.status, 'failed');
+  assert.match(report.message, /cancelled while it waited for working tickets to drain/);
+  assert.match(report.message, /#1/);
+  assert.match(report.message, new RegExp(`mill update ${source.root}`), 'the message names the command that retries');
+  assert.equal(dispatchHeld(y.home), false, 'dispatch is not left suspended');
+  assert.equal((await readBuildIdentity(installed.root))?.id, installed.identity.id, 'the installed mill is unchanged');
+  assert.equal(await installed.read('dist/src/bin.js'), '// old\n');
+  assert.equal(listSlots(y.home).length, 1, 'the working ticket keeps its slot');
+  assert.ok((await y.status()).tickets.find(row => row.number === 1)!.worker, 'the working ticket is not interrupted');
+  await y.release();
+  await running;
+});

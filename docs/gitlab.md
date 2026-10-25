@@ -13,7 +13,10 @@ incomplete totals. Pagination is bounded at 10,000 pages.
 
 ## Draft membership
 
-Explicit issue numbers and `--label` include open and closed issues. Draft caches
+`--label` and `--spec` leave closed issues out and report them as skipped.
+Explicitly naming a closed issue is refused unless `--include-closed` is given.
+Before a ticket's first start, Sawmill reads that one issue's state again and skips
+it if it was closed since drafting. Draft caches
 the complete paginated notes thread, including note authors and timestamps.
 GitLab dependencies use the existing `Blocked by: #N` line or `## Blocked by`
 section in the issue description.
@@ -38,7 +41,7 @@ The transport uses the documented [issues](https://docs.gitlab.com/api/issues/),
 ## Mirror and integration
 
 Comments, label changes and close operations use the existing durable mirror
-queue. Recovery never refreshes issue state. Before adding a label, the adapter
+queue. Recovery never refreshes issue state; only a ticket's first start reads it. Before adding a label, the adapter
 checks [label definitions](https://docs.gitlab.com/api/labels/), including group
 labels, because GitLab's issue update would otherwise create a missing label.
 Create the labels before a run. A concurrent deletion between this check and the
@@ -88,10 +91,17 @@ and [pipeline API](https://docs.gitlab.com/api/pipelines/), checked October 22, 
 
 A superseding successful MR rerun can pass without a new commit. Merged-results
 pipelines on synthetic SHAs do not prove the tested source SHA and remain
-unsupported by this exact-source-head gate.
+unsupported by this exact-source-head gate. `mill run draft` reads the project's
+`merge_pipelines_enabled` and `merge_trains_enabled` settings and refuses either
+one before any work starts. When the token cannot see them (they need Maintainer
+access, or the tier lacks them), the draft says so as not verified.
 
-The existing recovery limits apply: an accepted comment whose response is lost
-may be posted twice, an unacknowledged merge needs reconciliation, and branch
+A merge whose response is lost is reconciled before anything is retried: Sawmill
+saves the merge operation (MR, tested head and target) before the call, then reads
+the same MR again. A confirmed merge of that head is recorded and cleaned up; a
+closed, differently merged or unreadable MR stops with an explanation. The merged
+report carries the operation identity, so a replay finds it rather than posting it
+again. Other comments whose response is lost may still be posted twice, and branch
 deletion has a preflight head check rather than an atomic expected-head API.
 
 ## Live validation

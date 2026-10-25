@@ -1,0 +1,13 @@
+{
+  "repository": "markdlabrecque/sawmill",
+  "searched": "acceptance unmet pass retry limit",
+  "tickets": [
+    {
+      "number": 134,
+      "title": "Keep incomplete work from passing when retries run out",
+      "state": "closed",
+      "mergedAs": "89858f3",
+      "note": "The reviewer must evidence or leave unresolved every acceptance item; a pass with an unresolved item is refused at any bounce count, and only a person can waive an item."
+    }
+  ]
+}

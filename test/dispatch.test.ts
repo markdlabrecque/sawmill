@@ -47,7 +47,9 @@ test('one pass starts independent tickets in stored order, excludes blockers and
   await until(y.status, s => s.tickets.find(row => row.number === 4)?.worker?.status === 'finished');
   assert.deepEqual((await y.starts()).map(row => row.number).sort(), [1, 3, 4]);
   const writes = await readFile(join(y.root, 'tracker.jsonl'), 'utf8');
-  assert.ok(writes.split('\n').filter(Boolean).every(line => !JSON.parse(line).includes('GET')));
+  // The only reads are the state rechecks before each ticket's first start.
+  const reads = writes.split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]).filter(args => args.includes('GET'));
+  assert.ok(reads.every(args => /^repos\/dispatch\/tool\/issues\/\d+$/.test(args[1]!)));
 });
 
 test('simultaneous CLI processes in two millyards share two slots without duplicate dispatch', async t => {
@@ -161,7 +163,7 @@ test('setup hook failure stays visible and releases capacity for a later ticket'
   assert.equal(stopped.tickets[0]?.state, 'logjam');
   assert.equal(stopped.tickets[0]?.reason, 'environment');
   assert.equal(stopped.tickets[0]?.worker?.result?.outcome, 'infrastructure');
-  assert.ok(stopped.tickets[0]?.comments.some(comment => comment.body.includes('fixture setup failure')));
+  assert.match((await y.cli('run', 'log', '1')).stdout, /fixture setup failure/);
   assert.equal((await y.starts()).length, 0);
   assert.deepEqual((await y.once()).started.map((row: { ticket: number }) => row.ticket), [3]);
   await until(y.starts, rows => rows.length === 1);

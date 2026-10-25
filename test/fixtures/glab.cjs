@@ -55,8 +55,13 @@ if (route === '/merge_requests' && method === 'POST') {
   if (body.source_branch !== 'mill/7' || body.target_branch !== 'integration') fail(400, 'Wrong MR branches');
   state.mr = { title: body.title, description: body.description };
   state.openCount = (state.openCount || 0) + 1;
-  fs.writeFileSync(statePath, JSON.stringify(state)); reply(mr());
+  // loseCreateResponse: the MR is created once, then its response is lost.
+  const lose = state.loseCreateResponse; delete state.loseCreateResponse;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (lose) fail(502, 'Fixture lost response');
+  reply(mr());
 }
+if (route === '/merge_requests/42' && method === 'GET' && state.failMrReads) fail(503, 'Fixture MR read unavailable');
 if (route === '/merge_requests/42' && method === 'GET') reply({ ...mr(), ...(state.finalMrHead ? { sha: state.finalMrHead } : {}) });
 const pipelineRoute = route.match(/^\/pipelines\/(\d+)(?:\/(trigger_jobs|bridges))?$/);
 if (pipelineRoute && method === 'GET') {
@@ -76,6 +81,11 @@ if (route === '/merge_requests/42/merge' && method === 'PUT') {
     if (state.pipelineOnRefusal) { state.pipelines = state.pipelineOnRefusal; fs.writeFileSync(statePath, JSON.stringify(state)); }
     fail(state.mergeRefusal, 'Fixture merge refusal');
   }
+  // dropMerge: the MR takes these fields instead of merging, then the response is lost.
+  if (state.dropMerge) {
+    state.mr = { ...state.mr, ...state.dropMerge }; delete state.dropMerge;
+    fs.writeFileSync(statePath, JSON.stringify(state)); fail(502, 'Fixture lost response');
+  }
   const host = state.cwd + '/../hosting';
   git('clone', '--branch', 'integration', state.remote, host);
   git('-C', host, 'config', 'user.name', 'Fixture Hosting'); git('-C', host, 'config', 'user.email', 'fixture@example.invalid');
@@ -85,8 +95,13 @@ if (route === '/merge_requests/42/merge' && method === 'PUT') {
   const mergeCommit = git('-C', host, 'rev-parse', 'HEAD');
   git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
   state.mergeCount = (state.mergeCount || 0) + 1;
-  state.mr = { ...state.mr, state: 'merged', merge_commit_sha: mergeCommit };
-  fs.writeFileSync(statePath, JSON.stringify(state)); reply(mr());
+  // A merged MR keeps its source head; squashCommitOnly reports the commit only as squash_commit_sha.
+  state.mr = { ...state.mr, state: 'merged', sha: body.sha, ...(state.squashCommitOnly ? { merge_commit_sha: null, squash_commit_sha: mergeCommit } : { merge_commit_sha: mergeCommit }) };
+  // loseMergeResponse: the merge lands once, then its response is lost.
+  const lose = state.loseMergeResponse; delete state.loseMergeResponse;
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (lose) fail(502, 'Fixture lost response');
+  reply(mr());
 }
 if (route === '/repository/branches/mill%2F7' && method === 'DELETE') {
   if (state.deleteFailure) fail(503, 'Branch delete unavailable');
@@ -114,17 +129,22 @@ if (issueMatch && method !== 'GET') {
 }
 if (route === '/issues' && method === 'GET') {
   if (state.forbidIssueReads) fail(500, 'Issue read after draft');
-  if (url.searchParams.get('state') !== 'all' || url.searchParams.get('scope') !== 'all') fail(400, 'Listing must include closed and unassigned issues');
+  // Either every state (filtered by Mill) or only opened issues (filtered by GitLab) is a valid way to skip closed tickets.
+  const wanted = url.searchParams.get('state');
+  if (!['all', 'opened'].includes(wanted) || url.searchParams.get('scope') !== 'all') fail(400, 'Listing must include unassigned issues');
   if (url.searchParams.get('order_by') !== 'created_at') fail(400, 'Unsupported issue order_by; use the documented created_at order');
   const label = url.searchParams.get('labels');
-  list(state.issues.filter(issue => !label || issue.labels.includes(label)));
+  list(state.issues.filter(issue => (!label || issue.labels.includes(label)) && (wanted === 'all' || issue.state === 'opened')));
 }
 if (route === '/labels' && method === 'GET') list(state.availableLabels.map(name => ({ name })));
 if (issueMatch && method === 'GET') {
-  if (state.forbidIssueReads) fail(500, 'Issue read after draft');
+  // The first-start state check is one bare GET /issues/N; notes and listings stay forbidden.
+  const stateRead = state.allowStateReads && !issueMatch[2];
+  if (state.forbidIssueReads && !stateRead) fail(500, 'Issue read after draft');
   const issue = state.issues.find(issue => issue.iid === Number(issueMatch[1]));
   if (!issue) fail(404, 'Issue not found');
   if (issueMatch[2]) list(state.notes[issue.iid] || []);
+  if (stateRead) { (state.stateReads ||= []).push(issue.iid); fs.writeFileSync(statePath, JSON.stringify(state)); }
   reply({ assignees: [], ...issue });
 }
 fail(500, 'Unscripted request: ' + method + ' ' + route);

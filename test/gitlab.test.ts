@@ -99,18 +99,36 @@ test('GitLab draft assigns the glab user, leaves a held ticket with its holder, 
   assert.deepEqual(remote.issues.find((row: { iid: number }) => row.iid === 12).assignees, [{ id: 9, username: 'alice' }]);
 });
 
-test('GitLab label draft includes all pages and closed tickets with hydrated threads', async t => {
+test('GitLab label draft includes all pages, omits closed tickets and hydrates threads', async t => {
   const y = await fixture(t);
   y.state.issues.push(issue(11));
   await y.save();
   const result = await y.cli('run', 'draft', '--label', 'batch / ready', '--json');
   assert.equal(result.code, 0, result.stdout);
   const rows = JSON.parse(result.stdout).tickets;
-  assert.deepEqual(rows.map((row: { number: number }) => row.number), [2, 7, 11]);
-  assert.equal(rows[0].trackerState, 'closed');
-  assert.equal(rows[1].comments.at(-1).body, 'Last page');
+  assert.deepEqual(rows.map((row: { number: number }) => row.number), [7, 11]);
+  assert.equal(rows[0].trackerState, 'open');
+  assert.equal(rows[0].comments.at(-1).body, 'Last page');
   assert.equal((await y.status()).run.source.label, 'batch / ready');
   assert.ok((await y.requests()).some(request => request.endpoint.includes('labels=batch+%2F+ready')));
+});
+
+test('GitLab refuses an explicit closed ticket without --include-closed and reports an all-closed label draft', async t => {
+  const y = await fixture(t);
+  const refused = await y.cli('run', 'draft', '2', '--json');
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stdout, /#2.*closed.*--include-closed/i);
+  await assert.rejects(readFile(join(y.cwd, '.mill/run.sqlite')), { code: 'ENOENT' });
+  const allowed = await y.cli('run', 'draft', '2', '--include-closed', '--json');
+  assert.equal(allowed.code, 0, allowed.stdout);
+  assert.equal(JSON.parse(allowed.stdout).tickets[0].trackerState, 'closed');
+  y.state.issues = [issue(2, '', 'closed'), issue(3, '', 'closed')];
+  await y.save();
+  const before = await y.status();
+  const none = await y.cli('run', 'draft', '--label', 'batch / ready', '--replace', '--json');
+  assert.notEqual(none.code, 0, none.stdout);
+  assert.match(none.stdout, /closed/i);
+  assert.deepEqual(await y.status(), before);
 });
 
 test('GitLab spec draft uses only explicit first-line Part of membership, not mentions or related issues', async t => {
@@ -123,8 +141,8 @@ test('GitLab spec draft uses only explicit first-line Part of membership, not me
   const result = await y.cli('run', 'draft', '--spec', '40', '--json');
   assert.equal(result.code, 0, result.stdout);
   const snapshot = JSON.parse(result.stdout);
-  assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [7, 11]);
-  assert.equal(snapshot.tickets[0].comments.at(-1).body, 'Last page');
+  assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [11]);
+  assert.deepEqual(snapshot.edges, [{ blocked: 11, blocker: 7, outsideClosed: true }]);
   assert.deepEqual(snapshot.run.source, { kind: 'spec', number: 40 });
   const empty = await y.cli('run', 'draft', '--spec', '12', '--replace', '--json');
   assert.equal(empty.code, 1); assert.match(empty.stdout, /No direct children/);
@@ -201,7 +219,78 @@ test('GitLab integrate opens then reuses a refused MR and merges the expected he
   assert.equal((await y.hostState()).mergeCount, 1);
 });
 
-const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') => ({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
+const mergeRequests = (requests: { method: string; endpoint: string }[]) => ({
+  opens: requests.filter(request => request.method === 'POST' && /\/merge_requests$/.test(request.endpoint)).length,
+  merges: requests.filter(request => request.endpoint.endsWith('/merge')).length,
+  reads: requests.filter(request => request.method === 'GET' && /\/merge_requests\/42$/.test(request.endpoint)).length,
+});
+
+test('GitLab confirms a merge whose response was lost on the same MR and records it with one merge', async t => {
+  for (const squashCommitOnly of [false, true]) {
+    await t.test(squashCommitOnly ? 'squash_commit_sha' : 'merge_commit_sha', async sub => {
+      const y = await approved(sub);
+      await y.changeHost({ loseMergeResponse: true, squashCommitOnly });
+      const result = await y.cli('integrate', '7', '--json');
+      assert.equal(result.code, 0, result.stdout);
+      const value = JSON.parse(result.stdout), remote = await y.hostState();
+      assert.equal(value.outcome, 'merged');
+      assert.equal(value.mergeCommit, squashCommitOnly ? remote.mr.squash_commit_sha : remote.mr.merge_commit_sha);
+      assert.equal(remote.mergeCount, 1); assert.equal(remote.issues[0].state, 'closed');
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged'); assert.equal(row.mergeCommit, value.mergeCommit);
+      assert.equal(y.git('rev-parse', 'HEAD'), value.mergeCommit);
+      assert.deepEqual(mergeRequests(await y.requests()), { opens: 1, merges: 1, reads: 1 });
+    });
+  }
+});
+
+test('GitLab stops a lost merge as infrastructure with no completion when the MR is closed, locked or unreadable', async t => {
+  const cases = [
+    { name: 'closed without merging', host: { dropMerge: { state: 'closed' } }, explain: /closed without merging/ },
+    { name: 'locked', host: { dropMerge: { state: 'locked' } }, explain: /locked/ },
+    { name: 'unreadable', host: { loseMergeResponse: true, failMrReads: true }, explain: /Could not confirm[^]*Fixture MR read unavailable/ },
+  ];
+  for (const { name, host, explain } of cases) {
+    await t.test(name, async sub => {
+      const y = await approved(sub);
+      await y.changeHost(host);
+      const result = await y.cli('integrate', '7', '--json');
+      assert.equal(result.code, 1, result.stdout);
+      const value = JSON.parse(result.stdout);
+      assert.equal(value.outcome, 'infrastructure'); assert.match(value.message, explain);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.completion, null); assert.equal(row.mergeCommit, null);
+      assert.equal(mergeRequests(await y.requests()).merges, 1);
+      if (name !== 'unreadable') return;
+      // The host merged; once it can be read, a restart confirms that merge instead of merging again.
+      await y.changeHost({ failMrReads: false });
+      const again = await y.cli('integrate', '7', '--json');
+      assert.equal(again.code, 0, again.stdout);
+      assert.equal(JSON.parse(again.stdout).mergeCommit, (await y.hostState()).mr.merge_commit_sha);
+      assert.equal((await y.status()).tickets[0].completion, 'merged');
+      assert.equal((await y.hostState()).mergeCount, 1);
+      assert.equal(mergeRequests(await y.requests()).merges, 1);
+    });
+  }
+});
+
+test('GitLab reuses an MR whose create response was lost instead of opening another', async t => {
+  const y = await approved(t);
+  await y.changeHost({ loseCreateResponse: true });
+  const first = await y.cli('integrate', '7', '--json');
+  assert.equal(first.code, 1, first.stdout);
+  assert.equal(JSON.parse(first.stdout).outcome, 'infrastructure');
+  assert.equal((await y.hostState()).openCount, 1);
+  const second = await y.cli('integrate', '7', '--json');
+  assert.equal(second.code, 0, second.stdout);
+  assert.equal(JSON.parse(second.stdout).outcome, 'merged');
+  const remote = await y.hostState();
+  assert.equal(remote.openCount, 1); assert.equal(remote.mergeCount, 1);
+  assert.equal(mergeRequests(await y.requests()).opens, 1);
+  assert.equal(mergeRequests(await y.requests()).merges, 1);
+});
+
+const pipeline = (id: number, status: string, sha = 'HEAD_SHA', source = 'push') =>({ id, status, sha, source, ref: 'mill/7', web_url: `https://git.example.invalid/group/subgroup/tool/-/pipelines/${id}` });
 
 test('GitLab ci wait reports a later-page failed native trigger and its descendant and never merges', async t => {
   const y = await approved(t, 'wait');
@@ -217,7 +306,8 @@ test('GitLab ci wait reports a later-page failed native trigger and its descenda
   assert.equal(value.pipeline.state, 'failed'); assert.match(value.message, /pipelines\/1/);
   const row = (await y.status()).tickets[0];
   assert.equal(row.stage, 'ci-failed'); assert.equal(row.completion, null);
-  assert.ok((await y.hostState()).notes[7].some((note: { body: string }) => note.body.startsWith('[sawmill:ci-failed]')));
+  assert.ok(!((await y.hostState()).notes[7] ?? []).some((note: { body: string }) => note.body.startsWith('[sawmill:ci-failed]')));
+  assert.match((await y.cli('run', 'log', '7')).stdout, /\[ci-failed\][^\n]*\n[^]*pipelines\/1/);
   assert.ok(!(await y.requests()).some(request => request.endpoint.endsWith('/merge')));
 });
 
@@ -400,7 +490,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
   y.git('add', '.'); y.git('commit', '-m', 'Seed implementation'); y.git('push');
   await writeFile(join(y.cwd, '.mill/setup.sh'), 'printf "%s" "$MILL_TICKET" > "$MILL_MILLYARD/.mill/hook-ran"\n');
   assert.equal((await y.cli('run', 'draft', '7')).code, 0);
-  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, pipelines: [pipeline(1, 'success')] });
+  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, allowStateReads: true, pipelines: [pipeline(1, 'success')] });
   const roles: string[] = []; let red = false, stdout = '';
   const code = await runCli(['team', 'run', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {}, runtime: {
     async run(request, sink) {
@@ -428,6 +518,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
   assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
   const remote = JSON.parse(await readFile(y.statePath, 'utf8'));
   assert.equal(remote.issues[0].state, 'closed'); assert.equal(remote.mergeCount, 1);
+  assert.deepEqual(remote.stateReads, [7], 'exactly one first-start state read of the issue');
   assert.equal(y.git('ls-remote', 'origin', 'refs/heads/mill/7'), '');
   for (const role of roles) assert.ok(remote.notes[7].at(-1).body.includes(`${role}-gitlab-fixture`));
 });

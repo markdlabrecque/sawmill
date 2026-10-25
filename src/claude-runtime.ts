@@ -1,7 +1,8 @@
 import { directChild } from './direct-child.js';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
-import { infrastructure, parseOutcome, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { conflictContinueCommand, infrastructure, parseOutcome, RuntimeUsage, selectionUnavailable, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
+import { authorizeVerification, claudeVerificationRules, nameFlag, simpleCommand, testScope } from './verification.js';
 
 /** Direct Claude stream-json adapter. Fixture-tested against SDK 0.3.308 projections. */
 export class ClaudeCodeRuntime implements Runtime {
@@ -13,11 +14,14 @@ export class ClaudeCodeRuntime implements Runtime {
       'claude-opus-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5', 'claude-fable-5-1'];
     if (!effortModels.includes(request.model)) return { outcome: infrastructure(`Unsupported or unverified Claude model/effort: ${request.model}/${request.effort}.`) };
     if (request.browser && request.role !== 'reviewer') return { outcome: infrastructure('Browser capability is supported only for the reviewer.') };
-    if (!/^[A-Za-z0-9_./=-]+(?: +[A-Za-z0-9_./=-]+)*$/.test(request.testCommand)) return { outcome: infrastructure('Unsupported test command permission mapping: use a simple command with literal arguments.') };
+    if (request.testCommand !== undefined && !/^[A-Za-z0-9_./=-]+(?: +[A-Za-z0-9_./=-]+)*$/.test(request.testCommand)) return { outcome: infrastructure('Unsupported test command permission mapping: use a simple command with literal arguments.') };
+    const focused = request.verification?.focused;
+    if (Object.values(request.verification?.checks ?? {}).some(command => !simpleCommand.test(command))
+      || (focused && (!simpleCommand.test(focused.command) || !testScope(focused.scope) || (focused.name_flag !== undefined && !nameFlag.test(focused.name_flag))))) return { outcome: infrastructure('Unsupported verification command permission mapping: use simple commands with literal arguments.') };
     if (request.signal?.aborted) return { outcome: infrastructure('Role interrupted before startup.') };
     if (process.platform === 'win32') return { outcome: infrastructure('Claude process-group cleanup is not supported on Windows.') };
     if (request.conflictBase && (request.role !== 'implementer' || !/^[a-f0-9]{40,64}$/.test(request.conflictBase))) return { outcome: infrastructure('Invalid conflict repair capability.') };
-    const conflictRules = request.conflictBase ? [`Bash(git rebase ${request.conflictBase})`, 'Bash(git -c core.editor=true rebase --continue)', 'Bash(git rebase --abort)'] : [];
+    const conflictRules = request.conflictBase ? [`Bash(git rebase ${request.conflictBase})`, `Bash(${conflictContinueCommand})`, 'Bash(git rebase --abort)'] : [];
     const writer = request.role !== 'reviewer';
     const env: NodeJS.ProcessEnv = { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config` } : {}), ...this.options.env };
     const browserRules = ['Bash(chrome-devtools-axi *)'];
@@ -30,14 +34,22 @@ export class ClaudeCodeRuntime implements Runtime {
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', request.model, '--effort', request.effort,
       '--setting-sources', '', '--settings', '{"attribution":{"commit":"","pr":""}}', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-chrome',
       '--permission-mode', 'dontAsk', '--tools', writer ? 'Read,Glob,Grep,Write,Edit,Bash' : 'Read,Glob,Grep,Bash',
-      '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git commit *)'] : []),
-        ...conflictRules, 'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', `Bash(${request.testCommand})`, ...(request.browser ? browserRules : [])].join(','),
+      '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git rm *)', 'Bash(git mv *)', 'Bash(git commit *)'] : []),
+        ...conflictRules, 'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', ...(request.testCommand !== undefined ? [`Bash(${request.testCommand})`] : []), ...claudeVerificationRules(request.verification), ...(request.browser ? browserRules : [])].join(','),
       '--disallowedTools', ['mcp__*', ...(request.browser ? [] : [...browserRules, 'Bash(*/chrome-devtools-axi *)'])].join(',')];
     let resultText: string | undefined;
     let failure: string | undefined;
     let sessionId: string | undefined;
     let effectiveModel: string | undefined;
     let effectiveEffort: string | undefined;
+    let selectionRejected = false;
+    const messages = new RuntimeUsage();
+    let totals: RuntimeUsage | undefined;
+    const measuredMessages = new Set<string>();
+    const measure = (target: RuntimeUsage, usage: any) => {
+      const inputs = [usage?.input_tokens, usage?.cache_read_input_tokens ?? 0, usage?.cache_creation_input_tokens ?? 0];
+      target.add(inputs.every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) ? inputs.reduce((a, b) => a + b, 0) : undefined, usage?.output_tokens);
+    };
     const toolCalls = new Map<string, { name: string; command?: string }>();
     const toolErrors = new Map<string, number>();
     const record = (line: string, stop: (message: string) => void) => {
@@ -53,6 +65,10 @@ export class ClaudeCodeRuntime implements Runtime {
           if (effectiveEffort !== undefined && effectiveEffort !== request.effort) stop(`Claude effort mismatch: requested ${request.effort}, reported ${effectiveEffort}.`);
         }
         if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+          if (typeof event.message.id !== 'string' || !measuredMessages.has(event.message.id)) {
+            if (typeof event.message.id === 'string') measuredMessages.add(event.message.id);
+            measure(messages, event.message.usage);
+          }
           for (const block of event.message.content) if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
             toolCalls.set(block.id, { name: block.name, command: block.input?.command });
           }
@@ -65,15 +81,21 @@ export class ClaudeCodeRuntime implements Runtime {
             if (!tool || block.is_error !== true) continue;
             const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
             // A test process reporting failed assertions is expected in the TDD workflow.
-            if (tool.name === 'Bash' && tool.command === request.testCommand && /(?:exit code|exited with code|exit status)\s*[1-9]\d*/i.test(content) && !/command not found|permission denied|timed? out|ENOENT/i.test(content)) continue;
+            if (tool.name === 'Bash' && ((request.testCommand !== undefined && tool.command === request.testCommand) || authorizeVerification(request.verification, tool.command)) && /(?:exit code|exited with code|exit status)\s*[1-9]\d*/i.test(content) && !/command not found|permission denied|timed? out|ENOENT/i.test(content)) continue;
             const key = `${tool.name}:${content.replace(/\s+/g, ' ').trim().toLowerCase()}`;
             const count = (toolErrors.get(key) ?? 0) + 1;
             toolErrors.set(key, count);
             if (count >= 4) stop(`Repeated tool error (${tool.name}, ${count} attempts): ${content}`);
           }
         }
-        if (event.type === 'assistant' && event.error) stop(`Claude assistant failure: ${String(event.error)}`);
+        if (event.type === 'assistant' && event.error) {
+          selectionRejected ||= selectionUnavailable(String(event.error));
+          stop(`Claude assistant failure: ${String(event.error)}`);
+        }
         if (event.type === 'result') {
+          if (event.usage) { totals = new RuntimeUsage(); measure(totals, event.usage); }
+          // total_cost_usd is a tariff estimate, including on subscriptions, not a billed amount.
+          selectionRejected ||= selectionUnavailable(JSON.stringify(event.errors ?? []));
           if (event.subtype !== 'success' || event.is_error !== false || typeof event.result !== 'string') stop(`Claude terminal failure: ${JSON.stringify(event.errors ?? event.subtype)}`);
           else resultText = event.result;
         }
@@ -84,7 +106,10 @@ export class ClaudeCodeRuntime implements Runtime {
     const { code, signal, stderr } = child;
     failure ??= child.failure;
     if (code !== 0) failure ??= `Claude exited ${code ?? signal}: ${stderr.trim()}`;
-    if (!effectiveModel) failure ??= 'Claude ended without system/init model metadata.';
-    return { outcome: failure ? infrastructure(failure) : resultText === undefined ? infrastructure(`Claude ended without a final result. ${stderr.trim()}`) : parseOutcome(resultText, request.role), sessionId, effectiveModel, effectiveEffort, diagnostics: effectiveEffort === undefined ? ['Claude did not report effective effort; only the requested CLI flag is verified.'] : [] };
+    if (!effectiveModel) {
+      failure ??= 'Claude ended without system/init model metadata.';
+      if (code !== 0) selectionRejected ||= selectionUnavailable(stderr);
+    }
+    return { outcome: failure ? infrastructure(failure) : resultText === undefined ? infrastructure(`Claude ended without a final result. ${stderr.trim()}`) : parseOutcome(resultText, request.role), sessionId, effectiveModel, effectiveEffort, ...(totals ?? messages).result(), ...(selectionRejected ? { selectionRejected: true } : {}), diagnostics: effectiveEffort === undefined ? ['Claude did not report effective effort; only the requested CLI flag is verified.'] : [] };
   }
 }

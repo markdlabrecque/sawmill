@@ -1,7 +1,7 @@
 import { githubRequest } from './github-transport.js';
 import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
-import type { AssignResult, TicketWriter } from './tracker.js';
+import type { AssignResult, IssueComment, TicketWriter } from './tracker.js';
 
 /** Write-only transport. Keeps run recovery independent of tracker reads. */
 export class GitHubWriter implements TicketWriter {
@@ -20,6 +20,28 @@ export class GitHubWriter implements TicketWriter {
   }
   addComment(number: number, body: string) { return this.write(number, 'POST', '/comments', { body }); }
   closeTicket(number: number) { return this.write(number, 'PATCH', '', { state: 'closed' }); }
+  async ticketState(number: number): Promise<'open' | 'closed'> {
+    const issue = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/issues/${number}`, undefined, { timeoutMs: this.timeoutMs }) as { number?: unknown; state?: unknown } | null;
+    if (issue?.number !== number || (issue.state !== 'open' && issue.state !== 'closed')) throw new Error(`Invalid GitHub issue response for #${number}.`);
+    return issue.state;
+  }
+
+  async listComments(number: number): Promise<IssueComment[]> {
+    const pages = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/issues/${number}/comments?per_page=100`, undefined, { paginated: true, timeoutMs: this.timeoutMs });
+    if (!Array.isArray(pages) || pages.some(page => !Array.isArray(page))) throw new Error(`Invalid GitHub comments for #${number}.`);
+    return (pages as unknown[][]).flat().map(value => {
+      const comment = value as { id?: unknown; body?: unknown } | null;
+      if (!Number.isSafeInteger(comment?.id) || typeof comment?.body !== 'string') throw new Error(`Invalid GitHub comment on #${number}.`);
+      return { id: comment.id as number, body: comment.body };
+    });
+  }
+  async deleteComment(id: number | string) {
+    try { await githubRequest(this.config, this.cwd, 'DELETE', `repos/${this.config.repo}/issues/comments/${encodeURIComponent(String(id))}`, undefined, { timeoutMs: this.timeoutMs }); }
+    catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return;
+      throw error;
+    }
+  }
 
   private login?: string;
   async assignSelf(number: number): Promise<AssignResult> {

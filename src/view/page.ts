@@ -1,81 +1,127 @@
 import { lanes } from './model.js';
+import { boardIcon, boardStyles, boardWordmark } from './appearance.js';
 
 const short = ['Q', 'L', 'W', 'T', 'I', 'R', 'B', 'PR', 'CI', 'M'];
 
 /** One document, no framework or build step. The server pushes snapshots; the browser counts time in stage between them. */
-export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mill view</title>
-<style>
-:root{--bg:#0e1116;--card:#171c24;--line:#2a3140;--fg:#e6e9ef;--dim:#8b93a3;--work:#4cc2ff;--done:#49d17d;--jam:#ff5c5c;--blk:#f2c04d}
-*{box-sizing:border-box}body{margin:0 auto;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;padding:12px 16px 40px;max-width:900px}
-h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var(--dim)}h1 .live{width:8px;height:8px;border-radius:50%;background:var(--jam);align-self:center}h1 .live.on{background:var(--done)}h1 .at{margin-left:auto;font-variant-numeric:tabular-nums}
-.p{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 12px 4px;margin:0 0 12px}
-.p h2{font-size:15px;margin:0 0 4px;display:flex;gap:8px;align-items:baseline;min-width:0}.p h2 small{color:var(--dim);font-weight:400;margin-left:auto;white-space:nowrap}.p .path,.p .err{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.p .err{color:var(--jam)}
-.t{padding:10px 0 8px;border-top:1px solid var(--line)}.t .h{display:flex;gap:8px;align-items:baseline;font-size:14px;min-width:0}.t .h .n{color:var(--dim);font-variant-numeric:tabular-nums}.t .h .ti{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.t .h .bb{white-space:nowrap}
-.t .d{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
-.lane{position:relative;display:grid;grid-template-columns:repeat(10,minmax(0,1fr));margin-top:8px;height:36px}
-.lane:before{content:"";position:absolute;left:5%;right:5%;top:9px;height:2px;background:var(--line)}
-.c{position:relative;text-align:center;font-size:10px;color:var(--dim);min-width:0}.c i{display:block;width:8px;height:8px;border-radius:50%;background:var(--line);margin:6px auto 4px}.c.past i{background:var(--dim)}
-.chip{position:absolute;top:1px;width:18px;height:18px;border-radius:50%;background:var(--work);transform:translateX(-50%);transition:left .7s cubic-bezier(.4,0,.2,1),background .3s;box-shadow:0 0 0 3px var(--card)}
-.working .chip:after{content:"";position:absolute;inset:-5px;border:2px solid transparent;border-top-color:var(--work);border-radius:50%;animation:spin .9s linear infinite}
-.done .chip{background:var(--done)}.logjam .chip{background:var(--jam);animation:pulse 1s ease-in-out infinite}.blocked .chip{background:var(--blk)}.queued .chip{background:var(--dim)}
-.t.bounce{animation:shake .5s}
-@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(255,92,92,.25)}}@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
-@media (prefers-reduced-motion:reduce){.chip{transition:none}.working .chip:after,.logjam .chip,.t.bounce{animation:none}}
-.badge{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--line);color:var(--fg)}.badge.jam{background:var(--jam);color:#fff}.badge.b{background:#3a3020;color:var(--blk)}
-@media (max-width:520px){.c .full{display:none}}@media (min-width:521px){.c .short{display:none}}
-.empty{color:var(--dim);text-align:center;padding:40px 0}
-[hidden]{display:none!important}:focus-visible{outline:2px solid var(--work);outline-offset:2px}
-.sec{font-size:13px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 8px}
-.p h2 .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.arc{margin-top:24px;border-top:1px solid var(--line)}.arc>summary{cursor:pointer;padding:12px 4px;margin:0}.arc .empty{padding:16px 0}
-.q{display:block;width:100%;font:16px/1.3 system-ui,sans-serif;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);margin:0 0 12px}
-.glass{flex:none;min-width:40px;min-height:40px;margin:-8px -6px -8px 0;border:0;border-radius:8px;background:transparent;color:var(--dim);font-size:18px;cursor:pointer}.glass[aria-expanded=true]{background:var(--line);color:var(--fg)}
-.run{padding:8px 0 6px;border-top:1px solid var(--line)}.run .rh{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
-.ar{display:flex;gap:8px;align-items:baseline;font-size:14px;padding:3px 0;min-width:0}.ar .n{color:var(--dim);font-variant-numeric:tabular-nums}.ar .ti{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.ar .st{font-size:12px;color:var(--dim);white-space:nowrap}
-.none{color:var(--dim);font-size:13px;padding:4px 0 10px}
-</style></head><body>
-<h1><span class="live" id="live"></span><span id="sum">connecting</span><span class="at" id="at"></span></h1>
-<section aria-labelledby="act"><h2 class="sec" id="act">Active Section</h2>
-<div id="root"><div class="empty">No active runs.</div></div></section>
-<details class="arc" id="arc"><summary class="sec">Archive Section <span id="acount"></span></summary>
+export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sawmill Board</title><meta name="theme-color" content="#214538"><link rel="icon" href="${boardIcon}">
+<style>${boardStyles}</style></head><body>
+<a class="skip" href="#main">Skip to runs</a>
+<header class="topbar"><div class="topbar-inner wrap">
+<a class="brand" href="#main" aria-label="Sawmill Board home"><img src="${boardWordmark}" width="174" height="53" alt="Sawmill"></a>
+<nav class="nav" aria-label="Board sections"><a href="#active-section">Active runs</a><a href="#arc" id="archive-link">Archive</a></nav>
+<div class="connection" role="status"><span class="live" id="live" aria-hidden="true"></span><span id="connection">Connecting</span></div>
+</div></header>
+<div class="connection-note" id="connection-note" role="status" hidden><div class="wrap" id="connection-message"></div></div>
+<noscript><div class="connection-note"><div class="wrap">Enable JavaScript to see live runs and use the Board's controls.</div></div></noscript>
+<main class="board wrap" id="main" tabindex="-1">
+<div class="intro"><div><p class="eyebrow">A view of the workshop</p><h1>The Board</h1><p class="lede">Runs, tickets, and the work that needs you.</p></div><p class="updated">Last update<time class="at" id="at">Waiting for a snapshot</time></p></div>
+<p id="sum" class="sr-only" role="status">Connecting to your workshop.</p>
+<dl class="metrics" aria-label="Current run totals">
+<div class="metric"><dt>Projects</dt><dd id="metric-projects">—</dd><svg viewBox="0 0 40 40" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 18 20 7l15 11v17H5Z" fill="#e7ead9"/><path d="M2 18 20 4l18 14M10 24h7v11h-7ZM23 23h7v6h-7ZM27 10V4h5v10"/><path d="M18 14h4v5h-4Z" fill="#fa7844"/></svg></div>
+<div class="metric working-count"><dt>Working</dt><dd id="metric-working">—</dd><svg viewBox="0 0 40 40" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="7" y="7" width="26" height="22" rx="4" fill="#fa7844"/><path d="M13 15v3m14-3v3m-11 4q4 4 8 0M20 7V3M9 29v5m22-5v5M4 35h32M3 16h4m26 0h4"/><circle cx="20" cy="3" r="2" fill="#f5f0df"/></svg></div>
+<div class="metric"><dt>Queued</dt><dd id="metric-queued">—</dd><svg viewBox="0 0 40 40" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M5 10h28v7H5Zm3 7h28v7H8ZM4 24h28v7H4Z" fill="#efc46d"/><path d="M10 13h8m5 0h5M13 20h14M9 27h16M8 34h27"/></svg></div>
+<div class="metric jam-count" id="jam-count"><dt>Logjams</dt><dd id="metric-jam">—</dd><svg viewBox="0 0 40 40" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m20 5 17 29H3Z" fill="#efc46d"/><path d="M20 15v9" stroke-width="3" stroke-linecap="round"/><circle cx="20" cy="28" r="1.5" fill="currentColor"/></svg></div>
+</dl>
+<section id="active-section" aria-labelledby="act"><div class="section-heading"><h2 class="sec" id="act">Active runs</h2></div>
+<div id="root"><div class="empty">Connecting to your workshop…</div></div></section>
+<details class="arc" id="arc"><summary class="sec">Archive <span id="acount"></span></summary>
 <input type="search" class="q" id="aq" placeholder="Search projects" aria-label="Search archived projects" autocomplete="off" spellcheck="false">
 <div id="alist"></div><div class="empty" id="aempty">No archived runs yet.</div></details>
+<footer class="board-footer"><span>Sawmill · Good work needs good machinery.</span><span>Updates automatically from this machine.</span></footer>
+</main>
+<dialog id="dlg" aria-labelledby="dt"><form id="dform"><h3 id="dt"></h3><div class="dq" id="dq"></div>
+<label for="dm" class="sec">Answer and guidance for the agent</label><textarea id="dm" spellcheck="true"></textarea><div class="fb" id="ds" role="status"></div>
+<div class="db"><button type="button" class="ac" id="dcancel">Cancel</button><button type="submit" class="ac" id="dsend">Answer and resume</button></div></form></dialog>
 <script>
 const LANES=${JSON.stringify(lanes)},SHORT=${JSON.stringify(short)};
 const root=document.getElementById('root'),sum=document.getElementById('sum'),at=document.getElementById('at'),live=document.getElementById('live');
-let view=null,got=0;const rows=new Map(),prevBounces=new Map();
+let view=null,got=0;const rows=new Map(),prevBounces=new Map(),opened=new Set();
+const ACTIONS=[['stop','Stop'],['answer','Answer and resume'],['reset','Reset'],['close','Close']];
+/** Each project's run and each ticket has one request line: pending, ok or failed. A pending request blocks repeats. */
+const notes=new Map();
+function controls(box,key,rule){const pending=notes.get(key)?.state==='pending';
+  box.querySelectorAll('button').forEach(b=>{const r=rule(b.dataset.a);b.setAttribute('aria-disabled',String(pending||!r.available));b.title=r.available?'':r.reason||''})}
+function feedback(box,key){const n=notes.get(key);box.className='fb'+(n?' '+n.state:'');box.textContent=n?n.message:''}
+function note(key,state,message){clearTimeout(notes.get(key)?.timer);const n={state,message};
+  if(state==='ok'||state==='info')n.timer=setTimeout(()=>{if(notes.get(key)===n){notes.delete(key);render()}},8000);notes.set(key,n);render()}
+const CONFIRM={reset:t=>'Reset #'+t.number+'? This deletes its worktree, branches, logs and agent comments, and queues it to start fresh.',close:t=>'Close #'+t.number+'? This marks it done and closes its tracker issue without merging.'};
+function act(key,p,t,a){if(!p||notes.get(key)?.state==='pending')return;
+  const r=t?t.actions[a]:p.runActions[a==='start-run'?'start':'stop'];
+  if(!r.available){note(key,'info',r.reason);return}
+  if(a==='answer'){openAnswer(key,p,t);return}
+  if(CONFIRM[a]&&!confirm(CONFIRM[a](t)))return;
+  send(key,{action:a,millyard:p.millyard,runId:p.runId,...(t?{ticket:t.number}:{}),...attempt(t),...(CONFIRM[a]?{confirmed:true}:{})})}
+/** The ticket's attempt as this page drew it, whatever its state, so an action never reaches a newer attempt. */
+function attempt(t){return t?{attempt:t.attempt}:{}}
+/** The request names the project, run and ticket as this page saw them; the server refuses it if they have changed. */
+async function send(key,body){note(key,'pending','Sending…');
+  try{const r=await fetch('/api/command',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));
+    note(key,r.ok?'ok':'failed',j.message||(r.ok?'Done.':'The request failed ('+r.status+').'));return r.ok}
+  catch(e){note(key,'failed','The board could not be reached: '+e.message);return false}}
+const dlg=document.getElementById('dlg'),dform=document.getElementById('dform'),dm=document.getElementById('dm'),ds=document.getElementById('ds'),dsend=document.getElementById('dsend');let answering=null;
+function openAnswer(key,p,t){answering={key,p,t};document.getElementById('dt').textContent='Answer #'+t.number+' '+t.title;
+  document.getElementById('dq').textContent=(t.question?'Question: '+t.question:t.blockage||'Nothing is recorded about what stopped this ticket.')+(t.diagnosis?'\\n\\nAnswering: '+t.diagnosis.next.explanation:'');
+  dm.value='';ds.className='fb';ds.textContent='';dsend.disabled=false;dlg.showModal();dm.focus()}
+document.getElementById('dcancel').onclick=()=>dlg.close();
+dform.onsubmit=async e=>{e.preventDefault();if(!answering||dsend.disabled)return;const {key,p,t}=answering;dsend.disabled=true;ds.className='fb pending';ds.textContent='Sending…';
+  const ok=await send(key,{action:'answer',millyard:p.millyard,runId:p.runId,ticket:t.number,...attempt(t),message:dm.value});
+  if(ok&&answering?.key===key){dlg.close();dm.value='';answering=null;return}
+  const n=notes.get(key);ds.className='fb failed';ds.textContent=n?n.message:'The request failed.';dsend.disabled=false};
+dlg.onclose=()=>{if(dsend.disabled)return;answering=null};
 function detail(t,secs){
   if(t.state==='working')return (t.stage||'unknown')+(t.role?' ('+t.role+')':'')+'; round '+(t.bounces+1)+'; bounces '+t.bounces+'; '+secs+'s in stage'+(t.stopRequested?'; stop requested':'');
   if(t.state==='blocked')return 'blocked by '+t.blockers.map(n=>'#'+n).join(', ');
   if(t.state==='logjam')return 'logjam: '+(t.reason||'')+(t.stage?' at '+t.stage:'');
   return t.state}
-function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
+/** What stopped the ticket, the code and environment it stopped on, and the supported command that moves it on. */
+function diagnosis(box,t){const d=t.diagnosis;box.hidden=!d;if(!d)return;
+  box.querySelector('.dxh').textContent='Stopped at '+d.phase+(d.command?' running '+d.command:'')+' · last progress '+new Date(d.lastProgress).toLocaleString()+' · attempt '+d.attempt;
+  box.querySelector('.dxi').textContent=(Object.entries(d.identities).filter(([,v])=>v).map(([k,v])=>k+' '+(/^[0-9a-f]{40}$/.test(v)?v.slice(0,12):v)).join(' · ')||'No code or environment identity is recorded.')+(d.owner?' · owner: '+d.owner:'');
+  box.querySelector('code').textContent=d.next.command;box.querySelector('.dxn span').textContent=d.next.explanation;
+  box.querySelector('pre').textContent=d.excerpt;box.querySelector('.dxl').textContent=(d.log?'Full log: '+d.log+' · ':'')+'Every step: mill run log '+t.number}
+function render(){if(!view)return;const seen=new Set();let working=0,jam=0,queued=0;
   for(const p of view.projects){let card=rows.get(p.millyard);
-    if(!card){card=document.createElement('div');card.className='p';card.innerHTML='<h2><span class="nm"></span><small></small></h2><div class="path"></div><div class="err"></div><div class="ts"></div>';root.appendChild(card);rows.set(p.millyard,card)}
-    seen.add(p.millyard);const counts={};for(const t of p.tickets)counts[t.state]=(counts[t.state]||0)+1;working+=counts.working||0;jam+=counts.logjam||0;
+    if(!card){card=document.createElement('div');card.className='p';card.innerHTML='<h2><span class="nm"></span><small></small></h2><div class="path"></div><div class="err"></div><div class="rb"><span class="rs" role="status"></span><button type="button" class="ac" data-a="start-run">Start Run</button><button type="button" class="ac" data-a="stop-run">Stop Run</button></div><div class="pr"></div><div class="fb" role="status"></div><div class="ts"></div>';
+      const key=p.millyard;card.querySelectorAll('.rb button').forEach(b=>b.onclick=()=>act(key,card.data,null,b.dataset.a));root.appendChild(card);rows.set(p.millyard,card)}
+    seen.add(p.millyard);card.data=p;const counts={};for(const t of p.tickets)counts[t.state]=(counts[t.state]||0)+1;working+=counts.working||0;jam+=counts.logjam||0;queued+=counts.queued||0;
     card.querySelector('.nm').textContent=p.name;card.querySelector('small').textContent=p.error?'unreadable':Object.entries(counts).map(([k,v])=>v+' '+k).join(' · ');
     card.querySelector('.path').textContent=p.millyard;card.querySelector('.err').textContent=p.error||'';
+    const rs=card.querySelector('.rs');rs.className='rs '+p.runStatus;rs.textContent=p.runStatus+(p.runStatus==='stopping'?' (waiting for stage boundaries)':'');
+    card.querySelector('.pr').textContent=p.pausedReason||'';card.querySelector('.rb').hidden=Boolean(p.error);
+    controls(card.querySelector('.rb'),p.millyard,a=>p.runActions[a==='start-run'?'start':'stop']);feedback(card.querySelector(':scope>.fb'),p.millyard);
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
-      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><span class="n"></span><span class="ti"></span><span class="bb"></span></div><div class="d"></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>';ts.appendChild(row);rows.set(key,row)}
-      seen.add(key);const index=LANES.indexOf(t.lane);
-      row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;
-      row.querySelector('.bb').innerHTML=(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
-      row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';
+      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span><button type="button" class="more" aria-expanded="false">Actions</button></div><div class="d"></div><div class="why"></div>'
+          +'<div class="dx" hidden><div class="dxh"></div><div class="dxi"></div><div class="dxn">Next: <code></code> <span></span></div><details><summary>Output</summary><pre></pre><div class="dxl"></div></details></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
+        +'<div class="acts" hidden>'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
+        const mill=p.millyard;row.querySelector('.more').onclick=()=>{if(opened.has(key))opened.delete(key);else opened.add(key);render()};row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
+      seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
+      diagnosis(row.querySelector('.dx'),t);controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
+      row.className='t '+t.state+(t.picked?' picked':'');row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
+      row.querySelector('.bb').innerHTML=(t.picked?'<span class="badge">Pending pick</span> ':'')+(t.appended?'<span class="badge">Appended</span> ':'')+(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
+      row.querySelectorAll('.c').forEach((c,i)=>{c.classList.toggle('past',i<index);c.classList.toggle('cur',i===index)});const open=opened.has(key),more=row.querySelector('.more');row.querySelector('.acts').hidden=!open;more.setAttribute('aria-expanded',String(open));more.setAttribute('aria-label',(open?'Hide':'Show')+' actions for #'+t.number);row.querySelector('.chip').style.left=(index*10+5)+'%';
       if(prevBounces.has(key)&&prevBounces.get(key)<t.bounces){row.classList.add('bounce');setTimeout(()=>row.classList.remove('bounce'),600)}prevBounces.set(key,t.bounces)}}
-  for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key)}
-  const empty=root.querySelector('.empty');if(view.projects.length)empty?.remove();else if(!empty)root.innerHTML='<div class="empty">No active runs.</div>';
+  for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key);opened.delete(key)}
+  const empty=root.querySelector('.empty');if(view.projects.length)empty?.remove();else if(!empty)root.innerHTML='<div class="empty">No active runs. Your workshop is clear.</div>';else empty.textContent='No active runs. Your workshop is clear.';
+  document.getElementById('metric-projects').textContent=view.projects.length;document.getElementById('metric-working').textContent=working;document.getElementById('metric-queued').textContent=queued;document.getElementById('metric-jam').textContent=jam;document.getElementById('jam-count').classList.toggle('has-jams',jam>0);
   sum.textContent=view.projects.length+' project'+(view.projects.length===1?'':'s')+' · '+working+' working'+(jam?' · '+jam+' logjam':'');renderArchive();tick()}
 const arc=document.getElementById('arc'),aq=document.getElementById('aq'),alist=document.getElementById('alist'),aempty=document.getElementById('aempty'),acount=document.getElementById('acount');
+document.getElementById('archive-link').onclick=()=>{arc.open=true};
 const acards=new Map(),glass=new Map();
 const fold=s=>String(s).toLocaleLowerCase();
 function el(tag,cls,text){const e=document.createElement(tag);e.className=cls;if(text!=null)e.textContent=text;return e}
+/** Only an absolute http(s) URL becomes an href; anything else leaves a plain, unfocusable anchor. */
+function safeUrl(u){if(typeof u!=='string')return null;try{const url=new URL(u);return url.protocol==='https:'||url.protocol==='http:'?url.href:null}catch{return null}}
+function link(a,t){const url=safeUrl(t.url);
+  if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.setAttribute('aria-label','#'+t.number+' '+t.title+' (opens tracker issue in a new tab)')}
+  else{a.removeAttribute('href');a.removeAttribute('target');a.removeAttribute('rel');a.removeAttribute('aria-label')}}
 /** Loose project match: the query's letters appear in order in the name, so missing letters still match. */
 function loose(q,name){const want=[...fold(q).trim()];let i=0;for(const ch of fold(name))if(i<want.length&&want[i]===ch)i++;return i===want.length}
 function ticketMatch(q,t){q=fold(q).trim();if(!q)return true;return String(t.number)===(q.charAt(0)==='#'?q.slice(1):q)||fold(t.title).includes(q)}
 function renderArchive(){const seen=new Set(),archive=view.archive||[];
   archive.forEach((a,index)=>{let card=acards.get(a.millyard);const key=a.millyard;
-    if(!card){card=el('div','p');card.innerHTML='<h2><span class="nm"></span><small></small><button type="button" class="glass" aria-expanded="false">&#128269;</button></h2><div class="path"></div><input type="search" class="q" hidden placeholder="Ticket number or name" autocomplete="off" spellcheck="false"><div class="runs"></div><div class="none" hidden>No tickets match.</div>';
+    if(!card){card=el('div','p');card.innerHTML='<h2><span class="nm"></span><small></small><button type="button" class="glass" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="8" r="5.5"/><path d="m12 12 5 5"/></svg></button></h2><div class="path"></div><input type="search" class="q" hidden placeholder="Ticket number or name" autocomplete="off" spellcheck="false"><div class="runs"></div><div class="none" hidden>No tickets match.</div>';
       const box=card.querySelector('.q');card.querySelector('.glass').onclick=()=>setGlass(card,key,!glass.has(key),true);
       box.oninput=()=>{glass.set(key,box.value);filterTickets(card,key)};
       box.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();setGlass(card,key,false,true)}};acards.set(key,card)}
@@ -86,7 +132,7 @@ function renderArchive(){const seen=new Set(),archive=view.archive||[];
     card.querySelector('.runs').replaceChildren(...a.runs.map(r=>{const run=el('div','run');
       run.append(el('div','rh',(r.created?new Date(r.created).toLocaleString():'run '+r.runId)+' · '+r.tickets.length+' ticket'+(r.tickets.length===1?'':'s')));
       if(r.error)run.append(el('div','err',r.error));
-      for(const t of r.tickets){const row=el('div','ar'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;row.append(el('span','n','#'+t.number),ti,el('span','st',t.state));run.append(row)}
+      for(const t of r.tickets){const row=el('div','ar'),a=el('a','tl'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;a.append(el('span','n','#'+t.number),ti);link(a,t);row.append(a,el('span','st',t.state));run.append(row)}
       return run}));
     filterTickets(card,key)});
   for(const [key,card] of acards)if(!seen.has(key)){card.remove();acards.delete(key);glass.delete(key)}
@@ -104,6 +150,7 @@ aq.onkeydown=e=>{if(e.key!=='Escape')return;e.preventDefault();if(aq.value){aq.v
 function tick(){if(!view)return;const extra=Math.floor((Date.now()-got)/1000);at.textContent=new Date(view.time).toLocaleTimeString();
   for(const p of view.projects)for(const t of p.tickets){const row=rows.get(p.millyard+'#'+t.number);if(row)row.querySelector('.d').textContent=detail(t,t.timeInStageSeconds==null?0:t.timeInStageSeconds+extra)}}
 setInterval(tick,1000);
-const es=new EventSource('/events');es.onopen=()=>live.classList.add('on');es.onerror=()=>live.classList.remove('on');
+const connection=document.getElementById('connection'),connectionNote=document.getElementById('connection-note');
+const es=new EventSource('/events');es.onopen=()=>{live.classList.add('on');connection.textContent='Live';connectionNote.hidden=true};es.onerror=()=>{live.classList.remove('on');connection.textContent='Reconnecting';connectionNote.hidden=false;document.getElementById('connection-message').textContent=view?'Connection lost. Showing the last snapshot while the Board reconnects.':'Cannot reach the Board. Reconnecting automatically.'};
 es.onmessage=e=>{view=JSON.parse(e.data);got=Date.now();render()};
 </script></body></html>`;

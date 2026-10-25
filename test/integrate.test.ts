@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import { MergeRefusedError } from '../src/tracker.js';
 import type { ChangeRequest, Ticket } from '../src/tracker.js';
 import { runCli } from '../src/cli.js';
 import { millyard } from './helpers.js';
+import { loadConfig } from '../src/config.js';
+import { CliError } from '../src/errors.js';
+import { integrate } from '../src/integrate.js';
+import { withRunLock } from '../src/run-lock.js';
+import { readRun } from '../src/run-store.js';
+import { listSlots } from '../src/slots.js';
 
 class FakeTracker {
   readsAllowed = true;
@@ -78,6 +87,122 @@ async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = as
   tracker.delete = async branch => { yard.git('push', '--no-follow-tags', 'origin', '--delete', branch); };
   const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
   return { ...yard, tracker, path, seed, status, approve };
+}
+
+// Authorized integration-start regression coverage: use genuinely reviewed work,
+// then remove configuration only in the environment that will execute it.
+const missingKeys = [['unset', undefined], ['empty', ''], ['whitespace', ' \t\n ']] as const;
+const privateKey = 'integration-start-secret-must-not-appear';
+
+function missingKeyMessage(message: string) {
+  assert.match(message, /TYPESAFE_API_KEY/);
+  assert.match(message, /set|export|environment/i);
+  assert.ok(!message.includes(privateKey));
+}
+
+async function guardedIntegration(t: TestContext) {
+  const y = await fixture(t);
+  const activity = join(y.root, 'unexpected-activity');
+  // These would run during integration even without a tracker or model call.
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: test -f feature.test.ts', `command: 'echo tests >> "${activity}"'`));
+  await writeFile(join(y.cwd, '.mill/prepare.sh'), `echo prepare >> "${activity}"\nexit 1\n`);
+  const loaded = await loadConfig(y.cwd, y.home);
+  assert.equal(loaded.valid, true);
+  const before = readRun(y.cwd);
+  assert.equal(before.tickets[0]!.stage, 'review-pass');
+  assert.equal(before.tickets[0]!.team.approvedHead, y.git('rev-parse', 'mill/9'));
+  const refs = y.git('show-ref');
+  const remoteRefs = y.git('ls-remote', 'origin');
+  const calls: string[] = [];
+  const touch = (name: string): never => { calls.push(name); throw new Error(`Unexpected ${name}`); };
+  const tracker = new Proxy(y.tracker, {
+    get(target, name, receiver) {
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? () => touch(`tracker ${String(name)}`) : value;
+    },
+  });
+  const options = {
+    home: y.home,
+    runtime: { async run() { return touch('model'); } },
+    async sleep() { touch('retry delay'); },
+  };
+  t.mock.method(globalThis, 'fetch', async () => touch('network'));
+  const unchanged = async () => {
+    const durable = (snapshot: ReturnType<typeof readRun>) => ({
+      ...snapshot, tickets: snapshot.tickets.map(({ timeInStageSeconds: _elapsed, ...row }) => row),
+    });
+    assert.deepEqual(durable(readRun(y.cwd)), durable(before), 'no activation, claims, stages, or retry budget spent');
+    assert.deepEqual(listSlots(y.home), []);
+    assert.deepEqual(calls, []);
+    assert.equal(await readFile(activity, 'utf8').catch(() => ''), '', 'no setup, preparation, tests, or child calls');
+    assert.equal(y.git('show-ref'), refs);
+    assert.equal(y.git('ls-remote', 'origin'), remoteRefs);
+    assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+    assert.ok(!JSON.stringify(readRun(y.cwd)).includes(privateKey));
+  };
+  return { ...y, activity, project: loaded.project, tracker, options, unchanged };
+}
+
+for (const [label, value] of missingKeys) {
+  test(`integrate rejects a ${label} TypeSafe key before waiting on the integration lock or doing work`, async t => {
+    const y = await guardedIntegration(t);
+    const previous = process.env.TYPESAFE_API_KEY;
+    t.after(() => { if (previous === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = previous; });
+    if (value === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = value;
+    let pending: Promise<unknown> | undefined;
+    try {
+      await withRunLock(y.cwd, 'integration', async () => {
+        pending = integrate(y.cwd, y.project, 9, y.tracker, y.options).then(
+          result => ({ result }), error => ({ error }),
+        );
+        // A local validation rejection settles before another event-loop turn.
+        // Releasing the lock only afterwards proves it never waited for ownership.
+        const settled = await Promise.race([pending, new Promise(resolve => setImmediate(() => resolve('waiting')))]);
+        assert.notEqual(settled, 'waiting', 'credential validation must precede the integration-lock wait');
+        assert.ok(settled && typeof settled === 'object' && 'error' in settled);
+        assert.ok(settled.error instanceof CliError);
+        assert.equal(settled.error.exitCode, 2);
+        missingKeyMessage(settled.error.message);
+        await y.unchanged();
+      });
+    } finally { await pending; }
+  });
+
+  for (const json of [false, true]) for (const locked of [false, true]) {
+    test(`integrate CLI ${json ? 'JSON' : 'text'} rejects a ${label} TypeSafe key ${locked ? 'with a legacy lock' : 'before side effects'}`, async t => {
+      const y = await guardedIntegration(t);
+      // Fail and record tracker/model children without calling real services.
+      // Read-only git/config discovery remains available to the CLI.
+      const bin = join(y.root, 'guard-bin');
+      await mkdir(bin);
+      for (const name of ['gh', 'glab', 'claude', 'codex', 'pi']) {
+        const path = join(bin, name);
+        await writeFile(path, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(y.activity)}, ${JSON.stringify(name + '\n')}); process.exit(71);\n`);
+        await chmod(path, 0o755);
+      }
+      // A legacy lock is a second deterministic ordering check: its operational
+      // error must not hide missing execution configuration.
+      if (locked) await writeFile(join(y.cwd, '.mill/integrate.lock'), 'held');
+      const env = { ...y.env, PATH: `${bin}:${process.env.PATH}`, TYPESAFE_API_KEY: value, UNRELATED_SECRET: privateKey };
+      if (value === undefined) delete env.TYPESAFE_API_KEY;
+      const reply = await promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL('../src/bin.js', import.meta.url)), 'integrate', '9', ...(json ? ['--json'] : []),
+      ], { cwd: y.cwd, env, timeout: 20000 }).then(
+        output => ({ code: 0, ...output }),
+        (error: { code: number; stdout: string; stderr: string }) => error,
+      );
+      assert.equal(reply.code, 2, `${reply.stdout}${reply.stderr}`);
+      if (json) {
+        const output = JSON.parse(reply.stdout);
+        assert.equal(output.status, 'configuration-error');
+        missingKeyMessage(JSON.stringify(output));
+      } else missingKeyMessage(`${reply.stdout}${reply.stderr}`);
+      assert.ok(!`${reply.stdout}${reply.stderr}`.includes(privateKey));
+      await y.unchanged();
+    });
+  }
 }
 
 test('integrate rebases, tests and squash-merges through a ticket-linked PR, then reports and closes', async t => {
@@ -184,6 +309,38 @@ test('red tests never push or merge and timeouts kill descendants and report inf
     assert.equal((await y.status()).tickets[0].bounces, 0);
     if (timeout) { await new Promise(r => setTimeout(r, 2200)); await assert.rejects(readFile(join(y.root, 'leaked'))); }
   }
+});
+
+test('a final test run that fails once and passes on the rerun proceeds and is logged as flaky with the test names', async t => {
+  const y = await fixture(t);
+  const command = 'echo x >> ../runs; if [ $(wc -l < ../runs) -ge 2 ]; then exit 0; fi; echo "✖ flaky case one (3ms)"; echo "✖ flaky case two (5ms)"; exit 1';
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: '${command}'`));
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'merged');
+  assert.equal((await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length, 2);
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  try {
+    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[])
+      .map(row => JSON.parse(row.event)).filter(event => event.flaky);
+    assert.equal(events.length, 1, 'one flaky event names the failed tests');
+    assert.deepEqual(events[0]!.flaky.tests, ['flaky case one', 'flaky case two']);
+  } finally { db.close(); }
+});
+
+test('a final test run that fails twice still stops as tests-failed after exactly one rerun and logs nothing as flaky', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: 'echo x >> ../runs; echo "✖ always broken"; exit 3'`));
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'tests-failed');
+  assert.equal((await readFile(join(y.root, 'runs'), 'utf8')).trim().split('\n').length, 2);
+  assert.equal(y.tracker.head('mill/9'), ''); assert.deepEqual(y.tracker.methods, []);
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  try {
+    const events = (db.prepare('SELECT event FROM log WHERE ticket = 9').all() as { event: string }[]).filter(row => row.event.includes('flaky'));
+    assert.equal(events.length, 0);
+  } finally { db.close(); }
 });
 
 test('the final test run does not inherit the coordinator worker variables', async t => {
@@ -303,10 +460,139 @@ else process.exit(9);
 
 });
 
+/** A native GitHub host that keeps PR #42's state in files. A switch file makes it act, then lose the
+ * response: lose-create and lose-merge after creating or merging, close-instead after closing unmerged. */
+async function lostResponseGitHub(t: TestContext, y: Awaited<ReturnType<typeof fixture>>) {
+  const bin = join(y.root, 'bin'); await mkdir(bin);
+  const log = join(y.root, 'requests.jsonl');
+  const file = (name: string) => join(y.root, name);
+  await writeFile(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+const endpoint = args[1];
+const method = args[args.indexOf('--method') + 1];
+const body = args.includes('--input') ? JSON.parse(fs.readFileSync(0, 'utf8')) : undefined;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ endpoint, method, body }) + '\\n');
+const file = name => ${JSON.stringify(y.root)} + '/' + name;
+const has = name => fs.existsSync(file(name));
+const git = (...args) => cp.execFileSync('git', args, { cwd: ${JSON.stringify(y.cwd)}, encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
+const lose = () => { console.error('read ECONNRESET'); process.exit(1); };
+const pr = () => {
+  const merged = has('pr-merged') ? JSON.parse(fs.readFileSync(file('pr-merged'), 'utf8')) : null;
+  return { number: 42, html_url: 'https://github.com/team/tool/pull/42', head: { sha: merged ? merged.head : git('rev-parse', 'mill/9') },
+    state: merged || has('pr-closed') ? 'closed' : 'open', merged: Boolean(merged), merge_commit_sha: merged ? merged.sha : null };
+};
+if (endpoint.includes('/issues/')) { if (method === 'GET') process.exit(8); console.log('{}'); }
+else if (endpoint.includes('/pulls?')) console.log(JSON.stringify(has('pr-created') && pr().state === 'open' ? [pr()] : []));
+else if (endpoint.endsWith('/pulls') && method === 'POST') { fs.writeFileSync(file('pr-created'), 'yes'); if (has('lose-create')) lose(); console.log(JSON.stringify(pr())); }
+else if (endpoint.endsWith('/pulls/42/merge') && method === 'PUT') {
+  if (has('close-instead')) { fs.writeFileSync(file('pr-closed'), 'yes'); lose(); }
+  const host = file('native-host-' + fs.readdirSync(${JSON.stringify(y.root)}).length);
+  git('clone', '--branch', 'integration', ${JSON.stringify(y.remote)}, host);
+  git('-C', host, 'config', 'user.name', 'Fixture'); git('-C', host, 'config', 'user.email', 'fixture@example.invalid');
+  git('-C', host, 'config', 'core.hooksPath', '/dev/null');
+  git('-C', host, 'merge', '--squash', 'origin/mill/9'); git('-C', host, 'commit', '-m', 'Native fixture merge');
+  const sha = git('-C', host, 'rev-parse', 'HEAD');
+  git('-C', host, 'push', 'origin', 'HEAD:refs/heads/integration');
+  fs.writeFileSync(file('pr-merged'), JSON.stringify({ head: body.sha, sha }));
+  if (has('lose-merge')) lose();
+  console.log(JSON.stringify({ merged: true, sha }));
+}
+else if (endpoint === 'repos/team/tool/pulls/42' && method === 'GET') {
+  if (has('read-fail')) { console.error('HTTP 503: fixture PR read unavailable'); process.exit(1); }
+  console.log(JSON.stringify(pr()));
+}
+else if (endpoint === 'repos/team/tool/git/refs/heads/mill%2F9' && method === 'DELETE') { git('push', 'origin', '--delete', 'mill/9'); }
+else process.exit(9);
+`);
+  await chmod(join(bin, 'gh'), 0o755);
+  const oldPath = process.env.PATH; process.env.PATH = `${bin}:${oldPath}`;
+  t.after(() => { process.env.PATH = oldPath; });
+  const integrate = async () => {
+    let stdout = '';
+    const code = await runCli(['integrate', '9', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {} });
+    return { code, stdout, value: JSON.parse(stdout) };
+  };
+  const counts = async () => {
+    const requests = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { endpoint: string; method: string });
+    return {
+      opens: requests.filter(r => r.endpoint.endsWith('/pulls') && r.method === 'POST').length,
+      merges: requests.filter(r => r.endpoint.endsWith('/pulls/42/merge')).length,
+      reads: requests.filter(r => r.endpoint === 'repos/team/tool/pulls/42' && r.method === 'GET').length,
+    };
+  };
+  const merged = async () => JSON.parse(await readFile(file('pr-merged'), 'utf8')) as { head: string; sha: string };
+  return { set: (name: string) => writeFile(file(name), 'yes'), clear: (name: string) => rm(file(name)), integrate, counts, merged };
+}
+
+test('native GitHub confirms a merge whose response was lost on the same PR and records it with one merge', async t => {
+  const y = await fixture(t);
+  const host = await lostResponseGitHub(t, y);
+  await host.set('lose-merge');
+  const { code, stdout, value } = await host.integrate();
+  assert.equal(code, 0, stdout);
+  assert.equal(value.outcome, 'merged');
+  const { head, sha } = await host.merged();
+  assert.equal(value.mergeCommit, sha);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged'); assert.equal(row.mergeCommit, sha);
+  assert.equal(row.integration.mergedHead, head);
+  assert.equal(y.git('rev-parse', 'HEAD'), sha);
+  assert.equal(y.tracker.head('mill/9'), '');
+  assert.deepEqual(await host.counts(), { opens: 1, merges: 1, reads: 1 });
+});
+
+test('native GitHub stops a lost merge as infrastructure with no completion when the PR is closed unmerged or unreadable', async t => {
+  for (const [name, switches, explain] of [
+    ['closed unmerged', ['close-instead'], /closed without merging/],
+    ['unreadable', ['lose-merge', 'read-fail'], /Could not confirm[^]*fixture PR read unavailable/],
+  ] as const) {
+    await t.test(name, async sub => {
+      const y = await fixture(sub);
+      const host = await lostResponseGitHub(sub, y);
+      for (const name of switches) await host.set(name);
+      const { code, stdout, value } = await host.integrate();
+      assert.equal(code, 1, stdout);
+      assert.equal(value.outcome, 'infrastructure'); assert.match(value.message, explain);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.completion, null); assert.equal(row.mergeCommit, null);
+      assert.equal((await host.counts()).merges, 1);
+      if (name !== 'unreadable') return;
+      // The host merged; once it can be read, a restart confirms that merge instead of merging again.
+      await host.clear('read-fail');
+      const again = await host.integrate();
+      assert.equal(again.code, 0, again.stdout);
+      assert.equal(again.value.mergeCommit, (await host.merged()).sha);
+      assert.equal((await y.status()).tickets[0].completion, 'merged');
+      assert.equal((await host.counts()).merges, 1);
+    });
+  }
+});
+
+test('native GitHub reuses a PR whose create response was lost instead of opening another', async t => {
+  const y = await fixture(t);
+  const host = await lostResponseGitHub(t, y);
+  await host.set('lose-create');
+  const first = await host.integrate();
+  assert.equal(first.code, 1, first.stdout);
+  assert.equal(first.value.outcome, 'infrastructure');
+  await host.clear('lose-create');
+  const second = await host.integrate();
+  assert.equal(second.code, 0, second.stdout);
+  assert.equal(second.value.outcome, 'merged');
+  assert.equal(second.value.mergeCommit, (await host.merged()).sha);
+  const counts = await host.counts();
+  assert.equal(counts.opens, 1); assert.equal(counts.merges, 1);
+});
+
 test('integration stops if a local stop or manual completion arrives at a stage boundary', async t => {
   for (const sql of ["UPDATE tickets SET state='logjam',reason='stopped'", "UPDATE tickets SET state='done',completion='manual'"]) {
     const y = await fixture(t);
-    y.tracker.beforeWrite = async body => { if (body?.startsWith('[sawmill:rebase]')) y.seed(sql); };
+    // Stage reports are log-only, so the change lands while the local tests run.
+    const script = join(y.root, 'seed.mjs');
+    await writeFile(script, `import { DatabaseSync } from 'node:sqlite';\nconst db = new DatabaseSync(${JSON.stringify(join(y.cwd, '.mill/run.sqlite'))});\ndb.exec(${JSON.stringify(sql)});\ndb.close();\n`);
+    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: ${process.execPath} ${script}`));
     const result = await y.cli('integrate', '9', '--json');
     assert.equal(result.code, 1, result.stdout);
     assert.equal(y.tracker.head('mill/9'), ''); assert.equal(y.tracker.requests.length, 0);
@@ -403,12 +689,6 @@ test('ci wait polls at the machine interval and merges only the tested head afte
     assert.equal((await y.status()).tickets[0].stage, 'ci-wait');
     return { headCommit: head, state: heads.length === 1 ? 'pending' : 'passed' };
   };
-  y.tracker.beforeWrite = async body => {
-    if (!body?.startsWith('[sawmill:ci-wait]')) return;
-    const row = (await y.status()).tickets[0];
-    assert.equal(row.stage, 'ci-wait');
-    assert.ok(row.comments.some((c: { body: string }) => c.body === body), 'CI wait persists before mirror');
-  };
   const result = await y.cli('integrate', '9', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'merged');
@@ -419,7 +699,8 @@ test('ci wait polls at the machine interval and merges only the tested head afte
   const row = (await y.status()).tickets[0];
   assert.equal(row.integration.pipeline.headCommit, head);
   assert.equal(row.integration.pipeline.state, 'passed');
-  assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-wait]')).length, 1);
+  assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-wait]')).length, 0);
+  assert.equal((await y.cli('run', 'log', '9')).stdout.match(/\[ci-wait\]/g)?.length, 1);
 });
 
 test('red CI returns repair evidence in text and JSON and persists it before mirroring', async t => {
@@ -430,14 +711,6 @@ test('red CI returns repair evidence in text and JSON and persists it before mir
     y.tracker.pipeline = async head => {
       assert.equal(++reads, 1, 'A terminal failure must not poll again');
       return { headCommit: head, state: 'failed', diagnostics: 'unit: assertion failed', logUrl: 'https://ci.example.invalid/runs/91' };
-    };
-    y.tracker.beforeWrite = async body => {
-      if (!body?.startsWith('[sawmill:ci-failed]')) return;
-      const row = (await y.status()).tickets[0];
-      assert.equal(row.stage, 'ci-failed');
-      assert.equal(row.integration.pipeline.state, 'failed');
-      assert.match(row.integration.pipeline.diagnostics, /assertion failed/);
-      assert.ok(row.comments.some((c: { body: string }) => c.body === body));
     };
     const result = await y.cli('integrate', '9', ...(json ? ['--json'] : []));
     assert.equal(result.code, 1, result.stdout);
@@ -452,7 +725,10 @@ test('red CI returns repair evidence in text and JSON and persists it before mir
     const row = (await y.status()).tickets[0];
     assert.equal(row.stage, 'ci-failed'); assert.equal(row.bounces, 0); assert.equal(row.completion, null);
     assert.equal(y.tracker.ticket.state, 'open');
-    assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-failed]')).length, 1);
+    assert.equal(row.integration.pipeline.state, 'failed');
+    assert.match(row.integration.pipeline.diagnostics, /assertion failed/);
+    assert.equal(y.tracker.ticket.comments.filter(c => c.body.startsWith('[sawmill:ci-failed]')).length, 0);
+    assert.match((await y.cli('run', 'log', '9')).stdout, /\[ci-failed\][^]*unit: assertion failed/);
   }
 });
 
@@ -618,23 +894,22 @@ test('tracker outages and non-check merge refusals remain infrastructure without
   }
 });
 
-test('CI mirror outages hold the persisted stage and failure evidence and prevent merge', async t => {
-  for (const stage of ['ci-wait', 'ci-failed']) {
-    const y = await fixture(t);
-    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
-    let reads = 0;
-    y.tracker.pipeline = async head => { reads++; return { headCommit: head, state: 'failed', diagnostics: 'Repair this failure', logUrl: 'https://ci.example.invalid/failed' }; };
-    y.tracker.beforeWrite = async body => { if (body?.startsWith(`[sawmill:${stage}]`)) throw new Error('Mirror unavailable'); };
-    const result = await y.cli('integrate', '9', '--json');
-    assert.equal(result.code, 1, result.stdout);
-    assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
-    const snapshot = await y.status(), row = snapshot.tickets[0];
-    assert.equal(row.stage, stage); assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tracker');
-    assert.equal(reads, stage === 'ci-wait' ? 0 : 1);
-    if (stage === 'ci-failed') assert.equal(row.integration.pipeline.diagnostics, 'Repair this failure');
-    assert.ok(snapshot.pendingWrites.some((w: { payload: { body?: string } }) => w.payload.body?.startsWith(`[sawmill:${stage}]`)));
-    assert.deepEqual(y.tracker.methods, []);
-  }
+test('CI stage reports stay local, so a tracker outage cannot hold them, and failure evidence still prevents merge', async t => {
+  const y = await fixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  let reads = 0;
+  y.tracker.pipeline = async head => { reads++; return { headCommit: head, state: 'failed', diagnostics: 'Repair this failure', logUrl: 'https://ci.example.invalid/failed' }; };
+  y.tracker.beforeWrite = async () => { throw new Error('Mirror unavailable'); };
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'ci-failed');
+  const snapshot = await y.status(), row = snapshot.tickets[0];
+  assert.equal(row.stage, 'ci-failed'); assert.equal(row.state, 'working'); assert.equal(reads, 1);
+  assert.equal(row.integration.pipeline.diagnostics, 'Repair this failure');
+  assert.deepEqual(snapshot.pendingWrites, []);
+  const log = (await y.cli('run', 'log', '9')).stdout;
+  assert.ok(log.indexOf('[ci-wait]') >= 0 && log.indexOf('[ci-wait]') < log.indexOf('[ci-failed]'), log);
+  assert.deepEqual(y.tracker.methods, []);
 });
 
 test('a stop while sleeping ends CI polling before another tracker read', async t => {
@@ -739,4 +1014,86 @@ test('native GitHub accepts skipped and neutral checks while retaining failed an
     assert.equal(result.value.pipeline.state, other === 'success' ? 'passed' : other === 'failure' ? 'failed' : 'pending', result.stdout);
     assert.equal(result.requests.some(r => r.endpoint.endsWith('/merge')), other === 'success', result.stdout);
   }
+});
+
+test('CI that stays pending past its deadline stops the integration, keeps the work and resumes once CI passes', async t => {
+  const y = await fixture(t, () => new Promise(resolve => setTimeout(resolve, 20)));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait') + '\nphase_timeouts:\n  ci: 1s\n');
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'pending' });
+  const stalled = await y.cli('integrate', '9', '--json');
+  assert.equal(stalled.code, 1, stalled.stdout);
+  assert.match(stalled.stdout, /CI[^]*timed out after 1s/i);
+  assert.match(stalled.stdout, /still (running|pending)/i);
+  assert.match(stalled.stdout, /mill integrate 9/);
+  assert.deepEqual(y.tracker.methods, [], 'a stalled pipeline never merges');
+  assert.equal((await y.status()).tickets[0].completion, null);
+  assert.ok(y.git('branch', '--list', 'mill/9'));
+  assert.ok(y.git('ls-remote', 'origin', 'refs/heads/mill/9'), 'the pushed branch is retained');
+  // The integration lock is not left held: a later run, once CI is green, completes.
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'passed' });
+  const resumed = await y.cli('integrate', '9', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.equal(JSON.parse(resumed.stdout).outcome, 'merged');
+});
+
+test('a pipeline that never appears is reported differently from one that is still running', async t => {
+  const y = await fixture(t, () => new Promise(resolve => setTimeout(resolve, 20)));
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait') + '\nphase_timeouts:\n  ci: 1s\n');
+  y.tracker.pipeline = async head => ({ headCommit: head, state: 'none' });
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /timed out after 1s/i);
+  assert.match(result.stdout, /no pipeline (appeared|started|was found)/i);
+  assert.doesNotMatch(result.stdout, /still (running|pending)/i);
+  assert.deepEqual(y.tracker.methods, []);
+});
+
+// Declared policy: ci_checks names the hosted checks that must pass and the ones whose failure is advisory.
+async function policyFixture(t: TestContext) {
+  const y = await nativeCiFixture(t);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: wait', 'ci: wait\nci_checks:\n  required: [phpunit]\n  advisory: [docs]'));
+  const run = (name: string, status = 'completed', conclusion: string | null = 'success') => ({ head_sha: 'HEAD_SHA', name, status, conclusion });
+  const scenario = (...runs: object[]) => ({ checks: { total_count: runs.length, check_runs: runs }, status: { sha: 'HEAD_SHA', state: 'pending', total_count: 0, statuses: [] } });
+  return { ...y, scenario_path: y.scenario, run, scenario };
+}
+
+test('a green non-required check cannot stand in for a required check that has not appeared', async t => {
+  const y = await policyFixture(t);
+  const waiting = async () => { throw new Error('required check still absent'); };
+  const blocked = await y.invoke(y.scenario(y.run('docs')), waiting);
+  assert.ok(!blocked.requests.some(r => r.endpoint.endsWith('/merge')), blocked.stdout);
+  assert.equal(blocked.value.pipeline?.state, 'pending', blocked.stdout);
+  const delays: number[] = [];
+  const arrived = await y.invoke(y.scenario(y.run('docs')), async ms => { delays.push(ms); await writeFile(y.scenario_path, JSON.stringify(y.scenario(y.run('docs'), y.run('phpunit')))); });
+  assert.deepEqual(delays, [30000]);
+  assert.equal(arrived.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, arrived.stdout);
+});
+
+test('a pending or failed required check blocks delivery even when other checks are green', async t => {
+  const y = await policyFixture(t);
+  const pending = await y.invoke(y.scenario(y.run('docs'), y.run('phpunit', 'in_progress', null)), async () => { throw new Error('required check still pending'); });
+  assert.equal(pending.value.pipeline?.state, 'pending', pending.stdout);
+  assert.ok(!pending.requests.some(r => r.endpoint.endsWith('/merge')));
+  const failed = await y.invoke(y.scenario(y.run('docs'), y.run('phpunit', 'completed', 'failure')));
+  assert.equal(failed.code, 1); assert.equal(failed.value.outcome, 'ci-failed', failed.stdout);
+  assert.ok(!failed.requests.some(r => r.endpoint.endsWith('/merge')));
+});
+
+test('a failing advisory check does not block delivery once required checks pass', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('docs', 'completed', 'failure'), y.run('phpunit')));
+  assert.equal(result.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, result.stdout);
+});
+
+test('duplicate required check names do not let one success hide another failure', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('phpunit'), y.run('phpunit', 'completed', 'failure')));
+  assert.equal(result.value.outcome, 'ci-failed', result.stdout);
+  assert.ok(!result.requests.some(r => r.endpoint.endsWith('/merge')));
+});
+
+test('a required check that was skipped by a conditional workflow still counts as satisfied', async t => {
+  const y = await policyFixture(t);
+  const result = await y.invoke(y.scenario(y.run('phpunit', 'completed', 'skipped')));
+  assert.equal(result.requests.filter(r => r.endpoint.endsWith('/merge')).length, 1, result.stdout);
 });

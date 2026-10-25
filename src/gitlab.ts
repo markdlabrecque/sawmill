@@ -1,13 +1,15 @@
 import { execFile } from 'node:child_process';
+import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
 import { MergeRefusedError } from './tracker.js';
-import type { AssignResult, ChangeRequest, Pipeline, Ticket, Tracker } from './tracker.js';
+import type { AssignResult, ChangeRequest, CiJob, HostPolicy, IssueComment, JobLog, LogLimits, Pipeline, ReconciledChangeRequest, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
 }
 
 type RecordValue = Record<string, unknown>;
+interface VisitedPipeline { id: number; project: string; sha: string; root: boolean }
 function record(value: unknown): RecordValue {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('GitLab returned an invalid object.');
   return value as RecordValue;
@@ -130,6 +132,20 @@ export class GitLabTracker implements Tracker {
   }
 
   async addComment(number: number, body: string): Promise<void> { await this.request('POST', `/issues/${number}/notes`, { body }); }
+  async listComments(number: number): Promise<IssueComment[]> {
+    return (await this.list(`/issues/${number}/notes?sort=asc&order_by=created_at`)).map(value => {
+      const note = record(value);
+      if (!positive(note.id) || typeof note.body !== 'string') throw new Error('GitLab returned an invalid issue note.');
+      return { id: note.id, body: note.body };
+    });
+  }
+  async deleteComment(id: number | string, number: number): Promise<void> {
+    try { await this.request('DELETE', `/issues/${number}/notes/${encodeURIComponent(String(id))}`); }
+    catch (error) {
+      if (error instanceof GitLabApiError && error.status === 404) return;
+      throw error;
+    }
+  }
   async addLabel(number: number, label: string): Promise<void> {
     this.checkLabel(label);
     // GitLab's add_labels creates absent labels. Check definitions, never issue state.
@@ -145,6 +161,11 @@ export class GitLabTracker implements Tracker {
     if (!label.trim() || label.includes(',')) throw new Error('GitLab label names must be nonblank and cannot contain commas.');
   }
   async closeTicket(number: number): Promise<void> { await this.request('PUT', `/issues/${number}`, { state_event: 'close' }); }
+  async ticketState(number: number): Promise<Ticket['state']> {
+    const issue = record((await this.request('GET', `/issues/${number}`)).value);
+    if (this.issueNumber(issue) !== number || !['opened', 'closed'].includes(String(issue.state))) throw new Error(`GitLab returned an invalid issue #${number}.`);
+    return issue.state === 'closed' ? 'closed' : 'open';
+  }
 
   private userId?: number;
   async assignSelf(number: number): Promise<AssignResult> {
@@ -192,6 +213,30 @@ export class GitLabTracker implements Tracker {
     return result;
   }
 
+  async reconcileChangeRequest(id: number | string): Promise<ReconciledChangeRequest> {
+    const mr = record((await this.request('GET', `/merge_requests/${encodeURIComponent(String(id))}`)).value);
+    const result = this.changeRequest(mr);
+    // A locked MR is mid-merge; its outcome is not known yet.
+    if (mr.state === 'opened') return { ...result, state: 'open' };
+    if (mr.state === 'closed') return { ...result, state: 'closed' };
+    if (mr.state !== 'merged') throw new Error(`GitLab reported MR state ${String(mr.state)}, which does not settle the merge yet.`);
+    const commit = mr.merge_commit_sha ?? mr.squash_commit_sha;
+    return { ...result, state: 'merged', ...(sha(commit) ? { mergeCommit: commit } : {}) };
+  }
+
+  /** Merged-results pipelines and merge trains test a synthetic SHA, never the exact source head. GitLab's own pipeline rules stay the required set. */
+  async hostPolicy(_branch: string): Promise<HostPolicy> {
+    let project: RecordValue;
+    try { project = record((await this.request('GET', '')).value); }
+    catch (error) { return { required: [], unsupported: [], gaps: [`merge settings of ${this.config.repo}: ${error instanceof GitLabApiError && [401, 403, 404].includes(error.status ?? 0) ? `not readable with this token (HTTP ${error.status})` : error instanceof Error ? error.message : String(error)}`] }; }
+    const unsupported: string[] = [], gaps: string[] = [];
+    for (const [key, mode] of [['merge_pipelines_enabled', 'merged results pipelines'], ['merge_trains_enabled', 'merge trains']] as const) {
+      if (project[key] === true) unsupported.push(`${mode} are enabled for ${this.config.repo}`);
+      else if (project[key] !== false) gaps.push(`${mode}: not visible to this token (needs Maintainer access, or the tier lacks them)`);
+    }
+    return { required: [], unsupported, gaps };
+  }
+
   async getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline> {
     if (!sha(commit)) throw new Error('GitLab CI requires an exact commit SHA.');
     if (!changeRequest || changeRequest.headCommit !== commit) throw new Error('GitLab CI requires the exact MR and source head.');
@@ -205,6 +250,7 @@ export class GitLabTracker implements Tracker {
     if (!positive(root.id) || root.sha !== commit || root.project_id !== mr.project_id) throw new Error('GitLab returned an invalid current pipeline or mismatched head.');
     const observations: { state: 'passed' | 'pending' | 'failed'; gating: boolean; detail: string; url?: string }[] = [];
     const seen = new Set<string>();
+    const visited: VisitedPipeline[] = [];
     const observe = (row: RecordValue, label: string, gating: boolean, trigger = false) => {
       const pending = ['created', 'waiting_for_resource', 'preparing', 'waiting_for_callback', 'pending', 'running', 'canceling', 'manual', 'scheduled'];
       if (typeof row.status !== 'string' || ![...pending, 'success', 'failed', 'canceled', 'skipped'].includes(row.status)) throw new Error('GitLab returned an invalid pipeline status.');
@@ -228,6 +274,7 @@ export class GitLabTracker implements Tracker {
       seen.add(key);
       const detail = record((await this.request('GET', `/pipelines/${pipeline.id}`, undefined, project)).value);
       if (detail.id !== pipeline.id || !positive(detail.project_id) || (positive(pipeline.project_id) && detail.project_id !== pipeline.project_id) || detail.sha !== pipeline.sha) throw new Error('GitLab pipeline identity or head changed.');
+      visited.push({ id: pipeline.id, project, sha: pipeline.sha, root: isRoot });
       observe(detail, `Pipeline ${pipeline.id}`, isRoot);
       let jobs: unknown[];
       try { jobs = await this.list(`/pipelines/${pipeline.id}/trigger_jobs`, project); }
@@ -249,7 +296,46 @@ export class GitLabTracker implements Tracker {
     const requirements = observations.filter(row => row.gating);
     const evidence = requirements.find(row => row.state === 'failed') ?? requirements.find(row => row.state === 'pending') ?? requirements[0]!;
     return { headCommit: commit, state: evidence.state, ...(evidence.url ? { logUrl: evidence.url } : {}),
-      diagnostics: observations.map(row => `${row.detail}${row.gating ? '' : ' (diagnostic only)'}${row.url ? ` ${row.url}` : ''}`).join('\n') };
+      diagnostics: observations.map(row => `${row.detail}${row.gating ? '' : ' (diagnostic only)'}${row.url ? ` ${row.url}` : ''}`).join('\n'),
+      ...(evidence.state === 'failed' ? { jobs: await this.failedJobs(visited) } : {}) };
+  }
+
+  /** GitLab lists only each job's current attempt unless asked for retried ones, so a retried failure is not listed. */
+  private async failedJobs(pipelines: VisitedPipeline[]): Promise<CiJob[]> {
+    const jobs: CiJob[] = [];
+    for (const pipeline of pipelines) {
+      const source = `${pipeline.root ? '' : 'downstream, diagnostic only: '}pipeline ${pipeline.id} in project ${pipeline.project}`;
+      let rows: unknown[];
+      try { rows = await this.list(`/pipelines/${pipeline.id}/jobs?scope[]=failed`, pipeline.project); }
+      catch (error) { jobs.push({ name: `pipeline ${pipeline.id} jobs`, source, unavailable: `could not list failed jobs: ${error instanceof Error ? error.message : String(error)}` }); continue; }
+      for (const value of rows) {
+        const row = value && typeof value === 'object' ? value as RecordValue : {};
+        if (row.status !== 'failed' || row.allow_failure === true) continue;
+        const job: CiJob = { name: typeof row.name === 'string' ? row.name : `job ${row.id}`, ...(typeof row.web_url === 'string' ? { url: row.web_url } : {}), source };
+        jobs.push(job);
+        const owner = row.pipeline && typeof row.pipeline === 'object' ? row.pipeline as RecordValue : {};
+        if (!positive(row.id) || owner.id !== pipeline.id) job.unavailable = 'GitLab did not identify the job as part of this pipeline';
+        else if (owner.sha !== pipeline.sha) job.unavailable = `the job ran on commit ${owner.sha}, not the pipeline's commit ${pipeline.sha}`;
+        else Object.assign(job, { logId: String(row.id), project: pipeline.project });
+      }
+    }
+    return jobs;
+  }
+
+  async getJobLog(job: CiJob, limits: LogLimits): Promise<JobLog> {
+    if (!job.logId || !/^\d+$/.test(job.logId) || !job.project) throw new Error('GitLab job logs need a verified job and project.');
+    const args = ['api', `projects/${encodeURIComponent(job.project)}/jobs/${job.logId}/trace`, '--method', 'GET', '--hostname', this.config.host ?? 'gitlab.com', '--include'];
+    const headerLimit = 65536;
+    const { head, tail, bytes } = await boundedOutput('glab', args, this.cwd, limits, headerLimit);
+    const end = head.toString('latin1').match(/\r?\n\r?\n/);
+    const status = head.toString('latin1').match(/^HTTP\/\S+ (\d{3})/)?.[1];
+    if (!end || end.index === undefined || !status) throw new Error('GitLab returned invalid response headers.');
+    const start = end.index + end[0].length;
+    if (Number(status) >= 400) throw new Error(`GitLab returned HTTP ${status}.`);
+    // The header prefix and the kept tail are contiguous only when nothing between them was dropped.
+    const whole = bytes === head.length + tail.length;
+    const body = (whole ? Buffer.concat([head.subarray(start), tail]) : tail).subarray(-limits.maxBytes);
+    return { text: body.toString('utf8'), bytes: bytes - start, truncated: bytes - start > body.length };
   }
 
   async mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }> {

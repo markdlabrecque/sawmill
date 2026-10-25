@@ -1,4 +1,8 @@
 import { writeSync } from 'node:fs';
+import { conflictContinueCommand } from './runtime.js';
+import { authorizeVerification, literalCommand } from './verification.js';
+
+export { literalCommand };
 
 /** Native Pi extension API subset. No SDK or vendor process is embedded in Sawmill. */
 interface Context { model?: { provider: string; id: string } }
@@ -12,7 +16,7 @@ interface PiAPI {
 export default function policy(pi: PiAPI) {
   const request = JSON.parse(process.env.SAWMILL_PI_POLICY ?? '{}');
   if (!request.nonce || !request.model || !request.effort || !['reviewer', 'test-writers', 'implementer'].includes(request.role)
-    || typeof request.browser !== 'boolean' || !literalCommand(request.testCommand)) throw new Error('Missing or unsupported Sawmill Pi permission policy/test command.');
+    || typeof request.browser !== 'boolean' || (request.testCommand !== undefined && !literalCommand(request.testCommand))) throw new Error('Missing or unsupported Sawmill Pi permission policy/test command.');
   const writer = request.role !== 'reviewer';
   const tools = ['read', 'grep', 'find', 'ls', 'bash', ...(writer ? ['edit', 'write'] : [])];
   const check = (_event: unknown, ctx: Context) => {
@@ -40,7 +44,9 @@ export default function policy(pi: PiAPI) {
     if (allowed) args[0] = request.browserExecutable;
     // The exact configured test command is trusted project code, including its
     // transitive effects. This is deliberately not a read-only or OS sandbox.
-    if (!browser && command === request.testCommand) allowed = true;
+    if (!browser && request.testCommand !== undefined && command === request.testCommand) allowed = true;
+    // Declared checks and in-scope focused tests are the same trusted project configuration.
+    if (!browser && authorizeVerification(request.verification, command)) allowed = true;
     if (args[0] === 'git') {
       const subcommand = args[1];
       const rest = args.slice(2);
@@ -51,11 +57,11 @@ export default function policy(pi: PiAPI) {
         show: ['--stat', '--name-only', '--oneline', '--no-ext-diff', '--no-textconv', '--'],
       };
       if (subcommand && flags[subcommand]) allowed = rest.every(token => token.startsWith('-') ? flags[subcommand]!.includes(token) : /^[A-Za-z0-9_./@:+^=-]+$/.test(token));
-      if (writer && subcommand === 'add') allowed = rest.length > 0 && rest.every(token => token === '--' || /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(token));
+      if (writer && ['add', 'rm', 'mv'].includes(subcommand ?? '')) allowed = rest.length > 0 && rest.every(token => token === '--' || (token === '-r' && subcommand === 'rm') || /^[A-Za-z0-9_./][A-Za-z0-9_./ -]*$/.test(token));
       if (writer && subcommand === 'commit') allowed = rest.length === 2 && rest[0] === '-m' && Boolean(rest[1]?.trim());
       if (request.role === 'implementer' && /^[a-f0-9]{40,64}$/.test(request.conflictBase ?? '')) {
         if (JSON.stringify(args) === JSON.stringify(['git', 'rebase', request.conflictBase])
-          || JSON.stringify(args) === JSON.stringify(['git', '-c', 'core.editor=true', 'rebase', '--continue'])
+          || command === conflictContinueCommand
           || JSON.stringify(args) === JSON.stringify(['git', 'rebase', '--abort'])) allowed = true;
       }
       if (allowed && ['diff', 'show'].includes(subcommand!)) args.splice(2, 0, '--no-ext-diff', '--no-textconv');
@@ -64,23 +70,4 @@ export default function policy(pi: PiAPI) {
     // Re-encode literal argv so accepted quoting cannot introduce shell syntax.
     event.input.command = args.map(token => `'${token.replaceAll("'", "'\\''")}'`).join(' ');
   });
-}
-
-/** Small literal-argv grammar, intentionally excluding shell programs/expansion. */
-export function literalCommand(command: unknown): string[] | undefined {
-  if (typeof command !== 'string' || !command.trim() || /[\n\r\0$`\\]/.test(command)) return;
-  const tokens: string[] = [];
-  let value = '';
-  let quote = '';
-  let active = false;
-  for (const ch of command.trim()) {
-    if (quote) { if (ch === quote) quote = ''; else value += ch; active = true; continue; }
-    if (ch === '"' || ch === "'") { quote = ch; active = true; continue; }
-    if (/\s/.test(ch)) { if (active) { tokens.push(value); value = ''; active = false; } continue; }
-    if (!/[A-Za-z0-9_./:@%+=,-]/.test(ch)) return;
-    value += ch; active = true;
-  }
-  if (quote) return;
-  if (active) tokens.push(value);
-  return tokens.length ? tokens : undefined;
 }

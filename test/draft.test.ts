@@ -118,8 +118,8 @@ test('draft refuses open outside blockers, allows closed ones, and preserves an 
   const accepted = await yard.cli('run', 'draft', '2', '--json');
   assert.equal(accepted.code, 0, accepted.stdout);
   const result = JSON.parse(accepted.stdout);
-  assert.deepEqual(result.tickets.map((row: Ticket) => row.number), [2]);
-  assert.equal(result.tickets[0].state, 'queued');
+  assert.deepEqual(result.tickets.map((row: Ticket) => row.number), [1, 2]);
+  assert.equal(result.tickets[1].state, 'queued');
   assert.deepEqual(result.edges, [{ blocked: 2, blocker: 99, outsideClosed: true }]);
   tracker.offline = true;
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), result);
@@ -172,22 +172,21 @@ test('draft refuses user test cases without a harness and accepts them with Dock
 });
 
 for (const state of ['working', 'logjam']) {
-  test(`draft protects a ${state} run until replace is explicit`, async (t) => {
+  test(`draft appends to a ${state} run and refuses explicit replacement`, async (t) => {
     const tracker = new FakeTracker([ticket(1), ticket(2)]);
     const yard = await configured(t, tracker);
     assert.equal((await yard.cli('run', 'draft', '1')).code, 0);
     const db = new DatabaseSync(join(yard.cwd, '.mill/run.sqlite'));
     db.prepare('UPDATE tickets SET state = ? WHERE number = 1').run(state);
     db.close();
-    tracker.offline = true;
-    const refused = await yard.cli('run', 'draft', '2', '--json');
-    assert.equal(refused.code, 1, refused.stdout);
-    assert.match(refused.stdout, /working.*logjam.*--replace/);
-    assert.equal(JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0].state, state);
-    tracker.offline = false;
+    const appended = await yard.cli('run', 'draft', '2', '--json');
+    assert.equal(appended.code, 0, appended.stdout);
+    const snapshot = JSON.parse(appended.stdout);
+    assert.deepEqual(snapshot.tickets.map((row: Ticket) => row.number), [1, 2]);
+    assert.equal(snapshot.tickets[0].state, state);
     const replaced = await yard.cli('run', 'draft', '--replace', '2', '--json');
-    assert.equal(replaced.code, 0, replaced.stdout);
-    assert.deepEqual(JSON.parse(replaced.stdout).tickets.map((row: Ticket) => row.number), [2]);
+    assert.notEqual(replaced.code, 0, replaced.stdout);
+    assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), snapshot);
   });
 }
 
@@ -393,12 +392,11 @@ test('a missing selected ticket does not replace an existing draft', async (t) =
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), JSON.parse(first.stdout));
 });
 
-test('draft refuses Codex browser cases before any team work', async t => {
+test('draft accepts Codex browser cases when a test harness is configured', async t => {
   const tracker = new FakeTracker([ticket(1, { body: '## User test cases\n- Open the page and save a record.' })]);
   const y = await configured(t, tracker);
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('runtime: claude-code', 'runtime: codex').replace('test_harness: none', 'test_harness: docker\ntest_url: http://localhost:8080'));
   const result = await y.cli('run', 'draft', '1', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.match(result.stdout, /#1.*Codex.*browser.*unsupported/i);
-  assert.equal((await y.cli('run', 'status')).code, 1);
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal((await y.cli('run', 'status')).code, 0);
 });

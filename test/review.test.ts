@@ -5,9 +5,10 @@ import test, { type TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
 import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+import { until } from './dispatch-fixture.js';
 
-async function reviewYard(t: TestContext) {
-  const ticket: Ticket = { number: 11, title: 'Review the café', body: 'Preserve the full patch.', state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
+async function reviewYard(t: TestContext, browserCase = false) {
+  const ticket: Ticket = { number: 11, title: 'Review the café', body: browserCase ? '## User test cases\n- Open the home page' : 'Preserve the full patch.', state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
   let reads = true;
   const tracker = {
     async getTicket() { assert.ok(reads, 'review must use the cached ticket'); return structuredClone(ticket); },
@@ -21,7 +22,7 @@ async function reviewYard(t: TestContext) {
     .replace('# name: islandhealth', 'name: review')
     .replace('# repo: owner/name', 'repo: team/tool')
     .replace('integration: main', 'integration: integration')
-    .replace('# test_harness: none', 'test_harness: none')
+    .replace('# test_harness: none', browserCase ? 'test_harness: docker\ntest_url: http://example.invalid' : 'test_harness: none')
     .replaceAll('claude-opus-5-5', 'claude-opus-4-6'));
   assert.equal((await yard.cli('run', 'draft', '11')).code, 0);
   assert.equal((await yard.cli('worktree', 'create', '11')).code, 0);
@@ -45,7 +46,8 @@ test('review alone reports pass through local state and the tracker without runn
   const status = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.equal(status.stage, 'review-pass');
   assert.equal(status.bounces, 0);
-  assert.ok(yard.ticket.comments.some(comment => comment.body.startsWith('[sawmill:review-pass]')));
+  assert.ok(!yard.ticket.comments.some(comment => comment.body.startsWith('[sawmill:review-pass]')));
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /\[review-pass\]/);
 });
 
 // Source-derived projections, not live captures. SDK 0.3.308, retrieved 2026-10-21:
@@ -91,11 +93,48 @@ test('direct review passes prompt, cached ticket, full diff, model and effort an
   assert.equal(await readFile(output.stderrLog, 'utf8'), 'diagnostic only\n');
   const status = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.deepEqual(status.sessionIds.reviewer, ['fixture-session']);
-  assert.match(yard.ticket.comments.at(-1)!.body, /fixture-session/);
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /\[review-pass\][^]*reviewer: fixture-session/);
+});
+
+test('an agent session does not carry the worker variables', async t => {
+  const names = ['MILL_WORKER_TOKEN', 'MILL_TICKET', 'MILL_PROJECT', 'MILL_MILLYARD', 'MILL_WORKTREE'];
+  const saved = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; }));
+  const yard = await reviewYard(t);
+  const stream = [init, final(fence({ outcome: 'pass' }))].map(value => JSON.stringify(value)).join('\n');
+  const runtime = await processRuntime(yard, `
+    const fs = require('node:fs');
+    process.stdin.resume();
+    process.stdin.on('end', () => {
+      fs.writeFileSync('env.json', JSON.stringify(Object.keys(process.env).filter(name => name.startsWith('MILL_'))));
+      process.stdout.write(${JSON.stringify(stream)});
+    });`);
+  for (const name of names) process.env[name] = 'leaked-from-worker';
+  const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
+  assert.equal(result.code, 0, result.stdout);
+  const seen = JSON.parse(await readFile(join(yard.worktree, 'env.json'), 'utf8')) as string[];
+  assert.deepEqual(seen.filter(name => names.includes(name)), []);
 });
 
 async function eventsRuntime(yard: Awaited<ReturnType<typeof reviewYard>>, events: unknown[], extra = '') {
   return processRuntime(yard, `process.stdin.resume(); process.stdin.on('end', () => { process.stdout.write(${JSON.stringify(events.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n'))}); ${extra} });`);
+}
+
+for (const mode of ['reported', 'partial', 'absent', 'failed', 'messages-only'] as const) {
+  test(`Claude adapter retains ${mode} usage without counting messages and totals twice`, async t => {
+    const yard = await reviewYard(t);
+    const usage = { input_tokens: 13, cache_read_input_tokens: 5, cache_creation_input_tokens: 2, ...(mode === 'partial' ? {} : { output_tokens: 7 }) };
+    const message = { type: 'assistant', message: { id: 'usage-message', content: [{ type: 'text', text: 'Working' }], ...(mode === 'absent' ? {} : { usage }) } };
+    const terminal = { ...final(fence({ outcome: 'pass' })), total_cost_usd: 9.99,
+      ...(['absent', 'messages-only'].includes(mode) ? {} : { usage: { ...usage, input_tokens: 23 } }) };
+    const runtime = await eventsRuntime(yard, [init, message, message, terminal], mode === 'failed' ? 'process.exitCode = 1;' : '');
+    const output = JSON.parse((await yard.invoke(['team', 'review', '11', '--json'], { runtime })).stdout);
+    assert.equal(output.outcome.outcome, mode === 'failed' ? 'infrastructure' : 'pass');
+    assert.deepEqual(output.usage, { inputTokens: mode === 'absent' ? null : mode === 'messages-only' ? 20 : 30,
+      outputTokens: mode === 'absent' || mode === 'partial' ? null : 7 });
+    assert.equal(output.cost, undefined);
+    assert.ok(output.durationMs >= 0);
+  });
 }
 
 test('last outcome is authoritative even when its opening is malformed', async t => {
@@ -129,7 +168,7 @@ for (const [name, text, expected] of [
     const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
     assert.deepEqual(row.sessionIds.reviewer, ['fixture-session']);
     assert.equal(row.bounces, 0);
-    if (expected === 'question') assert.match(yard.ticket.comments.at(-1)!.body, /Which behavior is correct/);
+    if (expected === 'question') assert.match((await yard.cli('run', 'log', '11')).stdout, /Which behavior is correct/);
   });
 }
 for (const [name, events] of [
@@ -170,8 +209,12 @@ test('role timeout kills a stubborn process group and preserves partial logs and
     setTimeout(() => process.exit(), 2000);
   `);
   const running = yard.invoke(['team', 'review', '11', '--json'], { runtime });
-  await new Promise(resolve => setTimeout(resolve, 200));
-  const during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  // Wait for the session to be recorded rather than for a fixed time; a busy machine starts the fixture late.
+  let during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  for (let attempt = 0; attempt < 100 && !during.sessionIds.reviewer?.length; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    during = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  }
   assert.deepEqual(during.sessionIds.reviewer, ['fixture-session']);
   const result = await running;
   assert.equal(result.code, 1, result.stdout);
@@ -320,18 +363,24 @@ test('CLI termination cleans up the vendor and records interruption before exiti
   const { symlink, chmod } = await import('node:fs/promises');
   await writeFile(join(yard.root, 'gh'), `#!${process.execPath}\nprocess.stdin.resume(); process.stdin.on('end', () => process.stdout.write('{}'));\n`);
   await chmod(join(yard.root, 'gh'), 0o755);
-  await processRuntime(yard, `process.stdin.resume(); require('node:fs').writeFileSync('vendor.pid', String(process.pid)); process.stdout.write(${JSON.stringify(JSON.stringify(init) + '\n')}); setTimeout(() => process.exit(), 1500);`);
+  await processRuntime(yard, `process.stdin.resume(); require('node:fs').writeFileSync('vendor.pid', String(process.pid)); process.stdout.write(${JSON.stringify(JSON.stringify(init) + '\n')}); setInterval(() => {}, 1000);`);
   await symlink(join(yard.root, 'fake-claude'), join(yard.root, 'claude'));
+  let pid = 0;
   const child = spawn(process.execPath, [new URL('../src/bin.js', import.meta.url).pathname, 'team', 'review', '11', '--json'], {
     cwd: yard.cwd, env: { ...yard.env, PATH: `${yard.root}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(async () => {
+    child.kill('SIGKILL');
+    const vendorPid = pid || Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0'));
+    if (vendorPid) { try { process.kill(vendorPid, 'SIGKILL'); } catch {} }
   });
   let stdout = ''; child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.resume();
   const exited = new Promise<number | null>(resolve => child.on('close', code => resolve(code)));
-  let pid = 0;
-  for (let i = 0; i < 100; i++) { pid = Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0')); if (pid) break; await new Promise(resolve => setTimeout(resolve, 10)); }
+  pid = await until(async () => Number(await readFile(join(yard.worktree, 'vendor.pid'), 'utf8').catch(() => '0')), value => value > 0);
   assert.ok(pid, 'fake vendor started');
-  t.after(() => { child.kill('SIGKILL'); try { process.kill(pid, 'SIGKILL'); } catch {} });
+  await until(async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0],
+    row => row.sessionIds.reviewer?.includes('fixture-session') === true);
   child.kill('SIGTERM');
   assert.equal(await exited, 1, stdout);
   assert.match(JSON.parse(stdout).outcome.error, /interrupted/i);
@@ -343,8 +392,9 @@ test('CLI termination cleans up the vendor and records interruption before exiti
 
 test('tracker mirror failure retains the stage result, session and raw stream locally', async t => {
   const yard = await reviewYard(t);
-  yard.tracker.addComment = async () => { throw new Error('tracker offline'); };
-  const runtime = await eventsRuntime(yard, [init, final(fence({ outcome: 'pass', summary: 'Result survives failed reporting' }))]);
+  // The stage report is log-only; the logjam label is the write that fails.
+  yard.tracker.addLabel = async () => { throw new Error('tracker offline'); };
+  const runtime = await eventsRuntime(yard, [init, final(fence({ outcome: 'infrastructure', error: 'Result survives failed reporting' }))]);
   const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
   assert.equal(result.code, 1, result.stdout);
   const output = JSON.parse(result.stdout);
@@ -352,7 +402,10 @@ test('tracker mirror failure retains the stage result, session and raw stream lo
   const snapshot = JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
   assert.equal(snapshot.tickets[0].reason, 'tracker');
   assert.deepEqual(snapshot.tickets[0].sessionIds.reviewer, ['fixture-session']);
-  assert.ok(snapshot.pendingWrites.some((write: { payload: { body?: string } }) => write.payload.body?.includes('Result survives failed reporting')));
+  assert.ok(snapshot.pendingWrites.some((write: { kind: string; payload: { label?: string } }) => write.kind === 'add-label' && write.payload.label === 'logjam'));
+  const log = (await yard.cli('run', 'log', '11')).stdout;
+  assert.match(log, /\[infrastructure\][^]*Result survives failed reporting/);
+  assert.match(log, /mirror failed: tracker offline/);
   assert.match(await readFile(output.log, 'utf8'), /Result survives/);
 });
 for (const [name, events, code] of [
@@ -390,12 +443,7 @@ test('an unsupported test command permission rule is refused before running a pr
 });
 
 test('browser review refuses a pass that omits the requested case result', async t => {
-  const yard = await reviewYard(t);
-  // Redraft with a supported harness so this exercises the review boundary.
-  await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker\ntest_url: http://example.invalid'));
-  yard.tracker.getTicket = async () => ({ ...yard.ticket, body: '## User test cases\n- Open the home page' });
-  assert.equal((await yard.cli('run', 'draft', '11', '--replace')).code, 0);
-  assert.equal((await yard.cli('worktree', 'create', '11')).code, 0);
+  const yard = await reviewYard(t, true);
   const runtime = { async run() { return { outcome: { outcome: 'pass' as const } }; } };
   const result = await yard.invoke(['team', 'review', '11', '--json'], { runtime });
   assert.equal(result.code, 1, result.stdout);
@@ -446,7 +494,7 @@ test('later reviews append a new round and retain earlier sessions and streams',
   assert.deepEqual(await readFile(first.log), firstBytes);
   const row = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
   assert.deepEqual(row.sessionIds.reviewer, ['fixture-session', 'second-session']);
-  assert.match(yard.ticket.comments.at(-1)!.body, /Round: 2/);
+  assert.match((await yard.cli('run', 'log', '11')).stdout, /Second round[^\n]*\n  Round: 2/);
   const tail = await yard.invoke(['team', 'tail', '11', '--no-follow']);
   assert.match(tail.stdout, /Second round/);
   assert.doesNotMatch(tail.stdout, /First round/);
