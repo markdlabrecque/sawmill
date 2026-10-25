@@ -4,6 +4,7 @@ import argparse
 import base64
 import re
 import shutil
+import struct
 import subprocess
 import zipfile
 
@@ -78,6 +79,12 @@ html = html.replace("/* FONT_FACES */", fonts)
 favicon = base64.b64encode(mark.encode()).decode()
 html = html.replace('<meta name="theme-color"', '<link rel="icon" href="data:image/svg+xml;base64,' + favicon + '">\n  <meta name="theme-color"')
 html = html.replace("MASCOT_SOURCE", "data:image/png;base64," + base64.b64encode((assets / "timber-mascot.png").read_bytes()).decode())
+for size in ("desktop", "mobile"):
+    png = (assets / f"board-{size}.png").read_bytes()
+    width, height = struct.unpack(">II", png[16:24])
+    image = base64.b64encode(png).decode()
+    html = html.replace(f"BOARD_{size.upper()}_SOURCE", "data:image/png;base64," + image)
+    html = html.replace(f"BOARD_{size.upper()}_WIDTH", str(width)).replace(f"BOARD_{size.upper()}_HEIGHT", str(height))
 html = html.replace("<!-- SCROLLCRAFT_ENGINE -->", "<script>" + (assets / "scrollcraft.js").read_text() + "</script>")
 (root / "index.html").write_text(html)
 print("Built index.html with embedded fonts, illustrations, and scripts.")

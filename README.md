@@ -1,10 +1,10 @@
 # Sawmill website
 
-The Sawmill marketing page and brand assets. GitHub Pages publishes the root of this `gh-pages` branch. The software remains on `main` and `develop`.
+The [Sawmill marketing page](https://markdlabrecque.github.io/sawmill/) and brand assets. This directory keeps the website source and built page alongside the software so changes can be reviewed together. GitHub Pages publishes the root of the separate `gh-pages` branch.
 
 ## Update the page
 
-Edit `src/index.html`, then rebuild the standalone page:
+From this directory, edit `src/index.html`, then rebuild the standalone page:
 
 ```sh
 python3 scripts/build.py
@@ -16,11 +16,21 @@ Preview locally:
 python3 -m http.server 4587 --bind 127.0.0.1
 ```
 
-Commit the source and rebuilt `index.html`, then push `gh-pages` to publish. The build uses Python's standard library and needs no network access. The generated page embeds its fonts, images, and JavaScript.
+Commit the source and rebuilt `index.html` in the software branch. After review, copy this directory's contents to the root of the `gh-pages` worktree and push that branch to publish. Merging into `develop` does not publish the site automatically. The build uses Python's standard library and needs no network access. The generated page embeds its fonts, images, and JavaScript.
 
 ## Board preview
 
-The section with `id="board"` contains a labelled screenshot placeholder. Replace the `board-placeholder` figure's contents when the redesigned Board is ready. The existing section describes the Board's current capabilities.
+The section with `id="board"` uses desktop and phone screenshots of the real Board. Pinecone Pantry, Moonbeam Maps, their paths, and every ticket are fictional. The example shows working and queued tickets plus a logjam with its answer controls open. The build embeds both images so the page stays self-contained.
+
+To refresh the screenshots, run from the repository root with Chrome or Chromium installed:
+
+```sh
+npm run build
+node website/scripts/capture-board.mjs
+python3 website/scripts/build.py
+```
+
+Set `SAWMILL_TEST_CHROMIUM` if the browser executable is not in a standard Linux location. The capture script uses a fixed time, checks the sample totals and layout, and writes `assets/board-desktop.png` and `assets/board-mobile.png`. It uses a local fixture, never reads a run store, and refuses command requests. Use `node website/scripts/capture-board.mjs --serve` to inspect the fixture at `http://127.0.0.1:4591/`.
 
 ## Brand assets
 
