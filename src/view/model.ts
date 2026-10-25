@@ -26,6 +26,10 @@ export interface ViewTicket {
   reason: string | null;
   stopRequested: boolean;
   lane: Lane;
+  /** This queued ticket is the current run's persisted pending pick. */
+  picked: boolean;
+  /** Added to this run by a later draft, rather than its initial selection. */
+  appended: boolean;
   /** The agent's open question while the ticket waits for an answer. */
   question: string | null;
   /** What keeps the ticket from moving, or null when nothing does. */
@@ -133,6 +137,7 @@ function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null,
     const row = {
       number: ticket.number, title: ticket.title, url: issueUrl(tracker, ticket.number), state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
+      picked: Boolean(millyard && ticket.state === 'queued' && run.run.pendingPick === ticket.number), appended: Boolean(ticket.appended),
     };
     const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
     return { ...row, lane: laneOf(row), question: question === null ? null : redact(question),

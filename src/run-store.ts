@@ -163,6 +163,8 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   /** First-start override for this selection; older rows fall back to the run setting. */
   includeClosed?: boolean;
   position: number;
+  /** Added by a later draft to this run; absent on rows drafted before this was recorded. */
+  appended?: boolean;
   state: TicketState;
   reason: string | null;
   stage: string | null;
@@ -266,7 +268,7 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
     for (const column of ['include_closed', 'skipped_closed', 'check_policy']) {
       if (!db.prepare('PRAGMA table_info(run)').all().some(row => row.name === column)) db.exec(`ALTER TABLE run ADD COLUMN ${column} TEXT`);
     }
-    for (const column of ['proof_plan', 'proof_plan_revisions', 'include_closed']) {
+    for (const column of ['proof_plan', 'proof_plan_revisions', 'include_closed', 'appended']) {
       if (!db.prepare('PRAGMA table_info(tickets)').all().some(row => row.name === column)) db.exec(`ALTER TABLE tickets ADD COLUMN ${column} TEXT`);
     }
     // Fence validation by membership, not by worker state: dispatch and checkpoint updates
@@ -304,12 +306,12 @@ export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[]
       for (const number of closed.skippedClosed) skipped.add(number);
       db.prepare('UPDATE run SET skipped_closed = ?').run(JSON.stringify([...skipped]));
     }
-    const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated,proof_plan,proof_plan_revisions,include_closed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    const insert = db.prepare('INSERT INTO tickets (number,title,body,labels,tracker_state,comments,blocked_by,position,state,created,updated,proof_plan,proof_plan_revisions,include_closed,appended) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     tickets.forEach((ticket, position) => {
       const plan = proofPlan(ticket.body);
       const revised = revisions(ticket.number, plan);
       insert.run(ticket.number, ticket.title, ticket.body, JSON.stringify(ticket.labels), ticket.state, JSON.stringify(ticket.comments), JSON.stringify(ticket.blockedBy), position + (append ? members.length : 0), 'queued', now, now,
-        JSON.stringify(plan), revised.length ? JSON.stringify(revised) : null, closed.includeClosed ? 'yes' : '');
+        JSON.stringify(plan), revised.length ? JSON.stringify(revised) : null, closed.includeClosed ? 'yes' : '', append ? 'yes' : null);
     });
     const insertEdge = db.prepare('INSERT INTO edges VALUES (?,?,?) ON CONFLICT(blocked, blocker) DO UPDATE SET outside_closed = excluded.outside_closed');
     for (const edge of edges) insertEdge.run(edge.blocked, edge.blocker, Number(edge.outsideClosed));
@@ -360,7 +362,7 @@ export function readRunFile(file: string): RunSnapshot {
       number: Number(row.number), title: String(row.title), body: String(row.body), labels: JSON.parse(String(row.labels)) as string[],
       ...(row.include_closed != null ? { includeClosed: Boolean(row.include_closed) } : {}),
       trackerState: row.tracker_state as Ticket['state'], comments: JSON.parse(String(row.comments)) as TicketComment[], blockedBy: JSON.parse(String(row.blocked_by)) as number[] | null,
-      position: Number(row.position), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
+      position: Number(row.position), appended: Boolean(row.appended), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
       provisioned: Boolean(row.provisioned), worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
