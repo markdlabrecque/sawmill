@@ -18,6 +18,7 @@ h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var
 .chip{position:absolute;top:1px;width:18px;height:18px;border-radius:50%;background:var(--work);transform:translateX(-50%);transition:left .7s cubic-bezier(.4,0,.2,1),background .3s;box-shadow:0 0 0 3px var(--card)}
 .working .chip:after{content:"";position:absolute;inset:-5px;border:2px solid transparent;border-top-color:var(--work);border-radius:50%;animation:spin .9s linear infinite}
 .done .chip{background:var(--done)}.logjam .chip{background:var(--jam);animation:pulse 1s ease-in-out infinite}.blocked .chip{background:var(--blk)}.queued .chip{background:var(--dim)}
+.queued.picked .chip{background:var(--work);outline:2px solid var(--work);outline-offset:3px}
 .t.bounce{animation:shake .5s}
 @keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(255,92,92,.25)}}@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 @media (prefers-reduced-motion:reduce){.chip{transition:none}.working .chip:after,.logjam .chip,.t.bounce{animation:none}}
@@ -121,8 +122,8 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
         const mill=p.millyard;row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
       seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
       diagnosis(row.querySelector('.dx'),t);controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
-      row.className='t '+t.state;row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
-      row.querySelector('.bb').innerHTML=(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
+      row.className='t '+t.state+(t.picked?' picked':'');row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
+      row.querySelector('.bb').innerHTML=(t.picked?'<span class="badge">Pending pick</span> ':'')+(t.appended?'<span class="badge">Appended</span> ':'')+(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
       row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';
       if(prevBounces.has(key)&&prevBounces.get(key)<t.bounces){row.classList.add('bounce');setTimeout(()=>row.classList.remove('bounce'),600)}prevBounces.set(key,t.bounces)}}
   for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key)}
