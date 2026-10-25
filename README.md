@@ -24,7 +24,17 @@ The section with `id="board"` contains a labelled screenshot placeholder. Replac
 
 ## Brand assets
 
-`assets/sawmill-logo-kit.zip` contains six SVG marks and outlined wordmarks. Individual SVGs and the timber mascot are also in `assets/`. The page's footer opens the logo preview and downloads the mark.
+`assets/sawmill-logo-kit.zip` contains six SVG variants and nine transparent PNGs, plus usage notes and the wordmark font license. Marks are 1024px square with additional primary-mark exports at 256, 512, and 2048px. Wordmarks are 2048px wide, with the lettering outlined in SVG.
+
+The approved logo lives in `src/sawmill-mark.svg`. `src/sawmill-lettering.svg` holds the existing outlined wordmark lettering. The page, favicon, downloads, and kit share these sources. The footer offers the full kit, plus a preview with individual SVG and PNG downloads. The page itself remains self-contained; PNG and ZIP downloads use the adjacent `assets/` folder.
+
+After changing either logo source, regenerate the PNGs, ZIP, and page with:
+
+```sh
+python3 scripts/build.py --logo-kit
+```
+
+PNG export requires `rsvg-convert` from librsvg. Ordinary page builds still use only Python's standard library.
 
 Font licences for Barlow Condensed and DM Sans are included beside the font files. The page and its illustrations have no external runtime dependencies.
 
