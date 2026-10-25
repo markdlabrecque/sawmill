@@ -20,7 +20,17 @@ Commit the source and rebuilt `index.html` in the software branch. After review,
 
 ## Board preview
 
-The section with `id="board"` contains a labelled screenshot placeholder. Replace the `board-placeholder` figure's contents when the redesigned Board is ready. The existing section describes the Board's current capabilities.
+The section with `id="board"` uses desktop and phone screenshots of the real Board. Pinecone Pantry, Moonbeam Maps, their paths, and every ticket are fictional. The example shows working and queued tickets plus a logjam with its answer controls open. The build embeds both images so the page stays self-contained.
+
+To refresh the screenshots, run from the repository root with Chrome or Chromium installed:
+
+```sh
+npm run build
+node website/scripts/capture-board.mjs
+python3 website/scripts/build.py
+```
+
+Set `SAWMILL_TEST_CHROMIUM` if the browser executable is not in a standard Linux location. The capture script uses a fixed time, checks the sample totals and layout, and writes `assets/board-desktop.png` and `assets/board-mobile.png`. It uses a local fixture, never reads a run store, and refuses command requests. Use `node website/scripts/capture-board.mjs --serve` to inspect the fixture at `http://127.0.0.1:4591/`.
 
 ## Brand assets
 
