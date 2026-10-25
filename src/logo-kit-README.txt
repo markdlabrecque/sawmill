@@ -31,5 +31,6 @@ COLORS
   Black outline #000000
   Brand orange  #fa7844
 
-The wordmark lettering is outlined Barlow Condensed. No font installation is
-needed to use these files. The font's license is included as font-LICENSE.txt.
+The wordmark lettering is outlined Barlow Condensed. The i/l and l/l pairs
+each have 1px of extra spacing at the native SVG size. No font installation
+is needed to use these files. The font's license is included as font-LICENSE.txt.
