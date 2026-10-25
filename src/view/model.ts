@@ -62,10 +62,10 @@ const stageLanes: Record<string, Lane> = {
   integrate: 'rebase', rebase: 'rebase', 'pr-opened': 'PR', 'ci-wait': 'CI', 'ci-failed': 'CI', merged: 'merged',
 };
 
-/** A logjam keeps the lane it reached; an unknown stage lands on launch. */
+/** A logjam, or a ticket requeued after an answer or recovery, keeps the lane it reached; an unknown stage lands on launch. */
 export function laneOf(ticket: Pick<ViewTicket, 'state' | 'stage' | 'role'>): Lane {
   if (ticket.state === 'done') return 'merged';
-  if (ticket.state === 'queued' || ticket.state === 'blocked') return 'queued';
+  if (ticket.state === 'queued' || ticket.state === 'blocked') return ticket.stage && Object.hasOwn(stageLanes, ticket.stage) ? stageLanes[ticket.stage]! : 'queued';
   if (ticket.role && Object.hasOwn(stageLanes, ticket.role)) return stageLanes[ticket.role]!;
   return ticket.stage && Object.hasOwn(stageLanes, ticket.stage) ? stageLanes[ticket.stage]! : 'launch';
 }

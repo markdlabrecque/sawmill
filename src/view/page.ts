@@ -9,17 +9,20 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 *{box-sizing:border-box}body{margin:0 auto;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;padding:12px 16px 40px;max-width:900px}
 h1{font-size:14px;font-weight:500;margin:0 0 12px;display:flex;gap:8px;color:var(--dim)}h1 .live{width:8px;height:8px;border-radius:50%;background:var(--jam);align-self:center}h1 .live.on{background:var(--done)}h1 .at{margin-left:auto;font-variant-numeric:tabular-nums}
 .p{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 12px 4px;margin:0 0 12px}
-.p h2{font-size:15px;margin:0 0 4px;display:flex;gap:8px;align-items:baseline;min-width:0}.p h2 small{color:var(--dim);font-weight:400;margin-left:auto;white-space:nowrap}.p .path,.p .err{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.p .err{color:var(--jam)}
+.p h2{font-size:15px;margin:0 0 4px;display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;min-width:0}.p h2 small{color:var(--dim);font-weight:400;margin-left:auto;white-space:nowrap}.p .path,.p .err{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.p .err{color:var(--jam)}
 .t{padding:10px 0 8px;border-top:1px solid var(--line)}.t .h{display:flex;gap:8px;align-items:baseline;font-size:14px;min-width:0}.t .h .n{color:var(--dim);font-variant-numeric:tabular-nums}.t .h .ti{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.t .h .bb{white-space:nowrap}
 .t .d{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
 .lane{position:relative;display:grid;grid-template-columns:repeat(10,minmax(0,1fr));margin-top:8px;height:36px}
 .lane:before{content:"";position:absolute;left:5%;right:5%;top:9px;height:2px;background:var(--line)}
 .c{position:relative;text-align:center;font-size:10px;color:var(--dim);min-width:0}.c i{display:block;width:8px;height:8px;border-radius:50%;background:var(--line);margin:6px auto 4px}.c.past i{background:var(--dim)}
+.c.cur i{visibility:hidden}.c.cur span{margin-top:4px;font-size:12px;font-weight:700;white-space:nowrap;color:var(--work)}.c.cur .short{display:none!important}.c.cur .full{display:inline-block!important}
+.done .c.cur span{color:var(--done)}.logjam .c.cur span{color:var(--jam)}.blocked .c.cur span{color:var(--blk)}.queued:not(.picked) .c.cur span{color:var(--fg)}
+@media (max-width:520px){.c:has(+.c.cur) span,.c.cur+.c span{visibility:hidden}.c.cur:first-child span{position:relative;left:6px}.c.cur:nth-child(10) span{position:relative;right:6px}}
 .chip{position:absolute;top:1px;width:18px;height:18px;border-radius:50%;background:var(--work);transform:translateX(-50%);transition:left .7s cubic-bezier(.4,0,.2,1),background .3s;box-shadow:0 0 0 3px var(--card)}
 .working .chip:after{content:"";position:absolute;inset:-5px;border:2px solid transparent;border-top-color:var(--work);border-radius:50%;animation:spin .9s linear infinite}
 .done .chip{background:var(--done)}.logjam .chip{background:var(--jam);animation:pulse 1s ease-in-out infinite}.blocked .chip{background:var(--blk)}.queued .chip{background:var(--dim)}
 .queued.picked .chip{background:var(--work);outline:2px solid var(--work);outline-offset:3px}
-.t.bounce{animation:shake .5s}
+.t.bounce{animation:shake .5s}.t.logjam{box-shadow:inset 3px 0 var(--jam);padding-left:12px;margin-left:-12px}
 @keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(255,92,92,.25)}}@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 @media (prefers-reduced-motion:reduce){.chip{transition:none}.working .chip:after,.logjam .chip,.t.bounce{animation:none}}
 .badge{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--line);color:var(--fg)}.badge.jam{background:var(--jam);color:#fff}.badge.b{background:#3a3020;color:var(--blk)}
@@ -39,6 +42,7 @@ a.tl:focus-visible{outline:2px solid var(--work);outline-offset:2px}
 .rb{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 8px}.rs{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--line)}.rs.running{background:#123a26;color:var(--done)}.rs.stopping{background:#3a3020;color:var(--blk)}
 .pr{font-size:12px;color:var(--blk);margin:0 0 8px}.why{font-size:12px;color:var(--blk);margin-top:2px;white-space:pre-wrap;overflow-wrap:anywhere}.logjam .why{color:#ff9a9a}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+button.more{margin-left:auto;flex:none;font:12px/1 system-ui,sans-serif;min-height:28px;padding:0 10px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer}button.more:hover,button.more[aria-expanded=true]{color:var(--fg);background:var(--line)}button.more:after{content:" \\25BE"}button.more[aria-expanded=true]:after{content:" \\25B4"}
 .dx{font-size:12px;margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}.dx .dxh{color:var(--fg)}.dx .dxi,.dx .dxl{color:var(--dim);font-variant-numeric:tabular-nums}
 .dx .dxn{margin-top:4px}.dx code{color:var(--work);user-select:all}.dx pre{white-space:pre-wrap;max-height:30vh;overflow:auto;margin:4px 0;font-size:11px}.dx summary{cursor:pointer;color:var(--dim);margin-top:4px}
 button.ac{font:13px/1 system-ui,sans-serif;min-height:34px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}button.ac[aria-disabled=true]{color:var(--dim);border-style:dashed;cursor:help}
@@ -60,7 +64,7 @@ dialog .db{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
 <script>
 const LANES=${JSON.stringify(lanes)},SHORT=${JSON.stringify(short)};
 const root=document.getElementById('root'),sum=document.getElementById('sum'),at=document.getElementById('at'),live=document.getElementById('live');
-let view=null,got=0;const rows=new Map(),prevBounces=new Map();
+let view=null,got=0;const rows=new Map(),prevBounces=new Map(),opened=new Set();
 const ACTIONS=[['stop','Stop'],['answer','Answer and resume'],['reset','Reset'],['close','Close']];
 /** Each project's run and each ticket has one request line: pending, ok or failed. A pending request blocks repeats. */
 const notes=new Map();
@@ -116,17 +120,17 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0;
     controls(card.querySelector('.rb'),p.millyard,a=>p.runActions[a==='start-run'?'start':'stop']);feedback(card.querySelector(':scope>.fb'),p.millyard);
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
-      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span></div><div class="d"></div><div class="why"></div>'
+      if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span><button type="button" class="more" aria-expanded="false">Actions</button></div><div class="d"></div><div class="why"></div>'
           +'<div class="dx" hidden><div class="dxh"></div><div class="dxi"></div><div class="dxn">Next: <code></code> <span></span></div><details><summary>Output</summary><pre></pre><div class="dxl"></div></details></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
-        +'<div class="acts">'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
-        const mill=p.millyard;row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
+        +'<div class="acts" hidden>'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
+        const mill=p.millyard;row.querySelector('.more').onclick=()=>{if(opened.has(key))opened.delete(key);else opened.add(key);render()};row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
       seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
       diagnosis(row.querySelector('.dx'),t);controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
       row.className='t '+t.state+(t.picked?' picked':'');row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
       row.querySelector('.bb').innerHTML=(t.picked?'<span class="badge">Pending pick</span> ':'')+(t.appended?'<span class="badge">Appended</span> ':'')+(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
-      row.querySelectorAll('.c').forEach((c,i)=>c.classList.toggle('past',i<index));row.querySelector('.chip').style.left=(index*10+5)+'%';
+      row.querySelectorAll('.c').forEach((c,i)=>{c.classList.toggle('past',i<index);c.classList.toggle('cur',i===index)});const open=opened.has(key),more=row.querySelector('.more');row.querySelector('.acts').hidden=!open;more.setAttribute('aria-expanded',String(open));more.setAttribute('aria-label',(open?'Hide':'Show')+' actions for #'+t.number);row.querySelector('.chip').style.left=(index*10+5)+'%';
       if(prevBounces.has(key)&&prevBounces.get(key)<t.bounces){row.classList.add('bounce');setTimeout(()=>row.classList.remove('bounce'),600)}prevBounces.set(key,t.bounces)}}
-  for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key)}
+  for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key);opened.delete(key)}
   const empty=root.querySelector('.empty');if(view.projects.length)empty?.remove();else if(!empty)root.innerHTML='<div class="empty">No active runs.</div>';
   sum.textContent=view.projects.length+' project'+(view.projects.length===1?'':'s')+' · '+working+' working'+(jam?' · '+jam+' logjam':'');renderArchive();tick()}
 const arc=document.getElementById('arc'),aq=document.getElementById('aq'),alist=document.getElementById('alist'),aempty=document.getElementById('aempty'),acount=document.getElementById('acount');
