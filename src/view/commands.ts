@@ -84,7 +84,7 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
         : failed(`#${ticket.number} is done locally, but the tracker did not accept the change; it is held for retry.`);
     }
     if (action === 'reset') {
-      const reset = await resetTicket(cwd, project, writer, ticket.number, { home, sleep: options.sleep });
+      const reset = await resetTicket(cwd, project, writer, ticket.number, { home, sleep: options.sleep, reader: options.tracker });
       return reset.status === 'ok' ? ok(`Reset #${ticket.number}; it is queued and starts fresh.`)
         : failed(`The tracker did not accept the reset of #${ticket.number}; pending writes are held. Try again.`);
     }

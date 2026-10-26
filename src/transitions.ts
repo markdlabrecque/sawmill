@@ -1,4 +1,5 @@
-import { acceptanceFor, type AcceptanceWaiver } from './acceptance.js';
+import { acceptanceFor, refreshedAcceptance, type AcceptanceWaiver } from './acceptance.js';
+import { invalidateReview } from './review-approval.js';
 import { recordHumanAction, recordSafely, syncAttempts } from './attempt-record.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
@@ -6,7 +7,7 @@ import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type PhaseRecord, type PhaseWait, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { operationMarker, reportComment, type StageReport } from './reporter.js';
-import type { AssignResult, TicketWriter } from './tracker.js';
+import type { AssignResult, Ticket, TicketWriter } from './tracker.js';
 
 export interface MirrorOptions { sleep?: (milliseconds: number) => Promise<void> }
 
@@ -563,16 +564,37 @@ export async function clearTicketTracker(cwd: string, project: ProjectConfig, tr
   return flushPending(cwd, project, tracker, number, options);
 }
 
-/** The last reset step: the row becomes a freshly drafted ticket, keeping number, title, position and edges. */
-export function resetRow(cwd: string, project: ProjectConfig, number: number): void {
+/** Save refreshed text and its checklist atomically. Recheck eligibility after the tracker fetch. */
+export function refreshRow(cwd: string, project: ProjectConfig, number: number, latest: Pick<Ticket, 'body' | 'comments'>, by: string, reset = false) {
   checkTracker(cwd, project);
-  transaction(cwd, db => {
+  const refreshed = transaction(cwd, db => {
     const ticket = requireTicket(db, number);
-    if (ticket.state === 'working') throw new CliError(`Ticket #${number} started working during the reset; stop it with mill run stop ${number} and reset again.`);
-    const comments = (JSON.parse(String(ticket.comments)) as { body: string }[]).filter(comment => !agentComment(comment.body));
-    update(db, number, { state: 'queued', reason: null, stage: null, bounces: 0, sessionIds: {}, worktree: null, provisioned: false, branch: null, integration: {}, team: {} });
-    db.prepare('UPDATE tickets SET comments = ?, worker = NULL, stage_started = NULL, stop_requested = 0 WHERE number = ?').run(JSON.stringify(comments), number);
+    if (ticket.state === 'working') throw new CliError(`Ticket #${number} is working; stop it first with mill run stop ${number}.`);
+    if (ticket.state === 'done' || ticket.completion || ticket.merge_commit) throw new CliError(`Ticket #${number} is done and cannot be refreshed.`);
+    const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
+    const previous = acceptanceFor({ body: String(ticket.body), team });
+    const acceptance = refreshedAcceptance(latest.body, previous);
+    // A review of older requirements cannot authorize delivery of the new ticket.
+    if (latest.body !== ticket.body && team.approvedHead) invalidateReview(team);
+    team.acceptance = acceptance;
+    if (reset) {
+      update(db, number, { state: 'queued', reason: null, stage: null, bounces: 0, sessionIds: {}, worktree: null, provisioned: false, branch: null, integration: {}, team: { acceptance } });
+      db.prepare('UPDATE tickets SET worker = NULL, stage_started = NULL, stop_requested = 0 WHERE number = ?').run(number);
+    } else update(db, number, { team });
+    const comments = reset ? latest.comments.filter(comment => !agentComment(comment.body)) : latest.comments;
+    db.prepare('UPDATE tickets SET body = ?, comments = ? WHERE number = ?').run(latest.body, JSON.stringify(comments), number);
+    const time = new Date().toISOString();
+    const refreshed = { by, snapshot: acceptance.snapshot, previous: previous.snapshot };
+    db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, time, JSON.stringify({ refreshed }));
+    return { ...refreshed, time };
   });
+  recordSafely(() => recordHumanAction(cwd, number));
+  return refreshed;
+}
+
+/** The last reset step keeps membership and edges, but rebuilds the snapshot from freshly fetched text. */
+export function resetRow(cwd: string, project: ProjectConfig, number: number, latest: Pick<Ticket, 'body' | 'comments'>, by: string): void {
+  refreshRow(cwd, project, number, latest, by, true);
 }
 
 /** Local evidence for status: the phase a ticket waits on now, and each finished one. Never changes its state. */
