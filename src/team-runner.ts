@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createRuntime } from './runtime-factory.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
-import type { MachineConfig, ProjectConfig, Role } from './config.js';
+import { routingEnabled, type MachineConfig, type ProjectConfig, type Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
 import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
@@ -540,7 +540,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const rejected = decisionId ? progress.selections?.find(event =>
             (event.id === decisionId || event.reusedFrom === decisionId) && event.execution.selectionRejected) : undefined;
           const saved = rejected ?? original;
-          const routed = role !== 'reviewer' && (project.model_routing?.enabled || saved);
+          const routed = role !== 'reviewer' && (routingEnabled(project) || saved);
           const attempt = routed ? exportRecords(cwd).attempts.filter(attempt => attempt.ticket === number).at(-1) : undefined;
           if (routed && !attempt) throw new Error('Cannot persist model selection without a delivery attempt.');
           const selection = routed ? await selectModel({ path, project, machine, ticket: current(), attempt: attempt!, role,

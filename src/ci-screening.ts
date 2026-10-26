@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { stripVTControlCharacters } from 'node:util';
-import { z } from 'zod';
+import { jevScreenOptions } from './jev-config.js';
 import { readResults } from './test-results.js';
 import type { CiJob } from './tracker.js';
 import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type ChoiceQuestion, type Evidence } from './typesafe.js';
@@ -38,15 +38,9 @@ interface Report {
   usage?: { inputTokens: number | null; outputTokens: number | null };
   cost: null;
 }
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
-
-/** A separate, project-local opt-in. Credentials alone never enable screening. */
+/** An independent project opt-in. Credentials alone never enable screening. */
 export async function ciScreeningOptions(cwd: string): Promise<CiScreeningOptions> {
-  try { return configSchema.parse(JSON.parse(await readFile(join(cwd, '.mill/ci-screening.json'), 'utf8'))); }
+  try { return await jevScreenOptions(cwd, 'ci'); }
   catch { return {}; }
 }
 
