@@ -20,7 +20,7 @@ Use `mill` on PATH. `mill <command> --help` is the source of truth for every com
 
 Repeat until the run is finished:
 
-1. **Look.** `mill run status --json`. Note the run state (active, paused, stopped, completed), whether the scheduler is running, and each ticket's state.
+1. **Look.** `mill run status --json`. Note the exact run identity (`run.id`), the millyard's absolute path, the run state (active, paused, stopped, completed), whether the scheduler is running, and each ticket's state. Keep the identity with the ledger and final run log; never substitute a later current run.
 2. **Act** on the first thing below that applies:
    - **Completed:** go to [Finish](#finish).
    - **Inactive, or stopped with nothing in logjam:** `mill run`.
@@ -71,4 +71,14 @@ Then write the **run log** to `.mill/logs/foreman-<YYYY-MM-DD-HHMM>.md`, built f
 
 The run log is done when every ledger action appears in it with a result. Close it with the tickets that got done and the decisions still waiting on the human.
 
-Then report to the human: the run log's path, a count of problems solved and escalated, and each escalated ticket with the decision it needs from them.
+Then report to the human: the run log's path, a count of problems solved and escalated, and each escalated ticket with the decision it needs from them. State the exact run identity and millyard, and list unresolved work plainly, including intentionally stopped tickets and tickets blocked behind them. Do not call an unresolved run completed.
+
+After this report, offer one opt-in retrospective for that exact run identity:
+
+> Would you like `/sawmill:learn` for run `<run.id>` in millyard `<absolute path>`? It examines retained attempt records and relevant logs for friction, safeguards that helped, and possible measurable improvements. Unresolved work remains unresolved; a retrospective does not clear logjams or change run state.
+
+Substitute the actual identity and path, and say whether the run completed or Foreman ended with unresolved tickets. Make this offer only at Finish, once per run. Do not offer a retrospective on each polling walk; check the conversation for an earlier offer and do not repeat it. Do not offer a retrospective for an active run still progressing, a paused run, or recoverable work (including waiting for slots, a scheduler restart or a retry). A run state alone is not a Finish trigger: for unresolved work, every remaining ticket must meet the terminal condition above, with no working or ready tickets left.
+
+If the user accepts (yes), invoke `/sawmill:learn` with the same exact run identity in the same millyard. If the host cannot start another skill, give the exact invocation with the actual values filled in: `/sawmill:learn run <run.id> in millyard <absolute path>`, to be invoked from that millyard. Pass the final run log's path as relevant evidence too; do not substitute all history or whichever run is current later. Acceptance authorizes analysis only, not configuration edits, tickets or learning-ledger entries.
+
+If they decline (no), finish normally with the run and records unchanged; do not invoke learning or write a decline entry. The completed Foreman report and run log remain as written before the question.
