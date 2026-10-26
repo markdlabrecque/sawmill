@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { requireTypeSafeKey } from './typesafe.js';
 import { processAlive } from './process-ownership.js';
@@ -103,19 +104,20 @@ export function dispatchHeld(home: string): boolean {
 /** The daemon's environment is fixed at startup. Its live ownership record attests
  * only availability, never the key. Older daemons without an attestation are not ready.
  * This bounded local read must precede activation, answers and integration-lock waits. */
-export function requireSchedulerConfiguration(home: string): void {
-  requireTypeSafeKey();
+export function requireSchedulerConfiguration(home: string, project: ProjectConfig, cwd: string): void {
+  if (!project.model_routing?.enabled) return;
+  requireTypeSafeKey(project, cwd);
   const owner = readScheduler(home);
   if (owner && processAlive(owner.pid, owner.processStart) && owner.typeSafeKeyAvailable !== true) {
-    throw new CliError('The shared scheduler cannot start work: TYPESAFE_API_KEY is missing from its execution environment. Set/export TYPESAFE_API_KEY, run mill scheduler stop, then mill run to restart it. Other projects share this scheduler; do not restart it until safe.', 2);
+    throw new CliError(`Project ${cwd}: model routing is enabled, but TYPESAFE_API_KEY is missing from the shared scheduler's execution environment. Set/export TYPESAFE_API_KEY, run mill scheduler stop, then mill run to restart it. Other projects share this scheduler; do not restart it until safe.`, 2);
   }
 }
 
 /** Start/readiness boundary for callers that will launch work, not administration. */
-export async function ensureExecutionScheduler(home: string) {
-  requireSchedulerConfiguration(home);
+export async function ensureExecutionScheduler(home: string, project: ProjectConfig, cwd: string) {
+  requireSchedulerConfiguration(home, project, cwd);
   const scheduler = await ensureScheduler(home);
-  requireSchedulerConfiguration(home);
+  requireSchedulerConfiguration(home, project, cwd);
   return scheduler;
 }
 

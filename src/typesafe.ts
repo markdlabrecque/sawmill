@@ -1,10 +1,13 @@
+import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 
-/** Execution startup is mandatory even when optional screening is disabled.
- * Presence only: never authenticate, return, or record the credential here. */
-export function requireTypeSafeKey(): void {
-  if (!process.env.TYPESAFE_API_KEY?.trim()) {
-    throw new CliError('TYPESAFE_API_KEY is required to start work. Set/export TYPESAFE_API_KEY in the execution environment, then retry.', 2);
+export const typeSafeConfigurationMessage = 'TYPESAFE_API_KEY is required for this opted-in Jev operation. Set/export TYPESAFE_API_KEY in the execution environment, then retry.';
+
+/** Only role routing opts execution into Jev. Screens check their separate opt-ins
+ * at invocation. Presence only: never authenticate or record the credential here. */
+export function requireTypeSafeKey(project: ProjectConfig, cwd?: string): void {
+  if (project.model_routing?.enabled && !typeSafeKeyAvailable()) {
+    throw new CliError(`Project ${cwd ?? project.name}: model routing is enabled. ${typeSafeConfigurationMessage}`, 2);
   }
 }
 

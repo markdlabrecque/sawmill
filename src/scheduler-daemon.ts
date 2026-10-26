@@ -1,4 +1,4 @@
-import { typeSafeKeyAvailable } from './typesafe.js';
+import { requireTypeSafeKey, typeSafeKeyAvailable } from './typesafe.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
@@ -93,14 +93,7 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
   if (Date.now() < (problems.get(cwd)?.retry ?? 0)) return undefined;
   try {
     const before = readRun(cwd);
-    if (before.run.pendingPick !== undefined) {
-      const note = reconcilePick(cwd, before.run.id);
-      if (note) say(`${cwd}: ${note}`);
-    }
     if (before.run.lifecycle === 'inactive') return undefined;
-    // A keyless daemon may remain available for administration, but cannot recover,
-    // activate or admit work. Report once, without spending any ticket retry budget.
-    if (before.run.lifecycle === 'active' && !typeSafeKeyAvailable()) throw new Error('TYPESAFE_API_KEY is missing from the scheduler execution environment. Set/export it, run mill scheduler stop, then mill run.');
     // A completed run is still watched while a worker finishes its cleanup, so a crash there is recovered.
     if (before.run.lifecycle === 'completed' && before.tickets.every(row => !row.worker || row.worker.status === 'finished')) {
       await sendNotifications(cwd);
@@ -108,6 +101,13 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
     }
     const config = await loadConfig(cwd, home!);
     if (!config.valid) throw new Error(config.issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('; '));
+    // Admission belongs to this project, not the shared service. Reject before
+    // recovery, pick reconciliation, claims or retries can mutate its run.
+    if (before.run.lifecycle === 'active') requireTypeSafeKey(config.project, cwd);
+    if (before.run.pendingPick !== undefined) {
+      const note = reconcilePick(cwd, before.run.id);
+      if (note) say(`${cwd}: ${note}`);
+    }
     await recoverWorkers(cwd, home!);
     if (before.run.lifecycle !== 'stopped') consumeResults(cwd, config.machine.pause_threshold);
     await sendNotifications(cwd, config.project.role_timeout);

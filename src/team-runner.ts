@@ -58,7 +58,7 @@ export interface TeamResult {
 /** One bounded ticket team. Owns the lock; runRole must not acquire it again. */
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
-  requireTypeSafeKey();
+  requireTypeSafeKey(project, cwd);
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;

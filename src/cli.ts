@@ -316,10 +316,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       // --background is kept as an alias for the default so #43 scripts keep working.
       if (positional[0] === 'run' && (positional.length === 1 || positional[1] === '--background')) {
         if (positional.length > 2) throw new CliError(usage('run'), 2);
-        requireSchedulerConfiguration(home);
+        requireSchedulerConfiguration(home, config.project, cwd);
         // An integrating ticket holds the checkout for as long as CI takes; the scheduler preflights once it is free.
         if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project);
-        const scheduler = await ensureExecutionScheduler(home);
+        const scheduler = await ensureExecutionScheduler(home, config.project, cwd);
         const activated = activateRun(cwd);
         await registerMillyard(home, cwd);
         const { run } = readRun(cwd);
@@ -415,8 +415,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           return 2;
         }
         if (positional[1] === 'answer' && readRun(cwd).run.lifecycle === 'active') {
-          requireSchedulerConfiguration(home);
-          if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home);
+          requireSchedulerConfiguration(home, config.project, cwd);
+          if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home, config.project, cwd);
         }
         const writer = ticketWriter(options, config.project, cwd);
         const ok = positional[1] === 'answer'
