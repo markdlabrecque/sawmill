@@ -30,10 +30,10 @@ honored with a warning if `jev.acceptance` is absent. Move `enabled`, convert
 when both exist, including explicit false, with a warning that JSON is ignored.
 Install the optional `@typesafe-ai/sdk` alongside the Mill installation, as
 [described for draft screening](draft-screening.md#opt-in-for-one-project), only
-if you want live screening. Supply `TYPESAFE_API_KEY` in Mill's process
-environment through your approved credential workflow; never put it in this
-file, a ticket, logs or command arguments. A running scheduler inherits its
-startup environment. Do not fetch credentials merely because an opt-in setting
+if you want live screening. Supply `TYPESAFE_API_KEY` in the
+[shared settings file](operating-mill.md#shared-typesafe-key) or Mill's process
+environment through your approved credential workflow; never put it in project
+config, a ticket, logs or command arguments. File changes need no scheduler restart. Do not fetch credentials merely because an opt-in setting
 exists.
 
 Production uses the shared optional choice client (`src/typesafe.ts`), pinned

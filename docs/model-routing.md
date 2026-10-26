@@ -73,10 +73,14 @@ configured baseline. Choose mappings supported by your installed runtime/account
   uncertainty, low confidence and unavailable service preserve the baseline.
 
 Install the optional `@typesafe-ai/sdk` alongside Mill. Supply `TYPESAFE_API_KEY`
-in Mill's execution environment, never YAML, arguments, logs or tickets. Routing
-checks nonblank credentials before activation/dispatch; do not retrieve a secret
-just because a project opts in. A running scheduler needs the key in its own
-startup environment. See [safe scheduler recovery](operating-mill.md#before-you-start-a-run).
+in the [shared settings file](operating-mill.md#shared-typesafe-key),
+`~/.config/sawmill/.env` (respecting `XDG_CONFIG_HOME`), or the execution
+environment. A nonblank environment value wins; file changes take effect without
+restarting the scheduler or Board. The file must be user-owned and private;
+Mill repairs group/world access to mode `600` or refuses to start the run.
+Never put the key in project YAML, arguments, logs or tickets. Routing checks
+nonblank credentials before activation/dispatch; do not retrieve a secret just
+because a project opts in.
 No opt-in means no routing key check or TypeSafe call.
 
 Evidence is limited to small, explicitly relevant tracked text files (up to six),

@@ -30,9 +30,11 @@ exist, including false, with a warning that JSON is ignored.
 
 Setting `jev.learn.enabled` to false disables screening. Permission
 for draft screening is not permission to upload delivery evidence. Supply
-`TYPESAFE_API_KEY` in the process environment through the user's approved
-credential workflow. Never put credentials in config, arguments, fixtures or
-reports; never retrieve them merely because config exists.
+`TYPESAFE_API_KEY` in the private `~/.config/sawmill/.env` (respecting
+`XDG_CONFIG_HOME`) or process environment through the user's approved credential
+workflow. A nonblank environment key wins; the file is reread on every call.
+Never put credentials in project config, arguments, fixtures or reports; never
+retrieve them merely because config exists.
 
 Prepare only short observations whose interpretation is open. Use structured
 attempt findings directly when the answer is already known. First select scope,

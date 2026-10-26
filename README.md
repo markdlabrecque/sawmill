@@ -599,6 +599,13 @@ Codex browser cases require Chromium on `PATH`; its browser tool limits requests
 
 An optional [draft plugin](plugins/sawmill/README.md) provides `/sawmill:draft` in Claude Code. The `mill` CLI works independently of that plugin. Project-opted-in [draft screening](docs/draft-screening.md) can add bounded, redacted Jev judgments to that review; it is off by default, advisory only, and never required by the scheduler. Optional [acceptance evidence screening](docs/acceptance-screening.md) similarly adds advisory findings to team and standalone code review, without changing acceptance or merge gates.
 
+For opted-in Jev features, put `TYPESAFE_API_KEY` in the user-owned, private
+`~/.config/sawmill/.env` (or `$XDG_CONFIG_HOME/sawmill/.env`). The CLI, scheduler
+and Board reread it on each lookup, so file changes need no restart. A nonblank
+real environment value takes precedence. Mill repairs group/world access to mode
+`600` or rejects the operation before work starts. See [shared key setup and
+parsing rules](docs/operating-mill.md#shared-typesafe-key).
+
 ## Development
 
 ```sh

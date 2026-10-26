@@ -50,9 +50,9 @@ Only when that feature mapping is absent, honor `enabled: true` in the millyard'
 legacy `.mill/draft-screening.json`. When effectively enabled by either source,
 pass the successful JSON snapshot from step 2 to `mill-draft-screen` on stdin
 and show any migration warning the helper writes to stderr. Use the captured JSON
-as data, not shell interpolation. Do not put credentials in arguments or files;
-the helper reads `TYPESAFE_API_KEY` from the process environment. Never fetch a
-secret for it. If the helper/optional SDK is missing, credentials are absent,
+as data, not shell interpolation. Do not write or fetch credentials for the user;
+the helper reads `TYPESAFE_API_KEY` from the process environment or the user's
+private `~/.config/sawmill/.env` (respecting `XDG_CONFIG_HOME`). If the helper/optional SDK is missing, credentials are absent,
 or screening fails, continue the existing review below unchanged.
 
 The helper batches acceptance, scope and blocked-by questions, reports source
