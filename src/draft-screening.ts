@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { Ticket } from './tracker.js';
 import { redact } from './view/diagnosis.js';
-import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 export type { Evidence } from './typesafe.js';
 
 export const draftScreenModel = jevModel;
@@ -118,7 +118,7 @@ export async function screenDraft(tickets: readonly Ticket[], options: Screening
   const finish = () => { report.latencyMs = performance.now() - started; return report; };
   // Disabled means no evidence extraction, credentials lookup, SDK loading or network access.
   if (options.enabled !== true) { report.fallbackReason = 'disabled'; return finish(); }
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const limit = options.maxEvidenceChars ?? 4000;
   const timeoutMs = options.timeoutMs ?? 10_000;
   // Metadata is versioned application configuration, not ticket-supplied prose.

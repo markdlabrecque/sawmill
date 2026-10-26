@@ -6,7 +6,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { jevScreenOptions } from './jev-config.js';
 import { readResults } from './test-results.js';
 import type { CiJob } from './tracker.js';
-import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type ChoiceQuestion, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type ChoiceQuestion, type Evidence } from './typesafe.js';
 import { redact } from './view/diagnosis.js';
 
 export const ciScreenQuestionVersion = 'ci-screen-v1';
@@ -152,7 +152,7 @@ export async function ciScreeningNote(directory: string, job: CiJob, head: strin
   const model = options.model ?? jevModel;
   const questionVersion = options.questionVersion ?? ciScreenQuestionVersion;
   const limit = options.maxEvidenceChars ?? 4000, timeoutMs = options.timeoutMs ?? 10_000;
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const fallback = (reason: string) => `Advisory CI screening: uncertain (${reason}); investigate the saved full log. CI remains failed; retry budgets and merge authorization are unchanged.`;
   if (!apiKey?.trim()) return `${fallback('missing-credentials')} CI screening: ${typeSafeConfigurationMessage}`;
   if (!/^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) || !/^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion)

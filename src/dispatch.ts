@@ -116,7 +116,7 @@ function launchWorker(cwd: string, home: string, ticket: number, owner: WorkerOw
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [fileURLToPath(new URL('./team-worker.js', import.meta.url)), String(ticket), owner.runId, owner.token, home], {
-      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: owner.token, HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
+      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: owner.token, HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }
   return new Promise((resolve, reject) => {
