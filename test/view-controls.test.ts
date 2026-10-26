@@ -81,12 +81,13 @@ async function board(t: TestContext, seeded: string) {
   assert.ok(port, 'the board is serving');
   const base = `http://127.0.0.1:${port}`;
 
-  const view = async (): Promise<ViewProject> => ((await (await fetch(`${base}/view.json`)).json()) as ViewSnapshot).projects[0]! as unknown as ViewProject;
+  const snapshot = async (): Promise<ViewSnapshot> => await (await fetch(`${base}/view.json`)).json() as ViewSnapshot;
+  const view = async (): Promise<ViewProject> => (await snapshot()).projects[0]! as ViewProject;
   /** The board polls the run file, so wait for a change to reach the snapshot. */
-  async function until(check: (project: ViewProject) => boolean): Promise<ViewProject> {
-    let project = await view();
-    for (let i = 0; i < 250 && !check(project); i++) { await delay(20); project = await view(); }
-    return project;
+  async function until(check: (project: ViewProject, snapshot: ViewSnapshot) => boolean): Promise<ViewProject> {
+    let current = await snapshot();
+    for (let i = 0; i < 250 && !check(current.projects[0]! as ViewProject, current); i++) { await delay(20); current = await snapshot(); }
+    return current.projects[0]! as ViewProject;
   }
   async function post(body: Record<string, unknown>, from?: ViewProject) {
     const project = from ?? await view();
@@ -98,7 +99,7 @@ async function board(t: TestContext, seeded: string) {
     return { code: response.status, reply };
   }
   const ticket = (project: ViewProject, number: number): ViewTicket => project.tickets.find(row => row.number === number)!;
-  return { yard, view, until, post, ticket };
+  return { yard, snapshot, view, until, post, ticket };
 }
 
 test('the snapshot explains what blocks a ticket and which actions its state allows', async (t) => {
@@ -128,8 +129,13 @@ test('the snapshot explains what blocks a ticket and which actions its state all
   assert.equal(working.actions.stop.available, true);
   assert.equal(working.actions.answer.available, false);
   assert.ok(working.actions.answer.reason);
-  assert.equal(b.ticket(project, 4).actions.close.available, false);
-  assert.ok(b.ticket(project, 4).actions.close.reason);
+  assert.ok(!project.tickets.some(ticket => ticket.number === 4), 'a done ticket is no longer active');
+  const done = (await b.snapshot()).archive.flatMap(project => project.runs.flatMap(group => group.tickets)).find(ticket => ticket.number === 4)!;
+  assert.equal(done.state, 'done');
+  for (const action of Object.values(done.actions)) {
+    assert.equal(action.available, false);
+    assert.ok(action.reason);
+  }
 });
 
 test('Stop asks one working ticket to stop and refuses a ticket that is not working', async (t) => {
@@ -194,7 +200,11 @@ test('Close and Reset need a confirmation; a confirmed Close marks the ticket do
   const closed = await b.post({ action: 'close', ticket: 1, confirmed: true });
   assert.equal(closed.code, 200);
   assert.ok(calls.includes('close 1'));
-  assert.equal(b.ticket(await b.until(p => b.ticket(p, 1).state === 'done'), 1).state, 'done');
+  const project = await b.until((p, snapshot) => !p.tickets.some(ticket => ticket.number === 1)
+    && snapshot.archive.some(project => project.runs.some(group => group.tickets.some(ticket => ticket.number === 1 && ticket.state === 'done'))));
+  assert.ok(!project.tickets.some(ticket => ticket.number === 1), 'the closed ticket leaves Active');
+  const done = (await b.snapshot()).archive.flatMap(project => project.runs.flatMap(group => group.tickets)).find(ticket => ticket.number === 1)!;
+  assert.equal(done.state, 'done');
 });
 
 test('Stop Run stops dispatch and asks every working ticket to stop; Start Run resumes only those', async (t) => {
