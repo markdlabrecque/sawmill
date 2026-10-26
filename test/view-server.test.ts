@@ -84,14 +84,16 @@ test('mill board --json carries a working ticket\'s role and each state\'s lane 
     UPDATE tickets SET state = 'working', stage = 'mystery' WHERE number = 5;`);
   let stdout = '';
   assert.equal(await runCli(['board', '--json'], { tracker, cwd: yard.root, home: yard.home, stdout: (text) => { stdout += text; } }), 0);
-  const rows = (JSON.parse(stdout) as ViewSnapshot).projects[0]!.tickets;
+  const snapshot = JSON.parse(stdout) as ViewSnapshot;
+  const rows = snapshot.projects[0]!.tickets;
   assert.deepEqual(rows.map(row => [row.number, row.state, row.role, row.lane]), [
     [1, 'working', 'implementer', 'implement'],
     [2, 'working', null, 'PR'],
     [3, 'logjam', null, 'review'],
-    [4, 'done', null, 'merged'],
     [5, 'working', null, 'launch'],
   ]);
+  const archived = snapshot.archive.flatMap(project => project.runs.flatMap(group => group.tickets));
+  assert.deepEqual(archived.map(row => [row.number, row.state, row.role, row.lane]), [[4, 'done', null, 'merged']]);
   assert.equal(rows[2]!.reason, 'question: which format?');
 });
 

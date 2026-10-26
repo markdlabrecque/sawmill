@@ -51,8 +51,14 @@ export interface ViewProject {
   tickets: ViewTicket[];
 }
 export interface ViewRun { runId: string; created: string | null; error: string | null; tickets: ViewTicket[] }
-/** One project's finished or replaced runs, newest first. */
-export interface ViewArchive { name: string; millyard: string; runs: ViewRun[] }
+export interface ViewArchivedTicket extends ViewTicket { mergedAt: string | null }
+export interface ViewArchiveDay { day: string | null; tickets: ViewArchivedTicket[] }
+/** One project's archived tickets by local merge day, newest first. `runs` retains the snapshot's container name. */
+export interface ViewArchive {
+  name: string; millyard: string; runs: (ViewArchiveDay | ViewRun)[];
+  /** Older snapshots used ViewRun entries and had no separate errors. */
+  errors?: { runId: string; error: string }[];
+}
 /** `projects` is the Active Section: current, unfinished runs. `archive` is the Archive Section. */
 export interface ViewSnapshot { time: string; projects: ViewProject[]; archive: ViewArchive[] }
 
@@ -168,14 +174,28 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 /** A run is complete when it has tickets and every one is done. */
 const complete = (tickets: ViewTicket[]) => tickets.length > 0 && tickets.every(ticket => ticket.state === 'done');
 
+function archiveTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null): ViewArchivedTicket[] {
+  return viewTickets(run, tracker).map((ticket, index) => {
+    const time = run.tickets[index]!.mergedAt;
+    const date = time ? new Date(time.replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z')) : null;
+    return { ...ticket, mergedAt: date && Number.isFinite(date.getTime()) ? date.toISOString() : null };
+  });
+}
+
+function mergeDay(time: string | null): string | null {
+  if (!time) return null;
+  const date = new Date(time);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 /** Saved runs from `.mill/history`, read-only; an unreadable file keeps its error rather than vanishing. */
-function historyRuns(millyard: string, tracker: ProjectConfig['tracker'] | null): ViewRun[] {
+function historyRuns(millyard: string, tracker: ProjectConfig['tracker'] | null): (Omit<ViewRun, 'tickets'> & { tickets: ViewArchivedTicket[] })[] {
   let files: string[];
   try { files = readdirSync(historyPath(millyard)).filter(file => file.endsWith('.sqlite')); } catch { return []; }
-  return files.map((file): ViewRun => {
+  return files.map(file => {
     try {
       const run = readRunFile(join(historyPath(millyard), file));
-      return { runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run, tracker) };
+      return { runId: run.run.id, created: run.run.created, error: null, tickets: archiveTickets(run, tracker) };
     } catch (error) {
       return { runId: file.slice(0, -'.sqlite'.length), created: null, error: message(error), tickets: [] };
     }
@@ -187,20 +207,36 @@ export async function readView(home: string): Promise<ViewSnapshot> {
   const archive: ViewArchive[] = [];
   for (const millyard of await discoverMillyards(home)) {
     const { name, tracker } = projectSettings(millyard);
-    const runs: ViewRun[] = [];
+    const days = new Map<string | null, ViewArchivedTicket[]>();
+    const seen = new Set<string>();
+    const errors: NonNullable<ViewArchive['errors']> = [];
+    const add = (runId: string, tickets: ViewArchivedTicket[]) => {
+      for (const ticket of tickets) {
+        const key = `${runId}#${ticket.number}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const day = mergeDay(ticket.mergedAt);
+        if (!days.has(day)) days.set(day, []);
+        days.get(day)!.push(ticket);
+      }
+    };
     try {
       const run = readRun(millyard);
       const tickets = viewTickets(run, tracker, millyard);
-      if (complete(tickets)) runs.push({ runId: run.run.id, created: run.run.created, error: null, tickets: viewTickets(run, tracker) });
-      else projects.push({ name, millyard, runId: run.run.id, error: null, runStatus: runStatus(run), pausedReason: run.run.loop?.pausedReason ?? null, runActions: runActions(run), tickets });
+      add(run.run.id, archiveTickets(run, tracker).filter(ticket => ticket.state === 'done'));
+      // The current file wins over any saved copy, including its still-active tickets.
+      for (const ticket of tickets) seen.add(`${run.run.id}#${ticket.number}`);
+      if (!complete(tickets)) projects.push({ name, millyard, runId: run.run.id, error: null, runStatus: runStatus(run), pausedReason: run.run.loop?.pausedReason ?? null, runActions: runActions(run), tickets: tickets.filter(ticket => ticket.state !== 'done') });
     } catch (error) {
       const unreadable = allow('The run file cannot be read.');
       projects.push({ name, millyard, runId: null, error: message(error), runStatus: 'stopped', pausedReason: null, runActions: { start: unreadable, stop: unreadable }, tickets: [] });
     }
-    // A run seen as both the current file and a saved copy appears once.
-    for (const run of historyRuns(millyard, tracker)) if (!runs.some(seen => seen.runId === run.runId)) runs.push(run);
-    runs.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
-    if (runs.length) archive.push({ name, millyard, runs });
+    for (const run of historyRuns(millyard, tracker)) {
+      if (run.error) errors.push({ runId: run.runId, error: run.error });
+      add(run.runId, run.tickets);
+    }
+    const runs = [...days].sort(([a], [b]) => (b ?? '').localeCompare(a ?? '')).map(([day, tickets]) => ({ day, tickets }));
+    if (runs.length || errors.length) archive.push({ name, millyard, runs, errors });
   }
   return { time: new Date().toISOString(), projects, archive };
 }
