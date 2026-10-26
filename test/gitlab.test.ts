@@ -77,6 +77,40 @@ test('GitLab draft normalizes full paginated threads and closed outside body blo
   assert.deepEqual((await y.status()).tickets, snapshot.tickets);
 });
 
+test('GitLab drafts work_items addresses and persists the ticket and its closed blocker', async t => {
+  const y = await fixture(t);
+  for (const row of y.state.issues) row.web_url = row.web_url.replace('/-/issues/', '/-/work_items/');
+  await y.save();
+  const result = await y.cli('run', 'draft', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const snapshot = JSON.parse(result.stdout);
+  assert.equal(snapshot.tickets[0].number, 7);
+  assert.equal(snapshot.tickets[0].title, 'Ticket 7');
+  assert.equal(snapshot.tickets[0].state, 'queued');
+  assert.deepEqual(snapshot.edges, [{ blocked: 7, blocker: 2, outsideClosed: true }]);
+  assert.deepEqual((await y.status()).tickets, snapshot.tickets);
+});
+
+test('GitLab refuses work_items addresses from another project or host without replacing the draft', async t => {
+  for (const webUrl of [
+    'https://git.example.invalid/group/another/-/work_items/7',
+    'https://other.example.invalid/group/subgroup/tool/-/work_items/7',
+  ]) {
+    await t.test(webUrl, async sub => {
+      const y = await fixture(sub);
+      const initial = await y.cli('run', 'draft', '7', '--json');
+      assert.equal(initial.code, 0, initial.stdout);
+      const saved = await y.status();
+      y.state.issues[0]!.web_url = webUrl;
+      await y.save();
+      const result = await y.cli('run', 'draft', '7', '--replace', '--json');
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(result.stdout, /different project identity/i);
+      assert.deepEqual(await y.status(), saved);
+    });
+  }
+});
+
 test('GitLab draft assigns the glab user, leaves a held ticket with its holder, and never assigns twice', async t => {
   const y = await fixture(t);
   y.state.issues.push(issue(11), { ...issue(12), assignees: [{ id: 9, username: 'alice' }] } as ReturnType<typeof issue>);
