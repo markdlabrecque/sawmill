@@ -7,6 +7,16 @@
 # Every valid key is listed. Keys that are commented out are optional.
 # Everything else is shown with its default.
 
+# Optional Pi extension allowlist, inherited by runtime: pi projects. No entry
+# means no optional extensions; automatic discovery always stays disabled.
+# Local files/directories only. ~ expands to the user's home; relative paths
+# resolve beside this config file. Missing effective paths fail configuration.
+# A project's .mill/config.yaml pi.extensions replaces this list; [] disables it.
+# TRUST: extension code runs with your full user permissions. See docs/pi-runtime.md.
+# pi:
+#   extensions:
+#     - ~/.pi/agent/extensions/pi-claude-subscription
+
 # How many tickets may be working at once, across all millyards. Start low
 # until your model plan proves it can take more.
 concurrency: 2

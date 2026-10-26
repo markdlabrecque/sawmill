@@ -48,7 +48,7 @@ export async function resumeRun(cwd: string, home: string, number: number): Prom
 }
 
 async function runLocked(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {
-  await dispatchPreflight(cwd, project);
+  await dispatchPreflight(cwd, project, true, home);
   await mkdir(slotsPath(home), { recursive: true });
   activateRun(cwd);
   await registerMillyard(home, cwd);

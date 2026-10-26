@@ -9,6 +9,56 @@ The contract follows Pi 1.4.0 at commit
 a real model in local Mill fixtures on 2026-10-24. Older versions lacking these
 flags, hooks or settlement events fail.
 
+## Approved provider extensions
+
+Set `pi.extensions` in `~/.config/sawmill/config.yaml` to allow optional Pi
+extensions across projects (for example, a Claude subscription provider):
+
+```yaml
+pi:
+  extensions:
+    - ~/.pi/agent/extensions/pi-claude-subscription
+```
+
+Projects with `runtime: pi` inherit that list. In `.mill/config.yaml`, an absent
+`pi.extensions` inherits it, an explicit list **replaces** it (never merges), and
+`pi: { extensions: [] }` disables all optional extensions for that project.
+With neither setting, no optional extension loads. Project `pi` settings are
+invalid with another runtime; global defaults are ignored by non-Pi projects.
+`~/.config/sawmill/default.yaml` is only the project template copied by `mill
+build`, not a live source of global defaults. Leave `pi.extensions` absent there
+to preserve inheritance.
+
+Entries must be existing local extension files or directories, not npm/git
+install specifications. `~` and `~/` expand using the Sawmill user's home.
+Relative global entries resolve beside `~/.config/sawmill/config.yaml`; relative
+project entries resolve from the millyard root. Sawmill resolves the effective
+list to absolute paths, so every ticket worktree and role uses the same paths.
+Only effective paths are checked: a project replacement can ignore a missing
+global extension. A missing/inaccessible effective path is a configuration error.
+
+**Trust:** allowlisted code runs inside Pi with all the launching user's
+permissions, including access to files and credentials. Review it before adding
+it. This is an explicit code-trust decision, not a sandbox for extensions. Pi's
+extension discovery stays off; only these explicit paths and Sawmill's own policy
+load. The policy loads last and refuses an unexpected active tool set rather than
+silently widening a role. The existing role tool and command rules still apply.
+
+Before scheduler dispatch, Sawmill checks every distinct configured role model
+against `pi --list-models` with the same optional extensions and discovery
+lockdown. This starts no session and makes no model request. A missing model or
+failed extension startup is a configuration error before any ticket is claimed,
+not a retrying test-writers logjam. Each listing has a 30-second deadline and uses
+the execution user's Pi environment. Available models depend on that user's
+provider credentials; Sawmill neither retrieves nor copies credentials.
+
+Extension providers can run every role using exact `provider/model` IDs. They do
+not participate in automatic model routing: the routing catalog still recognizes
+only Pi's `openai/gpt-*` and `anthropic/claude-*` families. Other provider baselines
+remain unchanged with disposition `unsupported-provider-or-family`; extension
+provider tier mappings are not accepted. Configure those models directly under
+`roles`, without relying on routing to select them.
+
 ## Invocation and outcomes
 
 `createRuntime('pi')` returns `PiRuntime`. The CLI launches `pi` directly in the
@@ -18,11 +68,12 @@ ticket worktree, with role prompt and handoff on stdin:
 pi --print --mode json --model <provider/model-id> --thinking <literal-effort>
    --tools <role-tools> --no-mcp --no-extensions --no-skills
    --no-prompt-templates --no-themes --no-approve
+   [--extension <approved-path> ...]
    --extension <installed-dist/src/pi-policy.js>
 ```
 
 The packaged extension runs inside that vendor process. There is no relay,
-RPC server, SDK agent, custom runtime command or new project configuration key.
+RPC server, SDK agent or custom runtime command.
 `SAWMILL_PI_POLICY` carries per-invocation role and permission data to that
 extension. An invocation nonce identifies its readiness/error records on the
 existing stderr pipe. These records remain in the stderr log. They are not secrets
@@ -55,8 +106,9 @@ commands, permissions and timeouts still count as tool failures.
 
 Writers receive `read,grep,find,ls,bash,edit,write`. Reviewers receive
 `read,grep,find,ls,bash`. The extension also checks each `tool_call`, refusing
-unlisted tools. MCP and other discovered/configured extensions are disabled;
-Pi still loads the explicit Sawmill extension with `--no-extensions`.
+unlisted tools. MCP and discovered/Pi-configured extensions are disabled;
+Pi still loads the effective Sawmill allowlist and explicit Sawmill policy with
+`--no-extensions`.
 
 Bash permits the exact configured test command and selected literal forms of
 `git status`, `diff`, `log` and `show`. Supported flags are listed in
