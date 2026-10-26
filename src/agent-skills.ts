@@ -3,9 +3,11 @@ import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-// The Vercel skills CLI installs the skills this mill ships, so they always match it, into every agent's global skill directory.
-export const installArgs = (root: string) => ['-y', 'skills', 'add', root, '--skill', '*', '-g', '-a', '*', '-y'];
-export const installCommand = (root: string) => `npx skills add '${root}' --skill '*' -g -a '*' -y`;
+// The Vercel skills CLI installs the skills this mill ships, so they always match it, into the global skill directory of each agent it detects.
+export const installArgs = (root: string) => ['-y', 'skills', 'add', root, '--skill', '*', '-g', '-y'];
+export const installCommand = (root: string) => `npx skills add '${root}' --skill '*' -g -y`;
+// The skills CLI always targets PromptScript, which has no global directory, so every global install reports it failed.
+const expectedFailures = 'Note: the PromptScript "does not support global skill installation" failures above are expected; the skills CLI always tries it and no Sawmill skill is affected.\n';
 
 export interface SkillOffer {
   root: string;
@@ -38,7 +40,9 @@ export async function offerSkills({ root, home, ask, install = () => npx(root), 
     stdout(`Skipped. Mill will not ask again; to install later, run: ${installCommand(root)}\n`);
     return 'declined';
   }
-  if (install()) return 'installed';
+  const installed = install();
+  stdout(expectedFailures);
+  if (installed) return 'installed';
   stdout(`Installing the skills failed. To retry, run: ${installCommand(root)}\n`);
   return 'failed';
 }
