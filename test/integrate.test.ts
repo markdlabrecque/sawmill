@@ -615,21 +615,81 @@ test('integration stops if a local stop or manual completion arrives at a stage 
   }
 });
 
-test('changed test output or a mismatched PR head cannot reach merge', async t => {
-  for (const mode of ['dirty-tests', 'changed-head', 'wrong-pr']) {
+test('changed test output cannot reach merge', async t => {
+  for (const mode of ['dirty-tests', 'changed-head']) {
     const y = await fixture(t);
-    if (mode === 'wrong-pr') {
-      const open = y.tracker.findOrOpenChangeRequest.bind(y.tracker);
-      y.tracker.findOrOpenChangeRequest = async input => ({ ...await open(input), headCommit: 'a'.repeat(40) });
-    } else {
-      const command = mode === 'dirty-tests' ? 'echo changed >> feature.test.ts' : 'git commit --allow-empty -m changed-by-tests';
-      await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: ${command}`));
-    }
+    const command = mode === 'dirty-tests' ? 'echo changed >> feature.test.ts' : 'git commit --allow-empty -m changed-by-tests';
+    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: test -f feature.test.ts', `command: ${command}`));
     const result = await y.cli('integrate', '9', '--json');
     assert.equal(result.code, 1, result.stdout); assert.equal(JSON.parse(result.stdout).outcome, 'infrastructure');
     assert.deepEqual(y.tracker.methods, []); assert.equal(y.tracker.ticket.state, 'open');
   }
 });
+
+test('a GitLab MR head that catches up after push merges without spending an infrastructure attempt', async t => {
+  const delays: number[] = [];
+  const y = await fixture(t, async ms => { delays.push(ms); }, 'gitlab');
+  await writeFile(join(y.userConfig, 'config.yaml'), 'ci_poll_interval: 2s\n');
+  const open = y.tracker.findOrOpenChangeRequest.bind(y.tracker);
+  y.tracker.findOrOpenChangeRequest = async input => ({ ...await open(input), headCommit: 'a'.repeat(40) });
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(reply.code, 0, reply.stdout);
+  assert.equal(JSON.parse(reply.stdout).outcome, 'merged');
+  assert.deepEqual(delays, [2000], 'wait at the configured polling interval, not infrastructure backoff');
+  assert.deepEqual(y.tracker.methods, ['squash']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done');
+  assert.equal(row.bounces, 0);
+  assert.doesNotMatch((await y.cli('run', 'log', '9')).stdout, /\[infrastructure\]/);
+});
+
+test('a GitLab MR head that never catches up fails only after the bounded wait and keeps the pushed work', async t => {
+  const delays: number[] = [];
+  let elapsed = 0;
+  const y = await fixture(t, async ms => {
+    assert.ok(ms > 0 && ms <= 2000, 'poll sleeps must be positive and capped at the configured interval');
+    delays.push(ms);
+    elapsed += ms;
+    assert.ok(elapsed <= 5000, 'the head wait must end at its deadline');
+  }, 'gitlab');
+  await writeFile(join(y.userConfig, 'config.yaml'), 'ci_poll_interval: 2s\n');
+  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nphase_timeouts:\n  ci: 5s\n`);
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + elapsed);
+  const open = y.tracker.findOrOpenChangeRequest.bind(y.tracker);
+  y.tracker.findOrOpenChangeRequest = async input => ({ ...await open(input), headCommit: 'a'.repeat(40) });
+  y.tracker.getChangeRequest = async () => ({ ...y.tracker.requests[0]!, headCommit: 'a'.repeat(40) });
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(reply.code, 1, reply.stdout);
+  assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure');
+  assert.match(reply.stdout, /Change request or local HEAD differs from the tested, pushed commit\./);
+  assert.equal(elapsed, 5000, 'a mismatched MR must be given the bounded catch-up window');
+  assert.ok(delays.length > 1, 'poll more than once before declaring a persistent mismatch');
+  assert.deepEqual(y.tracker.methods, []);
+  assert.equal(y.tracker.ticket.state, 'open');
+  assert.equal((await y.status()).tickets[0].completion, null);
+  assert.equal(y.tracker.head('mill/9'), y.git('-C', y.path, 'rev-parse', 'HEAD'));
+  assert.equal(y.git('-C', y.path, 'status', '--porcelain'), '');
+});
+
+for (const mutation of ['dirty-worktree', 'changed-head']) {
+  test(`a stale GitLab MR does not delay rejection of a ${mutation} after push`, async t => {
+    const delays: number[] = [];
+    const y = await fixture(t, async ms => { delays.push(ms); }, 'gitlab');
+    const open = y.tracker.findOrOpenChangeRequest.bind(y.tracker);
+    y.tracker.findOrOpenChangeRequest = async input => {
+      const request = await open(input);
+      if (mutation === 'dirty-worktree') await writeFile(join(y.path, 'untracked'), 'human work\n');
+      else y.git('-C', y.path, 'commit', '--allow-empty', '-m', 'Local head moved after push');
+      return { ...request, headCommit: 'a'.repeat(40) };
+    };
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(reply.code, 1, reply.stdout);
+    assert.match(reply.stdout, /Change request or local HEAD differs from the tested, pushed commit\./);
+    assert.deepEqual(delays, [], 'local safety checks must fail immediately, even when the MR is stale');
+    assert.deepEqual(y.tracker.methods, []);
+  });
+}
 
 test('the millyard fetches current remote integration before rebasing', async t => {
   const y = await fixture(t);

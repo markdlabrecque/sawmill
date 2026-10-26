@@ -121,7 +121,7 @@ export interface IntegrationTracker extends TicketWriter {
   hostPolicy?(branch: string): Promise<HostPolicy>;
   /** Download one verified failed job's log through the tracker's own authentication. */
   getJobLog?(job: CiJob, limits: LogLimits): Promise<JobLog>;
-  /** One final PR/MR read before merging; never an issue read or a polling loop. */
+  /** Read the PR/MR head after push and before merging; never an issue read. */
   getChangeRequest?(id: number | string): Promise<ChangeRequest>;
   /** Open, merged or closed state of one request, read before an unacknowledged merge is retried. */
   reconcileChangeRequest?(id: number | string): Promise<ReconciledChangeRequest>;
