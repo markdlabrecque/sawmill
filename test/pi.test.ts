@@ -19,7 +19,7 @@ const settled = { type: 'agent_settled', aborted: false };
 const complete = (text = fence({ outcome: 'pass', summary: 'Reviewed café 🪵\u2028retained' })) => [session,
   { type: 'agent_start' }, assistant(text), { type: 'agent_end', messages: [], willRetry: false }, settled];
 
-async function piYard(t: TestContext, body = 'Preserve the full patch.', browser = false) {
+async function piYard(t: TestContext, body = 'Preserve the full patch.', browser = false, createWorktree = true) {
   const ticket: Ticket = { number: 21, title: 'Use direct Pi', body, state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
   const tracker = {
     async getTicket() { return structuredClone(ticket); },
@@ -35,7 +35,7 @@ async function piYard(t: TestContext, body = 'Preserve the full patch.', browser
     .replace('runtime: claude-code', 'runtime: pi').replaceAll(/claude-[\w-]+/g, 'openai/gpt-6.1')
     .replaceAll('effort: high', 'effort: max').replaceAll('effort: medium', 'effort: max').replace('ci: wait', 'ci: none'));
   assert.equal((await yard.cli('run', 'draft', '21')).code, 0);
-  assert.equal((await yard.cli('worktree', 'create', '21')).code, 0);
+  if (createWorktree) assert.equal((await yard.cli('worktree', 'create', '21')).code, 0);
   const worktree = join(yard.root, '21');
   const bin = join(yard.root, 'bin'); await mkdir(bin);
   const originalPath = process.env.PATH;
@@ -651,7 +651,10 @@ test('An approved Pi extension cannot activate an extra tool unnoticed', async t
 });
 
 test('Pi rejects an unavailable role model at dispatch preflight before a ticket starts', async t => {
-  const y = await piYard(t);
+  const y = await piYard(t, undefined, false, false);
+  const before = await y.status();
+  assert.equal(before.state, 'queued');
+  assert.deepEqual(before.sessionIds, {});
   // No pi config key here: this isolates the missing preflight from the missing
   // allowlist schema. The reviewer alone is unavailable, so checking only the
   // first role would not satisfy this test.
