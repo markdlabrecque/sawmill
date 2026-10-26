@@ -147,7 +147,13 @@ button.ac:disabled { opacity: .65; cursor: wait; box-shadow: none; }
 .empty { color: var(--dim); text-align: center; padding: 44px 20px; background: var(--card); border: 1.5px dashed #9baa8c; border-radius: 8px; }
 .arc { margin-top: 30px; padding-top: 20px; border-top: 2px solid var(--fg); }
 .arc>summary { display: list-item; padding: 6px 0 14px; }
-.arc .p { margin-top: 14px; }
+.arc .p { margin-top: 14px; padding-bottom: 14px; }
+.arc .p h2 { align-items: center; flex-wrap: nowrap; }
+.expand { display: flex; flex: 1; flex-wrap: wrap; align-items: baseline; gap: 5px 14px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; font: inherit; letter-spacing: inherit; }
+.expand::before { content: '▸'; }
+.expand[aria-expanded=true]::before { content: '▾'; }
+.arc .expand .nm { white-space: normal; overflow-wrap: anywhere; }
+.arc .contents { margin-top: 10px; }
 .arc .empty { padding: 24px 16px; }
 .q { display: block; width: 100%; font-size: 16px; padding: 10px 12px; border-radius: 5px; border: 1.5px solid var(--fg); background: var(--card); margin: 0 0 14px; }
 .glass { flex: none; min-width: 38px; min-height: 38px; margin: -7px -9px -7px 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--fg); font-size: 18px; }
@@ -155,7 +161,7 @@ button.ac:disabled { opacity: .65; cursor: wait; box-shadow: none; }
 .glass svg { width: 17px; height: 17px; margin: auto; }
 .arc .path { margin-bottom: 12px; }
 .run { padding: 12px 0; border-top: 1px solid var(--line); }
-.run .rh { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.run .rh { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; margin-bottom: 8px; overflow-wrap: anywhere; }
 .ar { display: flex; gap: 10px; align-items: baseline; font-size: 13px; padding: 7px 0; min-width: 0; }
 .ar .st { font-size: 10px; color: var(--dim); white-space: nowrap; padding: 1px 6px; border-radius: 3px; background: var(--soft); }
 .none { color: var(--dim); font-size: 12px; padding: 4px 0 14px; }
