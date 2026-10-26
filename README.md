@@ -32,6 +32,20 @@ mill update /path/to/sawmill
 
 `mill update` builds the checkout, waits for working tickets to finish, swaps in the new build, and restarts the scheduler. It never fetches or changes the checkout. `mill --version` shows the running build. See [Operating Mill](docs/operating-mill.md) for the details.
 
+### Agent skills
+
+Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done, and `learn` runs a retrospective on finished deliveries. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of every agent it finds on your machine.
+
+The first time you run `mill` at a terminal without them, it offers to install them. Answer `y` to run the install, or `n` to skip it. Mill remembers a skip in `~/.config/sawmill/skills-declined` and never asks again; delete that file to be asked once more. Scripts, `--json`, `--help`, and `--version` are never asked.
+
+To install them yourself, from the copy that ships with your `mill`:
+
+```sh
+npx skills add "$(npm root -g)/@markdlabrecque/sawmill" --skill '*' -g -a '*' -y
+```
+
+Run it again after `mill update` to pick up changed skills.
+
 ## Quickstart
 
 This example uses GitHub, Codex, and a Node project with an `npm test` command. Use your own repository, issue numbers, and available GPT model IDs.
