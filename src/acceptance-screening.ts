@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { Acceptance, AcceptanceResult } from './acceptance.js';
 import { readResults, type TestRun } from './test-results.js';
-import { jevModel, typeSafeChoices, type Evidence } from './typesafe.js';
+import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 import { redact } from './view/diagnosis.js';
 
 const execute = promisify(execFile);
@@ -199,5 +199,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   }
   const telemetry = { model: validConfiguration ? model : jevModel, questionVersion: validConfiguration ? questionVersion : acceptanceQuestionVersion,
     latencyMs: performance.now() - started, usage: usage ?? null, cost: null };
-  return findings.map(finding => `Acceptance evidence advisory: ${JSON.stringify({ ...finding, ...telemetry })}`);
+  const configurationError = unavailable === 'missing-credentials' ? `Acceptance screening: ${typeSafeConfigurationMessage}` : undefined;
+  if (configurationError && !findings.length) return [configurationError];
+  return findings.map(finding => `Acceptance evidence advisory: ${JSON.stringify({ ...finding, ...telemetry, ...(configurationError ? { configurationError } : {}) })}`);
 }

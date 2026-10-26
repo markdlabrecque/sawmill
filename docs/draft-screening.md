@@ -66,12 +66,13 @@ AbortSignal. The helper also imposes a wall-clock timeout, even if an injected
 classifier ignores cancellation. Configuration permits 1–60,000 ms; the default
 is 10,000 ms. Timed-out work is aborted and ignored.
 
-**Execution startup takes precedence over optional missing-key fallbacks.** The
-shared configuration in `src/typesafe.ts` requires a nonblank `TYPESAFE_API_KEY`
-before execution, even with screening disabled. Missing startup credentials are
-a configuration error, not infrastructure retries or permission to run without
-TypeSafe. Drafting and these advisory helpers retain their optional behavior;
-service-error and review/merge policies are unchanged. See
+**Credentials follow each project's opt-ins.** Only `model_routing.enabled: true`
+requires a nonblank `TYPESAFE_API_KEY` at execution startup, before activation or
+retries. Each separately enabled screen checks its own credentials when invoked;
+a missing key produces an actionable configuration diagnostic at that boundary.
+A disabled screen never requires a key, and enabling draft screening does not
+gate ordinary execution or another project's work. Service-error fallbacks and
+review/merge policies are unchanged. See
 [execution environment and scheduler recovery](operating-mill.md#before-you-start-a-run).
 
 The shared client in `src/typesafe.ts` has a reusable choice/evidence boundary;

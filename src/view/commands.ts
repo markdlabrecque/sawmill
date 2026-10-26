@@ -89,8 +89,8 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
         : failed(`The tracker did not accept the reset of #${ticket.number}; pending writes are held. Try again.`);
     }
     if (run.run.lifecycle === 'active' || (run.run.lifecycle === 'stopped' && runActions(run).start.available)) {
-      requireSchedulerConfiguration(home);
-      if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home);
+      requireSchedulerConfiguration(home, project, cwd);
+      if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home, project, cwd);
     }
     const message = typeof request.message === 'string' && request.message.trim() ? request.message : undefined;
     if (!await answerTicket(cwd, project, writer, ticket.number, message, options)) return failed(`The tracker did not accept the answer to #${ticket.number}; it is held for retry.`);
@@ -111,9 +111,9 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
 
 /** The same start as mill run, which then resumes only the tickets the board's Stop Run stopped. */
 async function startRun(cwd: string, home: string, project: ProjectConfig, writer: TicketWriter, options: Pick<CliOptions, 'sleep'>, done: string): Promise<CommandReply> {
-  requireSchedulerConfiguration(home);
+  requireSchedulerConfiguration(home, project, cwd);
   if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project);
-  await ensureExecutionScheduler(home);
+  await ensureExecutionScheduler(home, project, cwd);
   const stopped = readRun(cwd).run.stoppedTickets ?? [];
   activateRun(cwd);
   await registerMillyard(home, cwd);

@@ -102,6 +102,8 @@ function missingKeyMessage(message: string) {
 
 async function guardedIntegration(t: TestContext) {
   const y = await fixture(t);
+  // #192: only the opted-in project requires role-routing credentials.
+  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nmodel_routing:\n  enabled: true\n`);
   const activity = join(y.root, 'unexpected-activity');
   // These would run during integration even without a tracker or model call.
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
@@ -238,6 +240,18 @@ test('integrate rebases, tests and squash-merges through a ticket-linked PR, the
   const report = y.tracker.ticket.comments.at(-1)!.body;
   for (const text of ['[sawmill:merged]', 'feature.test.ts', 'review-session', value.mergeCommit, value.changeRequestUrl]) assert.ok(report.includes(text), report);
   assert.equal((await y.cli('integrate', '9')).code, 0);
+  assert.deepEqual(y.tracker.methods, ['squash']);
+});
+
+test('integration without any Jev opt-in completes its normal gates without a TypeSafe key', async t => {
+  const y = await fixture(t);
+  const previous = process.env.TYPESAFE_API_KEY;
+  t.after(() => { if (previous === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = previous; });
+  delete process.env.TYPESAFE_API_KEY;
+  const result = await y.cli('integrate', '9', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(JSON.parse(result.stdout).outcome, 'merged');
+  assert.equal(y.tracker.ticket.state, 'closed');
   assert.deepEqual(y.tracker.methods, ['squash']);
 });
 

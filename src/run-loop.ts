@@ -2,7 +2,7 @@ import { requireTypeSafeKey } from './typesafe.js';
 import { watch } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { MachineConfig, ProjectConfig } from './config.js';
+import { loadConfig, type MachineConfig, type ProjectConfig } from './config.js';
 import { dispatchOnce, dispatchPreflight, readyTickets, workerEvents, type DispatchResult } from './dispatch.js';
 import { readRun } from './run-store.js';
 import { listSlots, slotsPath } from './slots.js';
@@ -26,7 +26,7 @@ function changes(cwd: string, home: string) {
 /** `mill run --foreground`: activates the run and coordinates it in this terminal. It holds
  * the run's loop lock, so the shared scheduler leaves the run to it until it returns. */
 export async function runLoop(cwd: string, project: ProjectConfig, machine: MachineConfig, home: string, writer: () => TicketWriter) {
-  requireTypeSafeKey();
+  requireTypeSafeKey(project, cwd);
   readRun(cwd);
   await recoverWorkers(cwd, home);
   return withRunLock(cwd, 'loop', () => runLocked(cwd, project, machine, home, writer), true);
@@ -38,7 +38,9 @@ export async function resumeRun(cwd: string, home: string, number: number): Prom
   const snapshot = readRun(cwd);
   if (snapshot.run.lifecycle !== 'active' || snapshot.tickets.find(row => row.number === number)?.state !== 'queued' || lockHeld(cwd, 'loop')) return undefined;
   try {
-    const scheduler = await ensureExecutionScheduler(home);
+    const config = await loadConfig(cwd, home);
+    if (!config.valid) return { error: config.issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('; ') };
+    const scheduler = await ensureExecutionScheduler(home, config.project, cwd);
     await registerMillyard(home, cwd);
     notifyScheduler(home);
     return { pid: scheduler.pid, log: scheduler.log };

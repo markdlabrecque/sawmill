@@ -16,7 +16,14 @@ import { runLoop, resumeRun } from '../src/run-loop.js';
 import { runTeam } from '../src/team-runner.js';
 import { reviewTicket } from '../src/team-review.js';
 import { runCommand } from '../src/view/commands.js';
-import { fixture, until } from './dispatch-fixture.js';
+import { fixture as dispatchFixture, until } from './dispatch-fixture.js';
+
+// #192: credential rejection applies only to projects opting into role routing.
+async function fixture(t: TestContext, routing = true) {
+  const y = await dispatchFixture(t);
+  if (routing) await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nmodel_routing:\n  enabled: true\n`);
+  return y;
+}
 
 type Yard = Awaited<ReturnType<typeof fixture>>;
 const sentinel = 'startup-test-secret-must-never-be-printed';
@@ -263,7 +270,7 @@ test('a caller key cannot authorize a live keyless scheduler; an explicit restar
 });
 
 test('a present key permits dispatch, but is absent from CLI, Board, and durable run metadata', async t => {
-  const y = await fixture(t);
+  const y = await fixture(t, false);
   y.env.TYPESAFE_API_KEY = sentinel;
   await y.release();
   const dispatched = await result(y, ['run', 'once', '--json']);
@@ -280,7 +287,7 @@ test('a present key permits dispatch, but is absent from CLI, Board, and durable
 
 test('drafting, help, status, logs, and stopping remain usable without a key', async t => {
   key(t, undefined);
-  const y = await fixture(t); // drafts the inactive run with the key absent
+  const y = await fixture(t, false); // drafts the inactive run with the key absent
   delete y.env.TYPESAFE_API_KEY;
   assert.equal(readRun(y.cwd).run.lifecycle, 'inactive');
   for (const args of [['--help'], ['run', 'status', '--json'], ['run', 'log', '1', '--json'], ['scheduler', 'status', '--json'], ['board', '--json']]) {

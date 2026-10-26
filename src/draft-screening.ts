@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import type { Ticket } from './tracker.js';
 import { redact } from './view/diagnosis.js';
-import { jevModel, typeSafeChoices, type Evidence } from './typesafe.js';
+import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 export type { Evidence } from './typesafe.js';
 
 export const draftScreenModel = jevModel;
@@ -28,6 +28,7 @@ export interface ScreeningReport {
   usage?: ScreeningUsage;
   cost: null;
   fallbackReason?: string;
+  configurationError?: string;
 }
 export interface ScreeningOptions {
   /** Explicit project opt-in. Never inferred from the presence of credentials. */
@@ -138,7 +139,10 @@ export async function screenDraft(tickets: readonly Ticket[], options: Screening
     report.results = questions.map(question => ({ ...question, answer: 'uncertain', fallbackReason: reason }));
     return finish();
   };
-  if (!apiKey?.trim()) return fallback('missing-credentials');
+  if (!apiKey?.trim()) {
+    report.configurationError = `Draft screening: ${typeSafeConfigurationMessage}`;
+    return fallback('missing-credentials');
+  }
   if (!validMetadata || !validLimits || (!options.classify && (model !== draftScreenModel || questionVersion !== draftScreenQuestionVersion))) return fallback('invalid-configuration');
   if (!questions.length) return finish();
   const request: ScreeningRequest = { model, questionVersion, questions };

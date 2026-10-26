@@ -6,11 +6,10 @@ import { isAbsolute, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import type { Effort, MachineConfig, ProjectConfig, Role } from './config.js';
 import { milliseconds } from './config.js';
-import { CliError } from './errors.js';
 import type { RunTicket } from './run-store.js';
 import { supportedRoutingSelection, type RuntimeResult } from './runtime.js';
 import { redact } from './view/diagnosis.js';
-import { jevModel, typeSafeChoices, type Evidence, type TypeSafeResult } from './typesafe.js';
+import { jevModel, requireTypeSafeKey, typeSafeChoices, type Evidence, type TypeSafeResult } from './typesafe.js';
 
 const execute = promisify(execFile);
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -38,7 +37,7 @@ export interface ModelSelection {
 }
 
 export function requireRoutingCredentials(project: ProjectConfig): void {
-  if (project.model_routing?.enabled && !process.env.TYPESAFE_API_KEY?.trim()) throw new CliError('TYPESAFE_API_KEY is required for model routing execution startup.', 2);
+  requireTypeSafeKey(project);
 }
 
 const familyOf = (model: string, runtime: ProjectConfig['runtime']) => {
