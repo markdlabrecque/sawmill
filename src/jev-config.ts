@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { loadProjectConfig, milliseconds, type JevScreen } from './config.js';
@@ -18,12 +18,12 @@ export async function jevScreenOptions(cwd: string, feature: JevScreen): Promise
   if (issues.some(issue => issue.key !== '$' || issue.problem !== 'missing')) throw new Error('invalid-configuration');
   const yaml = project?.jev?.[feature];
   const path = join(millyard, `.mill/${feature}-screening.json`);
-  let legacy: string | undefined;
-  try { legacy = await readFile(path, 'utf8'); }
+  let legacy = false;
+  try { await stat(path); legacy = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  if (legacy !== undefined) {
+  if (legacy) {
     process.stderr.write(`Warning: ${path} is deprecated${yaml ? ' and ignored' : ''}; use jev.${feature}.enabled (and timeout, max_evidence_chars) in ${join(millyard, '.mill/config.yaml')} instead.\n`);
   }
   if (yaml) return { enabled: yaml.enabled, timeoutMs: milliseconds(yaml.timeout), maxEvidenceChars: yaml.max_evidence_chars };
-  return legacy === undefined ? {} : legacySchema.parse(JSON.parse(legacy));
+  return legacy ? legacySchema.parse(JSON.parse(await readFile(path, 'utf8'))) : {};
 }
