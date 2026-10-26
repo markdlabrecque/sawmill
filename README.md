@@ -34,7 +34,31 @@ mill update /path/to/sawmill
 
 ### Agent skills
 
-Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done, and `learn` runs a retrospective on finished deliveries. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of each agent it detects on your machine, plus the shared `~/.agents/skills`. The skills CLI also reports PromptScript as failed on every global install; that is expected and harmless.
+Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done or only needs a person, and `learn` runs a retrospective on completed or interrupted runs. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of each agent it detects on your machine, plus the shared `~/.agents/skills`. The skills CLI also reports PromptScript as failed on every global install; that is expected and harmless.
+
+After its final run log and report, Foreman offers one opt-in `/sawmill:learn`
+retrospective for the exact run identity in the same millyard, including when
+all remaining tickets are escalated, intentionally stopped or blocked behind
+those tickets. It does not offer while work is progressing, paused or
+recoverable, or on repeated polling walks. Accepting starts the learning skill
+(or gives its exact invocation if the host cannot); declining changes nothing.
+Learning examines retained attempt records and relevant logs for friction,
+helpful safeguards and measurable improvements; it does not clear unresolved
+work or change run state.
+
+The [learning workflow](plugins/sawmill/skills/learn/SKILL.md) is read-only:
+**project configuration** findings identify a user-owned file and setting,
+proposed change, expected effect, reversal and measurement for the user to
+decide on, without editing configuration. **Sawmill upstream** findings search
+`markdlabrecque/sawmill` for an existing issue and link it instead of duplicating
+it; a new issue requires the user's request or approval of that specific
+proposal and scoped, redacted evidence. Learning never patches an installed
+package, local Sawmill checkout or generated files. Separately requested source
+development is outside this retrospective boundary. Only accepted learning is
+recorded in `.mill/learning.md`, with the decision, owner, follow-up ticket if
+any, baseline and later measurement. A finding alone creates no ticket or
+ledger entry and changes no workflow; recording a recommendation does not
+apply it.
 
 The first time you run `mill` at a terminal without them, it offers to install them. Answer `y` to run the install, or `n` to skip it. Mill remembers a skip in `~/.config/sawmill/skills-declined` and never asks again; delete that file to be asked once more. Scripts, `--json`, `--help`, and `--version` are never asked.
 
