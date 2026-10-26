@@ -54,10 +54,7 @@ test('explicitly disabled routing does not inherit credential requirements from 
   keyless(t);
   const y = await fixture(t);
   delete y.env.TYPESAFE_API_KEY;
-  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nmodel_routing:\n  enabled: false\n`);
-  for (const screen of ['draft', 'acceptance', 'ci', 'learn']) {
-    await writeFile(join(y.cwd, `.mill/${screen}-screening.json`), '{"enabled":true}');
-  }
+  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\njev:\n  routing: { enabled: false }\n  draft: { enabled: true }\n  acceptance: { enabled: true }\n  ci: { enabled: true }\n  learn: { enabled: true }\n`);
   await y.release();
   const reply = await invoke(y, ['run', 'once', '--json']);
   assert.equal(reply.code, 0, `${reply.stdout}${reply.stderr}`);
@@ -70,7 +67,7 @@ for (const action of ['start-run', 'answer'] as const) {
     const y = await fixture(t);
     delete y.env.TYPESAFE_API_KEY;
     // A different screen's permission must not turn into execution permission.
-    await writeFile(join(y.cwd, '.mill/draft-screening.json'), '{"enabled":true}');
+    await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\njev:\n  draft: { enabled: true }\n`);
     const config = await loadConfig(y.cwd, y.home);
     assert.equal(config.valid, true);
     const writer = {
@@ -108,7 +105,7 @@ test('a keyless shared daemon serves ordinary projects while rejecting only the 
   const routed = await fixture(t);
   delete ordinary.env.TYPESAFE_API_KEY;
   delete routed.env.TYPESAFE_API_KEY;
-  await writeFile(routed.projectConfig, `${await readFile(routed.projectConfig, 'utf8')}\nmodel_routing:\n  enabled: true\n`);
+  await writeFile(routed.projectConfig, `${await readFile(routed.projectConfig, 'utf8')}\njev:\n  routing: { enabled: true }\n`);
   await registerMillyard(ordinary.home, routed.cwd);
   // Seed active durable intent to exercise daemon admission independently of CLI
   // guards (e.g. a project opted in since its previous scheduler stopped).
