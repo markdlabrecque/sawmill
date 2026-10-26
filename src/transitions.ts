@@ -574,13 +574,18 @@ export function refreshRow(cwd: string, project: ProjectConfig, number: number, 
     const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
     const previous = acceptanceFor({ body: String(ticket.body), team });
     const acceptance = refreshedAcceptance(latest.body, previous);
-    // A review of older requirements cannot authorize delivery of the new ticket.
-    if (latest.body !== ticket.body && team.approvedHead) invalidateReview(team);
+    // A review of older requirements cannot authorize delivery, including answer recovery
+    // which can restore an approval from the saved integration checkpoint.
+    const integration: IntegrationProgress = ticket.integration ? JSON.parse(String(ticket.integration)) : {};
+    if (latest.body !== ticket.body && (team.approvedHead || integration.reviewedHead)) {
+      invalidateReview(team);
+      delete integration.reviewedHead;
+    }
     team.acceptance = acceptance;
     if (reset) {
       update(db, number, { state: 'queued', reason: null, stage: null, bounces: 0, sessionIds: {}, worktree: null, provisioned: false, branch: null, integration: {}, team: { acceptance } });
       db.prepare('UPDATE tickets SET worker = NULL, stage_started = NULL, stop_requested = 0 WHERE number = ?').run(number);
-    } else update(db, number, { team });
+    } else update(db, number, { team, integration });
     const comments = reset ? latest.comments.filter(comment => !agentComment(comment.body)) : latest.comments;
     db.prepare('UPDATE tickets SET body = ?, comments = ? WHERE number = ?').run(latest.body, JSON.stringify(comments), number);
     const time = new Date().toISOString();

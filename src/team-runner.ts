@@ -238,7 +238,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
       let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
-      // A person's waivers outlive a fresh start; only mill run reset drops them.
+      // A person's waivers outlive a fresh start; refresh/reset carry them only for unchanged items.
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD'), ...(progress.acceptance ? { acceptance: progress.acceptance } : {}) };
       if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       delete progress.recovery;
