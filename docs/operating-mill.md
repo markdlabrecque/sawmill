@@ -7,9 +7,29 @@ These rules are for the person working around a live run. Each rule comes from a
 - **Bring the integration branch up to date.** Merge `main` into it and push. Workspace preflight refuses tickets when local integration is behind or has diverged from `origin`.
 - **Run an installed `mill` built from the current HEAD.** An older copy repeats bugs that are already fixed. After you pull a Sawmill checkout, run `mill update <checkout>`. It replaces only an installed copy, such as the packed install in the [README](../README.md#install). It refuses a global `mill` that links to a checkout; reinstall that once from a packed copy. `mill --version` shows the executable and its **build identity**, which is a build id taken from the packaged code and role prompts, plus the source revision and whether that source had uncommitted edits. The build id changes whenever the compiled code or a prompt changes, even when HEAD does not.
 - **Make `.mill/setup.sh` install dependencies.** Otherwise every ticket logjams with reason `environment`.
-- **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `model_routing.enabled: true` requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Export it through your approved credential workflow. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `.mill/{draft,acceptance,ci,learn}-screening.json` opt-in checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. A Board process and the shared scheduler need routing credentials in their own environments, not just your current shell. A keyless scheduler continues serving projects without routing enabled. If an opted-in project needs a key its existing scheduler lacks, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
+- **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `jev.routing.enabled: true` in `.mill/config.yaml` (with the [machine routing policy](model-routing.md#turning-it-on)) requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Export it through your approved credential workflow. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `jev.{draft,acceptance,ci,learn}.enabled` opt-in in the millyard's `.mill/config.yaml` checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. A Board process and the shared scheduler need routing credentials in their own environments, not just your current shell. A keyless scheduler continues serving projects without routing enabled. If an opted-in project needs a key its existing scheduler lacks, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
+
+### Jev settings and migration
+
+The commented `jev:` section in `.mill/config.yaml` lists all five independent
+features, off by default, with the excerpts each sends to TypeSafe. Screens use
+`enabled`, `timeout` (default `10s`, up to `60s` or `1m`) and
+`max_evidence_chars` (default 4000, range 1–16000). Routing has only `enabled`;
+its policy and evidence limits live in `~/.config/sawmill/config.yaml`.
+Unknown Jev keys are config errors, including a nested typo such as
+`jev.draft.enabeld`. Draft and learn helpers resolve the millyard from ticket
+worktrees, so one setting covers the whole project.
+
+Moving from `.mill/{draft,acceptance,ci,learn}-screening.json`: copy each file's
+`enabled` to the matching `jev` feature, convert `timeoutMs` to a duration
+(round sub-second values up to `1s`), and rename `maxEvidenceChars` to
+`max_evidence_chars`. Remove the old files afterwards. Until then, an old file
+is honored with a migration warning if that feature's YAML mapping is absent;
+if the mapping exists, YAML wins (including false) and Mill warns that JSON is
+ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
+[CI](ci-screening.md), and the learn skill's `screening.md` for privacy details.
 
 ## Starting a run and keeping it going
 

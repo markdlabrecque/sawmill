@@ -60,8 +60,13 @@ classification never changes counts, scope or missing-record coverage.
 
 ### Optional observation screening
 
-Only after explicit project opt-in in `.mill/learn-screening.json` with
-`{"enabled":true}`, pass `{"observations":[...]}` to `mill-learn-screen` on stdin
+Moving from legacy JSON: move `.mill/learn-screening.json` options to `jev.learn`
+(`timeoutMs` becomes a duration `timeout`, `maxEvidenceChars` becomes
+`max_evidence_chars`), then remove JSON. Legacy remains a warned fallback only
+when `jev.learn` is absent; YAML wins if both exist. See [screening.md](screening.md).
+
+Only after explicit `jev.learn.enabled: true` in the millyard's `.mill/config.yaml`,
+pass `{"observations":[...]}` to `mill-learn-screen` on stdin
 as data, never shell interpolation. Each observation has `id`, `incidentId`,
 `basis` (`observed`, `inferred`, `predicted`) and `evidence` (items with `id`,
 `source` and a short, relevant, locally redacted `text`). Do not send exports,

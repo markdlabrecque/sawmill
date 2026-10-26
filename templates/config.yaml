@@ -17,6 +17,34 @@
 #   extensions:
 #     - ~/.pi/agent/extensions/pi-claude-subscription
 
+# Optional Jev routing policy; projects opt in via jev.routing.enabled in
+# .mill/config.yaml. Does not enable any screen. Needs @typesafe-ai/sdk and
+# TYPESAFE_API_KEY in the execution/scheduler environment (never in this file).
+# policy_version: your policy identity (letters, digits, dots, hyphens; 1-80 chars).
+# model and question_version are pinned to the values shown. timeout defaults to
+# 10s, in whole seconds up to 60s; max_evidence_chars defaults to 4000, range 1-16000.
+# min_confidence is required, from 0 to 1: a policy cutoff, not calibrated proof.
+# families may contain gpt and claude. Tier keys are <model>-<effort>, each low,
+# medium or high (all nine combinations supported). Omitted tiers use the baseline.
+# Each mapping requires model and effort (low, medium, high or max); runtime
+# validation additionally restricts supported combinations and family. These Pi
+# examples use provider-qualified IDs; use your runtime's literal IDs instead.
+# See docs/model-routing.md for data sent, fallback rules and runtime constraints.
+# model_routing:
+#   policy_version: local-v1
+#   model: jev-1.14.0
+#   question_version: coding-tiers-v1
+#   timeout: 10s
+#   max_evidence_chars: 4000
+#   min_confidence: 0.95
+#   families:
+#     gpt:
+#       low-low: { model: openai/gpt-6.1, effort: low }
+#       high-high: { model: openai/gpt-6.1, effort: high }
+#     claude:
+#       low-low: { model: anthropic/claude-sonnet-4-6, effort: low }
+#       high-high: { model: anthropic/claude-opus-4-6, effort: high }
+
 # How many tickets may be working at once, across all millyards. Start low
 # until your model plan proves it can take more.
 concurrency: 2
