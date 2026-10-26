@@ -92,7 +92,7 @@ export interface TicketWriter {
 export interface HostPolicy {
   /** Check names the host requires; absent when any of them could not be read. */
   required?: string[];
-  /** Whether the host requires passing CI, independently of named checks. */
+  /** A known CI merge gate, even when the full set of named checks could not be read. */
   pipelineRequired?: boolean;
   /** Merge modes the exact-source-head gate cannot deliver through, such as a merge queue. */
   unsupported: string[];

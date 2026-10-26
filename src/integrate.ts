@@ -376,7 +376,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         await advance('ci-failed', { report: { stage: 'ci-failed', details: detail, changeRequestUrl: progress.changeRequest!.url } });
         return result('ci-failed', detail);
       };
-      const waitForCi = async () => {
+      let ciEnds: number | undefined;
+      let ciRequired = project.ci === 'wait' || (resumeMerge && stage === 'ci-wait');
+      const waitForCi = async (refused = false) => {
         if (!tracker.getPipeline || !tracker.getChangeRequest) throw new Error('Tracker CI adapter is not available.');
         await advance('ci-wait', { report: { stage: 'ci-wait', details: `Waiting for CI on ${head}.`, changeRequestUrl: progress.changeRequest!.url } });
         const interval = options.ciPollInterval ?? '30s';
@@ -384,25 +386,28 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         const deadline = phaseDeadline(project, 'ci');
         // Only this ticket's wait ends; the pushed branch and change request stay for the next attempt.
         const failed = await waitPhase(cwd, number, 'ci', deadline, `CI on ${head.slice(0, 7)}`, options.home, async () => {
-          const ends = Date.now() + milliseconds(deadline);
+          // A host may lag behind a green pipeline. Refusals share one deadline and polling
+          // interval instead of creating an unbounded, tight merge-retry loop.
+          const ends = ciEnds ??= Date.now() + milliseconds(deadline);
+          if (refused && progress.pipeline?.state === 'passed') await (options.sleep ?? sleep)(Math.min(ms, Math.max(0, ends - Date.now())));
           let seen = false;
           for (;;) {
             const pipeline = await readPipeline();
             if (pipeline.state === 'failed') return true;
-            if (pipeline.state === 'passed') return false;
+            if (pipeline.state === 'passed' && Date.now() < ends) return false;
             seen ||= pipeline.state === 'pending';
-            if (Date.now() >= ends) throw new PhaseTimeout(`CI timed out after ${deadline}: ${seen ? `the pipeline for ${head} is still pending` : `no pipeline appeared for ${head}`}.\n` +
-              `Fix: ${seen ? 'let the pipeline finish' : 'make CI run for the pushed branch'}, or raise phase_timeouts.ci, then run \`mill integrate ${number}\` to wait again. The pushed branch and change request are kept.`);
+            if (Date.now() >= ends) throw new PhaseTimeout(`CI timed out after ${deadline}: ${pipeline.state === 'passed' ? 'the host is still refusing the merge for CI' : seen ? `the pipeline for ${head} is still pending` : `no pipeline appeared for ${head}`}.\n` +
+              `Fix: ${pipeline.state === 'passed' ? 'let the host update its merge status' : seen ? 'let the pipeline finish' : 'make CI run for the pushed branch'}, or raise phase_timeouts.ci, then run \`mill integrate ${number}\` to wait again. The pushed branch and change request are kept.`);
             await (options.sleep ?? sleep)(Math.min(ms, Math.max(0, ends - Date.now())));
           }
         });
         return failed;
       };
-      if (project.ci === 'wait' && await waitForCi()) return await ciFailed();
+      if (ciRequired && await waitForCi()) return await ciFailed();
       let merged: { mergeCommit: string };
       for (;;) {
         await advance('merge');
-        if (project.ci === 'wait') {
+        if (ciRequired) {
           const current = await tracker.getChangeRequest!(progress.changeRequest.id);
           if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
         }
@@ -426,7 +431,8 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
               if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
               const ciBlocked = project.tracker.backend === 'gitlab' && ['ci_still_running', 'ci_must_pass'].includes(current.mergeStatus ?? '');
               if (ciBlocked) {
-                if (await waitForCi()) return await ciFailed();
+                ciRequired = true;
+                if (await waitForCi(true)) return await ciFailed();
                 continue;
               }
               if (project.ci === 'wait' && (await readPipeline()).state === 'failed') return await ciFailed();
