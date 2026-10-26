@@ -15,7 +15,7 @@ A feature-sized unit of work filed as an issue in the tracker.
 _Avoid_: Task, job, story
 
 **Tracker**:
-The issue system (GitHub or GitLab) that holds tickets and pull or merge requests; during a run it is a write-only mirror of the run file.
+The issue system (GitHub or GitLab) that holds tickets and pull or merge requests; during a run it mirrors the run file, except for explicit ticket-text refreshes and execution safety checks.
 _Avoid_: Backend, issue tracker, ticket system
 
 **Blocked-by**:

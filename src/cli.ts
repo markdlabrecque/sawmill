@@ -16,6 +16,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createWorktree, prepareWorktree, removeWorktree, gcWorktrees } from './worktrees.js';
 import { resetTicket } from './reset.js';
+import { refreshTicket } from './refresh.js';
 import { approveTests } from './approve-tests.js';
 import { exportRecords, forgetRecords, noteAttempt, reportRecords } from './attempt-record.js';
 import { waiveItem } from './waive.js';
@@ -343,9 +344,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit({ status: 'stop-requested', ticket: number }, `Stop requested for ${ref(number)}; the active stage will finish safely.`);
         return 0;
       }
+      if (positional[0] === 'run' && positional[1] === 'refresh') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run refresh'), 2);
+        const result = await refreshTicket(cwd, config.project, Number(positional[2]), options.tracker);
+        emit(result, `Refreshed ${ref(result.ticket)} from the tracker; saved text, comments and acceptance checklist updated. Its work and state are unchanged.`);
+        return 0;
+      }
       if (positional[0] === 'run' && positional[1] === 'reset') {
         if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2] ?? '') || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('run reset'), 2);
-        const result = await resetTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { home, sleep: options.sleep });
+        const result = await resetTicket(cwd, config.project, ticketWriter(options, config.project, cwd), Number(positional[2]), { home, sleep: options.sleep, reader: options.tracker });
         emit(result, result.status === 'ok'
           ? [`Reset ${ref(result.ticket)}; it is queued and the next run starts it fresh.`, `Agent comments deleted: ${result.comments}`,
             `Worktree removed: ${result.worktree ?? '(none)'}`, `Branches deleted: ${result.branches.join(', ') || '(none)'}`].join('\n')

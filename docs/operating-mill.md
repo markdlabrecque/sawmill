@@ -92,7 +92,9 @@ Every board ticket action carries the attempt the page drew, whatever state the 
 | CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
 | Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
 
-To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. None of these needs `run.sqlite`.
+If the tracker ticket changed after drafting, use `mill run refresh <n>` to pick up its latest body and comments without resetting its work, sessions, question or state. It accepts queued, blocked or logjam tickets; stop a working ticket and wait for its logjam first. Removed acceptance items stop being enforced, added items require proof, and human waivers survive only for items whose text is unchanged, even when their AC numbers move. Status and the run log show the refresh and who requested it. It neither answers a question nor activates a run; answer separately when ready to resume. Drafted blocked-by links and the proof plan stay unchanged; changing those needs a re-draft.
+
+To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. Reset also fetches the latest text and comments and keeps waivers on unchanged items before clearing progress. If the tracker fetch fails, both commands report the failure and leave the saved ticket and work untouched. None of these needs `run.sqlite`.
 
 ## Being told when to act
 
@@ -128,6 +130,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 | --- | --- |
 | Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). Automatic reviewer-requested corrections (#97) need neither. |
 | Edit `acceptance` in `run.sqlite` to let an unproved "Done when" item pass | `mill run waive <n> <item> --reason <text>`, then `mill run answer <n>` (#134). |
+| Edit a drafted ticket's body or acceptance in `run.sqlite` after changing it in the tracker | `mill run refresh <n>`; stop a working ticket first and wait for its logjam. |
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |

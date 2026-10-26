@@ -56,6 +56,17 @@ export function acceptanceFor(ticket: { body: string; team: { acceptance?: Accep
   return { snapshot: createHash('sha256').update(JSON.stringify(items)).digest('hex').slice(0, 12), items };
 }
 
+/** Rebuild the checklist, carrying only current waivers on exactly unchanged item text, not ordinal IDs. */
+export function refreshedAcceptance(body: string, previous: Acceptance): Acceptance {
+  const acceptance = acceptanceFor({ body, team: {} });
+  const waivers = acceptance.items.flatMap(item => {
+    const old = previous.items.find(entry => entry.text === item.text);
+    const waiver = old && waiverFor(previous, old.id);
+    return waiver ? [{ ...waiver, item: item.id, snapshot: acceptance.snapshot }] : [];
+  });
+  return { ...acceptance, ...(waivers.length ? { waivers } : {}) };
+}
+
 export function waiverFor(acceptance: Acceptance, id: string): AcceptanceWaiver | undefined {
   return acceptance.waivers?.find(waiver => waiver.item === id && waiver.snapshot === acceptance.snapshot);
 }
