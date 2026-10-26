@@ -358,7 +358,24 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       const issueUrl = ticketUrl(project.tracker, number);
       progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}${policySummary}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
-      if (progress.changeRequest.headCommit !== head || await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+      // The host's request head can lag a successful push. Give only that observation
+      // up to 30 seconds to catch up (or the shorter configured CI deadline).
+      const headEnds = Date.now() + Math.min(30_000, milliseconds(phaseDeadline(project, 'ci')));
+      const headInterval = milliseconds(options.ciPollInterval ?? '30s');
+      for (;;) {
+        guard();
+        boundary();
+        if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+        if (progress.changeRequest.headCommit === head) break;
+        if (!tracker.getChangeRequest || Date.now() >= headEnds) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+        await (options.sleep ?? sleep)(Math.min(headInterval, Math.max(0, headEnds - Date.now())));
+        guard();
+        boundary();
+        const current = await tracker.getChangeRequest(progress.changeRequest.id);
+        if (current.id !== progress.changeRequest.id) throw new Error('Change request or local HEAD differs from the tested, pushed commit.');
+        progress.changeRequest = current;
+        await save();
+      }
       const readPipeline = async () => {
         guard();
         boundary();
