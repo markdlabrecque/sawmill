@@ -190,7 +190,8 @@ export class GitLabTracker implements Tracker {
     const url = new URL(mr.web_url);
     if (!['http:', 'https:'].includes(url.protocol) || url.host.toLowerCase() !== (this.config.host ?? 'gitlab.com').toLowerCase() ||
         decodeURIComponent(url.pathname) !== `/${this.config.repo}/-/merge_requests/${mr.iid}`) throw new Error('GitLab returned an MR from a different project.');
-    return { id: mr.iid, url: mr.web_url, headCommit: mr.sha };
+    return { id: mr.iid, url: mr.web_url, headCommit: mr.sha,
+      ...(typeof mr.detailed_merge_status === 'string' ? { mergeStatus: mr.detailed_merge_status } : {}) };
   }
 
   async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest> {
@@ -234,7 +235,8 @@ export class GitLabTracker implements Tracker {
       if (project[key] === true) unsupported.push(`${mode} are enabled for ${this.config.repo}`);
       else if (project[key] !== false) gaps.push(`${mode}: not visible to this token (needs Maintainer access, or the tier lacks them)`);
     }
-    return { required: [], unsupported, gaps };
+    return { required: [], unsupported, gaps,
+      ...(typeof project.only_allow_merge_if_pipeline_succeeds === 'boolean' ? { pipelineRequired: project.only_allow_merge_if_pipeline_succeeds } : {}) };
   }
 
   async getPipeline(commit: string, changeRequest?: ChangeRequest): Promise<Pipeline> {
