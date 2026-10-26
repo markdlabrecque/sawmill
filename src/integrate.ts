@@ -215,118 +215,128 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     }
     if (!mergeCommit) {
       await requireApproval();
-      await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
       await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
       await fastForward(cwd, project.integration, number, false);
       await requireApproval();
-      progress = { baseCommit: await git(cwd, 'rev-parse', 'HEAD'), reviewedHead: progress.reviewedHead, rebasedHead: progress.rebasedHead };
-      await save();
-      boundary();
-      await requireApproval();
-      try { await git(ticket.worktree!, 'rebase', progress.baseCommit!); }
-      catch (error) {
-        const conflicts = await git(ticket.worktree!, 'diff', '--name-only', '--diff-filter=U');
-        await git(ticket.worktree!, 'rebase', '--abort');
-        if (!conflicts) throw error;
-        await save({ report: { stage: 'rebase', details: `Rebase conflict; rebase aborted.\n${conflicts}` } });
-        return result('rebase-conflict', conflicts);
-      }
-      const head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
-      const team = { ...readRun(cwd).tickets.find(row => row.number === number)!.team };
-      progress.reviewedHead = team.approvedHead;
-      progress.rebasedHead = head;
-      team.checkpointHead = head;
-      await save({ team });
-      // A site last prepared at another commit, as after a rebase that moved the code, is prepared again
-      // before tests. Preparation never reseeds; a failure is an environment logjam that a rerun resumes here.
-      if (team.site?.commit !== head) {
-        boundary();
-        const site = await prepareSite(cwd, project, number, ticket.worktree!, options);
-        if (site.status !== 'ok') {
-          await transition(cwd, project, tracker, number, {
-            state: 'logjam', reason: 'environment',
-            report: { stage: 'infrastructure', details: 'Site preparation after rebase failed.', error: site.message, reason: 'environment', reachedStage: 'prepare' },
-          }, [], options);
-          return result('infrastructure', site.message);
-        }
-        team.site = preparedSite(site);
-        await save({ team });
-      }
-      // tests: none skips the local run on purpose; the rebased head goes straight on.
-      if (project.tests !== 'none') {
-        await advance('tests');
-        await requireApproval();
-        boundary();
-        const run = () => tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
-        let tested = await run();
-        boundary();
-        // A failure is rerun once before it counts. A pass on the rerun is logged, not hidden.
-        if (!tested.timedOut && tested.code !== 0 && rerunCount(cwd, number, 'tests') < rerunCap) {
-          const first = tested;
-          tested = await run();
-          boundary();
-          logRerunRow(cwd, number, 'tests', !tested.timedOut && tested.code === 0, failedTests(first.output), first.code);
-        }
-        if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
-        if (tested.code !== 0) {
-          await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
-          return result('tests-failed', tested.output || `Tests exited ${tested.code}.`, `${project.tests.command} (test command, exit ${tested.code})`);
-        }
-        // Exit 0 is not enough when a scenario accepted as red was skipped, renamed away or still fails.
-        const green = greenProblem(readRun(cwd).tickets.find(row => row.number === number)!.team.redScenarios, tested.output);
-        if (green) {
-          await save({ report: { stage: 'rebase', details: `Local tests passed but the green check failed. ${green}\n${tested.output}` } });
-          return result('tests-failed', `${green}\n${tested.output}`, `${project.tests.command} (test command, green check)`);
-        }
-        if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
-      }
-      // Required checks run even with tests: none. Advisory `checks` and focused runs never stand in for them.
+      const baseCommit = await git(cwd, 'rev-parse', 'HEAD');
+      let head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
       const required = project.required_checks;
       const declared = required ? requiredCheckNames.flatMap(name => required[name] === undefined ? [] : [[name, required[name]!] as const]) : [];
-      if (required && declared.length) {
-        if (project.tests === 'none') await advance('tests');
+      const team = { ...readRun(cwd).tickets.find(row => row.number === number)!.team };
+      // Reuse completed local gates only while both the source and integration base are unchanged.
+      // Remote and request heads are verified again below, before any merge call.
+      const resumeMerge = ['merge', 'ci-wait'].includes(stage) && progress.baseCommit === baseCommit &&
+        progress.testedHead === head && progress.pushedHead === head && !!progress.changeRequest &&
+        (!declared.length || progress.checks?.head === head);
+      if (!resumeMerge) {
+        await advance('rebase', { report: { stage: 'rebase', details: `Rebasing ${branch} onto ${project.integration}.` } });
+        progress = { baseCommit, reviewedHead: progress.reviewedHead, rebasedHead: progress.rebasedHead };
+        await save();
+        boundary();
         await requireApproval();
-        const runs: NonNullable<IntegrationProgress['checks']>['runs'] = [];
-        for (const [name, script] of declared) {
-          boundary();
-          const same = runs.find(run => run.command === script);
-          if (same) { runs.push({ name, command: script, code: same.code, ms: 0, sameAs: same.sameAs ?? same.name }); continue; }
-          const started = Date.now();
-          const ran = await command(ticket.worktree!, script, required.timeout, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
-          boundary();
-          runs.push({ name, command: script, code: ran.code, ms: Date.now() - started });
-          if (ran.timedOut) throw new Error(`Required check ${name} timed out after ${required.timeout}: ${script}\n${ran.output}`);
-          if (ran.code !== 0) {
-            const detail = `Required check ${name} failed (exit ${ran.code}): ${script}\n${ran.output}`;
-            await save({ report: { stage: 'rebase', details: detail } });
-            return result('checks-failed', detail, `${script} (required check ${name}, exit ${ran.code})`);
-          }
-          if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`Required check ${name} changed the ticket worktree or HEAD; refusing to push unchecked work.`);
+        try { await git(ticket.worktree!, 'rebase', progress.baseCommit!); }
+        catch (error) {
+          const conflicts = await git(ticket.worktree!, 'diff', '--name-only', '--diff-filter=U');
+          await git(ticket.worktree!, 'rebase', '--abort');
+          if (!conflicts) throw error;
+          await save({ report: { stage: 'rebase', details: `Rebase conflict; rebase aborted.\n${conflicts}` } });
+          return result('rebase-conflict', conflicts);
         }
-        progress.checks = { head, runs };
+        head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
+        progress.reviewedHead = team.approvedHead;
+        progress.rebasedHead = head;
+        team.checkpointHead = head;
+        await save({ team });
+        // A site last prepared at another commit, as after a rebase that moved the code, is prepared again
+        // before tests. Preparation never reseeds; a failure is an environment logjam that a rerun resumes here.
+        if (team.site?.commit !== head) {
+          boundary();
+          const site = await prepareSite(cwd, project, number, ticket.worktree!, options);
+          if (site.status !== 'ok') {
+            await transition(cwd, project, tracker, number, {
+              state: 'logjam', reason: 'environment',
+              report: { stage: 'infrastructure', details: 'Site preparation after rebase failed.', error: site.message, reason: 'environment', reachedStage: 'prepare' },
+            }, [], options);
+            return result('infrastructure', site.message);
+          }
+          team.site = preparedSite(site);
+          await save({ team });
+        }
+        // tests: none skips the local run on purpose; the rebased head goes straight on.
+        if (project.tests !== 'none') {
+          await advance('tests');
+          await requireApproval();
+          boundary();
+          const run = () => tests(ticket.worktree!, project, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+          let tested = await run();
+          boundary();
+          // A failure is rerun once before it counts. A pass on the rerun is logged, not hidden.
+          if (!tested.timedOut && tested.code !== 0 && rerunCount(cwd, number, 'tests') < rerunCap) {
+            const first = tested;
+            tested = await run();
+            boundary();
+            logRerunRow(cwd, number, 'tests', !tested.timedOut && tested.code === 0, failedTests(first.output), first.code);
+          }
+          if (tested.timedOut) throw new Error(`Tests timed out after ${project.tests.timeout}.\n${tested.output}`);
+          if (tested.code !== 0) {
+            await save({ report: { stage: 'rebase', details: `Local tests failed (exit ${tested.code}).\n${tested.output}` } });
+            return result('tests-failed', tested.output || `Tests exited ${tested.code}.`, `${project.tests.command} (test command, exit ${tested.code})`);
+          }
+          // Exit 0 is not enough when a scenario accepted as red was skipped, renamed away or still fails.
+          const green = greenProblem(readRun(cwd).tickets.find(row => row.number === number)!.team.redScenarios, tested.output);
+          if (green) {
+            await save({ report: { stage: 'rebase', details: `Local tests passed but the green check failed. ${green}\n${tested.output}` } });
+            return result('tests-failed', `${green}\n${tested.output}`, `${project.tests.command} (test command, green check)`);
+          }
+          if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; refusing to push untested work.');
+        }
+        // Required checks run even with tests: none. Advisory `checks` and focused runs never stand in for them.
+        if (required && declared.length) {
+          if (project.tests === 'none') await advance('tests');
+          await requireApproval();
+          const runs: NonNullable<IntegrationProgress['checks']>['runs'] = [];
+          for (const [name, script] of declared) {
+            boundary();
+            const same = runs.find(run => run.command === script);
+            if (same) { runs.push({ name, command: script, code: same.code, ms: 0, sameAs: same.sameAs ?? same.name }); continue; }
+            const started = Date.now();
+            const ran = await command(ticket.worktree!, script, required.timeout, options.home, pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+            boundary();
+            runs.push({ name, command: script, code: ran.code, ms: Date.now() - started });
+            if (ran.timedOut) throw new Error(`Required check ${name} timed out after ${required.timeout}: ${script}\n${ran.output}`);
+            if (ran.code !== 0) {
+              const detail = `Required check ${name} failed (exit ${ran.code}): ${script}\n${ran.output}`;
+              await save({ report: { stage: 'rebase', details: detail } });
+              return result('checks-failed', detail, `${script} (required check ${name}, exit ${ran.code})`);
+            }
+            if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`Required check ${name} changed the ticket worktree or HEAD; refusing to push unchecked work.`);
+          }
+          progress.checks = { head, runs };
+        }
+        // Integration moved the reviewed code: the project's shared smoke cases run on the re-prepared site.
+        const smoke = await smokeCases(cwd);
+        if (smokeRequired(smoke, team, progress, head) && !(team.smoke?.evidence?.commit === head && team.smoke.cases.every(c => c.result === 'completed'))) {
+          boundary();
+          if (!team.site) throw new Error('Shared smoke cases need the ticket\'s prepared site; none was recorded.');
+          const review = await smokeHandoff(project, smoke, ticket.worktree!, number, team.site, options.home);
+          const prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
+          const ran = await runRole(cwd, project, tracker, number, caseRuntime(options.runtime ?? createRuntime(project.runtime), smoke), {
+            role: 'reviewer', cwd: ticket.worktree!, home: options.home, ...project.roles.reviewer, prompt,
+            handoff: `Shared smoke check for #${number}: ${ticket.title}${siteHandoff(team.site)}${review.handoff}`,
+            ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), browser: true, browserUrl: review.url,
+            timeoutMs: Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0),
+          }, options);
+          boundary();
+          if (!ran.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
+          const outcome = ran.outcome;
+          if (outcome.outcome !== 'pass' && outcome.outcome !== 'bounce') throw new Error(`Shared smoke cases did not finish: ${outcome.outcome === 'infrastructure' ? outcome.error : outcome.outcome}.`);
+          if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('The smoke check changed the ticket worktree or HEAD; refusing to push unchecked work.');
+          team.smoke = userTestingResult(review, outcome)!;
+          await save({ team, report: { stage: 'user-testing', details: `Shared smoke cases after integration moved the code:\n\n${userTestingComment(team.smoke)}`, reachedStage: 'rebase', round: ran.round } });
+          if (outcome.outcome === 'bounce') return result('smoke-failed', outcome.feedback);
+        }
       }
-      // Integration moved the reviewed code: the project's shared smoke cases run on the re-prepared site.
       const smoke = await smokeCases(cwd);
-      if (smokeRequired(smoke, team, progress, head) && !(team.smoke?.evidence?.commit === head && team.smoke.cases.every(c => c.result === 'completed'))) {
-        boundary();
-        if (!team.site) throw new Error('Shared smoke cases need the ticket\'s prepared site; none was recorded.');
-        const review = await smokeHandoff(project, smoke, ticket.worktree!, number, team.site, options.home);
-        const prompt = await readFile(new URL('../../roles/reviewer.md', import.meta.url), 'utf8').catch(() => readFile(new URL('../roles/reviewer.md', import.meta.url), 'utf8'));
-        const ran = await runRole(cwd, project, tracker, number, caseRuntime(options.runtime ?? createRuntime(project.runtime), smoke), {
-          role: 'reviewer', cwd: ticket.worktree!, home: options.home, ...project.roles.reviewer, prompt,
-          handoff: `Shared smoke check for #${number}: ${ticket.title}${siteHandoff(team.site)}${review.handoff}`,
-          ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), browser: true, browserUrl: review.url,
-          timeoutMs: Number(project.role_timeout.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[project.role_timeout.slice(-1)] ?? 0),
-        }, options);
-        boundary();
-        if (!ran.mirrored) throw new Error('Tracker mirror failed; pending writes retained.');
-        const outcome = ran.outcome;
-        if (outcome.outcome !== 'pass' && outcome.outcome !== 'bounce') throw new Error(`Shared smoke cases did not finish: ${outcome.outcome === 'infrastructure' ? outcome.error : outcome.outcome}.`);
-        if (await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head || await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new Error('The smoke check changed the ticket worktree or HEAD; refusing to push unchecked work.');
-        team.smoke = userTestingResult(review, outcome)!;
-        await save({ team, report: { stage: 'user-testing', details: `Shared smoke cases after integration moved the code:\n\n${userTestingComment(team.smoke)}`, reachedStage: 'rebase', round: ran.round } });
-        if (outcome.outcome === 'bounce') return result('smoke-failed', outcome.feedback);
-      }
       // The final gate: browser proof for every required case, applicable to this head, site and fixtures.
       const proof = browserProof(ticket.body, team, progress, number, head, await fixtureIdentity(cwd), smoke);
       if (proof.problems.length) {
@@ -336,13 +346,15 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       }
       progress.browser = { head, cases: proof.cases };
       progress.testedHead = head;
-      await advance('push');
-      const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
-      const oldHead = remote.split(/\s/)[0] ?? '';
-      boundary();
-      await git(ticket.worktree!, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
-      progress.pushedHead = head;
-      await advance('pr-opened');
+      if (!resumeMerge) {
+        await advance('push');
+        const remote = await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`);
+        const oldHead = remote.split(/\s/)[0] ?? '';
+        boundary();
+        await git(ticket.worktree!, 'push', '--no-follow-tags', `--force-with-lease=refs/heads/${branch}:${oldHead}`, 'origin', `${head}:refs/heads/${branch}`);
+        progress.pushedHead = head;
+        await advance('pr-opened');
+      }
       const issueUrl = ticketUrl(project.tracker, number);
       progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}${policySummary}\nHead: ${head}` });
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
@@ -364,8 +376,9 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         await advance('ci-failed', { report: { stage: 'ci-failed', details: detail, changeRequestUrl: progress.changeRequest!.url } });
         return result('ci-failed', detail);
       };
-      if (project.ci === 'wait') {
-        await advance('ci-wait', { report: { stage: 'ci-wait', details: `Waiting for CI on ${head}.`, changeRequestUrl: progress.changeRequest.url } });
+      const waitForCi = async () => {
+        if (!tracker.getPipeline || !tracker.getChangeRequest) throw new Error('Tracker CI adapter is not available.');
+        await advance('ci-wait', { report: { stage: 'ci-wait', details: `Waiting for CI on ${head}.`, changeRequestUrl: progress.changeRequest!.url } });
         const interval = options.ciPollInterval ?? '30s';
         const ms = Number(interval.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[interval.at(-1)!] ?? 0);
         const deadline = phaseDeadline(project, 'ci');
@@ -383,37 +396,49 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
             await (options.sleep ?? sleep)(Math.min(ms, Math.max(0, ends - Date.now())));
           }
         });
-        if (failed) return await ciFailed();
-      }
-      await advance('merge');
-      if (project.ci === 'wait') {
-        const current = await tracker.getChangeRequest!(progress.changeRequest.id);
-        if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
-      }
-      if (progress.testedHead !== head || progress.pushedHead !== head || (declared.length && progress.checks?.head !== head) ||
-          await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
-          await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all') ||
-          (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
-      // The identity and intended target are durable before the host is asked.
-      const operation = { kind: 'merge' as const, id: `merge-${randomUUID()}`, changeRequestId: progress.changeRequest.id, changeRequestUrl: progress.changeRequest.url, sourceHead: head, targetBranch: project.integration };
-      progress.operation = operation;
-      await save();
-      boundary();
+        return failed;
+      };
+      if (project.ci === 'wait' && await waitForCi()) return await ciFailed();
       let merged: { mergeCommit: string };
-      try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
-      catch (error) {
-        // A refusal is acknowledged by the server, so it leaves nothing to reconcile; the next save drops the operation.
-        // A lost response is ambiguous and must never be reclassified as a repairable check failure.
-        if (error instanceof MergeRefusedError) delete progress.operation;
-        if (project.ci === 'wait' && error instanceof MergeRefusedError) {
+      for (;;) {
+        await advance('merge');
+        if (project.ci === 'wait') {
           const current = await tracker.getChangeRequest!(progress.changeRequest.id);
-          if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
-          if ((await readPipeline()).state === 'failed') return await ciFailed();
+          if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
         }
-        if (error instanceof MergeRefusedError || !tracker.reconcileChangeRequest) throw error;
-        const confirmed = await reconcileMerge(operation);
-        if (!confirmed) throw error;
-        merged = { mergeCommit: confirmed };
+        if (progress.testedHead !== head || progress.pushedHead !== head || (declared.length && progress.checks?.head !== head) ||
+            await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
+            await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all') ||
+            (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
+        // The identity and intended target are durable before the host is asked.
+        const operation = { kind: 'merge' as const, id: `merge-${randomUUID()}`, changeRequestId: progress.changeRequest.id, changeRequestUrl: progress.changeRequest.url, sourceHead: head, targetBranch: project.integration };
+        progress.operation = operation;
+        await save();
+        boundary();
+        try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
+        catch (error) {
+          // A refusal is acknowledged by the server, so it leaves nothing to reconcile; the next save drops the operation.
+          // A lost response is ambiguous and must never be reclassified as a repairable check failure.
+          if (error instanceof MergeRefusedError) {
+            delete progress.operation;
+            if (tracker.getChangeRequest && (project.ci === 'wait' || project.tracker.backend === 'gitlab')) {
+              const current = await tracker.getChangeRequest(progress.changeRequest.id);
+              if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
+              const ciBlocked = project.tracker.backend === 'gitlab' && ['ci_still_running', 'ci_must_pass'].includes(current.mergeStatus ?? '');
+              if (ciBlocked) {
+                if (await waitForCi()) return await ciFailed();
+                continue;
+              }
+              if (project.ci === 'wait' && (await readPipeline()).state === 'failed') return await ciFailed();
+              if (current.mergeStatus) throw new MergeRefusedError(`${message(error)} (GitLab merge status: ${current.mergeStatus})`);
+            }
+          }
+          if (error instanceof MergeRefusedError || !tracker.reconcileChangeRequest) throw error;
+          const confirmed = await reconcileMerge(operation);
+          if (!confirmed) throw error;
+          merged = { mergeCommit: confirmed };
+        }
+        break;
       }
       if (!/^[a-f\d]{40,64}$/i.test(merged.mergeCommit)) throw new Error('Tracker returned an invalid merge commit.');
       mergeCommit = merged.mergeCommit;
