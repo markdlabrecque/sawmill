@@ -97,6 +97,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
 }
 
 export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true, home?: string): Promise<RunSnapshot> {
+  // Only opted-in routing needs credentials; check before starting any Pi providers.
   requireTypeSafeKey(project, cwd);
   readRun(cwd);
   await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), wait);
