@@ -84,7 +84,7 @@ export class GitLabTracker implements Tracker {
     if (!positive(issue.iid) || typeof issue.web_url !== 'string') throw new Error('GitLab returned an invalid issue identity.');
     const url = new URL(issue.web_url);
     if (!['http:', 'https:'].includes(url.protocol) || url.host.toLowerCase() !== (this.config.host ?? 'gitlab.com').toLowerCase() ||
-        decodeURIComponent(url.pathname) !== `/${this.config.repo}/-/issues/${issue.iid}`) throw new Error('GitLab returned an issue from a different project identity.');
+        ![`/${this.config.repo}/-/issues/${issue.iid}`, `/${this.config.repo}/-/work_items/${issue.iid}`].includes(decodeURIComponent(url.pathname))) throw new Error('GitLab returned an issue from a different project identity.');
     return issue.iid;
   }
 
