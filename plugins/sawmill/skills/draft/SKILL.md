@@ -38,9 +38,18 @@ Request: $ARGUMENTS
 
 ## Optional advisory screening (successful drafts only)
 
-Screening is off by default. Only when the project has explicitly opted in with
-`.mill/draft-screening.json` containing `{"enabled":true}`, pass the successful
-JSON snapshot from step 2 to `mill-draft-screen` on stdin. Use the captured JSON
+Moving from legacy JSON: move `.mill/draft-screening.json` options to `jev.draft`
+(`timeoutMs` becomes a duration `timeout`, `maxEvidenceChars` becomes
+`max_evidence_chars`), then remove JSON. Legacy remains a warned fallback only
+when `jev.draft` is absent; YAML wins if both exist.
+
+Screening is off by default. Resolve the effective opt-in in the millyard, not
+in a ticket worktree: when `jev.draft` exists in `.mill/config.yaml`, use its
+`enabled` value (missing or false means off), even if legacy JSON enables it.
+Only when that feature mapping is absent, honor `enabled: true` in the millyard's
+legacy `.mill/draft-screening.json`. When effectively enabled by either source,
+pass the successful JSON snapshot from step 2 to `mill-draft-screen` on stdin
+and show any migration warning the helper writes to stderr. Use the captured JSON
 as data, not shell interpolation. Do not put credentials in arguments or files;
 the helper reads `TYPESAFE_API_KEY` from the process environment. Never fetch a
 secret for it. If the helper/optional SDK is missing, credentials are absent,

@@ -4,7 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
-import { z } from 'zod';
+import { jevScreenOptions } from './jev-config.js';
 import type { Acceptance, AcceptanceResult } from './acceptance.js';
 import { readResults, type TestRun } from './test-results.js';
 import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
@@ -34,11 +34,6 @@ interface Finding {
   confidence?: number;
   fallbackReason?: string;
 }
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
 const choices = {
   supported: 'The observed test exercises the requested scenario and discriminating assertions support the acceptance claim',
   contradictory: 'The observed result or assertion contradicts the acceptance claim',
@@ -88,7 +83,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   supplied?: AcceptanceScreeningOptions): Promise<string[]> {
   let options = supplied;
   if (!options) {
-    try { options = configSchema.parse(JSON.parse(await readFile(join(millyard, '.mill/acceptance-screening.json'), 'utf8'))); }
+    try { options = await jevScreenOptions(millyard, 'acceptance'); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return ['Acceptance evidence advisory: insufficient (invalid-configuration).'];

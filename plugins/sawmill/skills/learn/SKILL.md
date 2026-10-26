@@ -60,9 +60,19 @@ classification never changes counts, scope or missing-record coverage.
 
 ### Optional observation screening
 
-Only after explicit project opt-in in `.mill/learn-screening.json` with
-`{"enabled":true}`, pass `{"observations":[...]}` to `mill-learn-screen` on stdin
-as data, never shell interpolation. Each observation has `id`, `incidentId`,
+Moving from legacy JSON: move `.mill/learn-screening.json` options to `jev.learn`
+(`timeoutMs` becomes a duration `timeout`, `maxEvidenceChars` becomes
+`max_evidence_chars`), then remove JSON. Legacy remains a warned fallback only
+when `jev.learn` is absent; YAML wins if both exist. See [screening.md](screening.md).
+
+Resolve the effective opt-in in the millyard, not in a ticket worktree: when
+`jev.learn` exists in `.mill/config.yaml`, use its `enabled` value (missing or
+false means off), even if legacy JSON enables it. Only when that feature mapping
+is absent, honor `enabled: true` in the millyard's legacy
+`.mill/learn-screening.json`. When effectively enabled by either source, pass
+`{"observations":[...]}` to `mill-learn-screen` on stdin and show any migration
+warning the helper writes to stderr. Pass the input as data, never shell
+interpolation. Each observation has `id`, `incidentId`,
 `basis` (`observed`, `inferred`, `predicted`) and `evidence` (items with `id`,
 `source` and a short, relevant, locally redacted `text`). Do not send exports,
 counts, coverage, whole native sessions or raw transcripts. Missing records and

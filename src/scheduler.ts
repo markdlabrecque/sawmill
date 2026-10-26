@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import type { ProjectConfig } from './config.js';
+import { routingEnabled, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { requireTypeSafeKey } from './typesafe.js';
 import { processAlive } from './process-ownership.js';
@@ -105,7 +105,7 @@ export function dispatchHeld(home: string): boolean {
  * only availability, never the key. Older daemons without an attestation are not ready.
  * This bounded local read must precede activation, answers and integration-lock waits. */
 export function requireSchedulerConfiguration(home: string, project: ProjectConfig, cwd: string): void {
-  if (!project.model_routing?.enabled) return;
+  if (!routingEnabled(project)) return;
   requireTypeSafeKey(project, cwd);
   const owner = readScheduler(home);
   if (owner && processAlive(owner.pid, owner.processStart) && owner.typeSafeKeyAvailable !== true) {
