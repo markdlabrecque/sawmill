@@ -318,7 +318,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (positional.length > 2) throw new CliError(usage('run'), 2);
         requireSchedulerConfiguration(home, config.project, cwd);
         // An integrating ticket holds the checkout for as long as CI takes; the scheduler preflights once it is free.
-        if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project);
+        if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, config.project, true, home);
         const scheduler = await ensureExecutionScheduler(home, config.project, cwd);
         const activated = activateRun(cwd);
         await registerMillyard(home, cwd);

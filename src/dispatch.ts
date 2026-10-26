@@ -16,6 +16,7 @@ import { claimWorker, failWorkerLaunch, flushPending, reconcilePick, recordWorke
 import type { TicketWriter } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { checkFirstStart } from './first-start.js';
+import { preflightPiModels } from './pi-runtime.js';
 
 export interface DispatchResult {
   status: 'ok' | 'partial';
@@ -48,7 +49,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   options: { limit?: number; wait?: boolean } = {}): Promise<DispatchResult> {
   requireTypeSafeKey(project, cwd);
   cwd = await realpath(cwd);
-  const snapshot = await dispatchPreflight(cwd, project, options.wait);
+  const snapshot = await dispatchPreflight(cwd, project, options.wait, home);
   const note = reconcilePick(cwd, snapshot.run.id);
   const result: DispatchResult = { status: 'ok', runId: snapshot.run.id, started: [], failures: [], slotsFull: false, held: false, unresolved: [], notes: note ? [note] : [] };
   // Snapshot the pass. Newly unblocked tickets belong to the next pass.
@@ -95,7 +96,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   return result;
 }
 
-export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true): Promise<RunSnapshot> {
+export async function dispatchPreflight(cwd: string, project: ProjectConfig, wait = true, home?: string): Promise<RunSnapshot> {
   requireTypeSafeKey(project, cwd);
   readRun(cwd);
   await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), wait);
@@ -103,6 +104,7 @@ export async function dispatchPreflight(cwd: string, project: ProjectConfig, wai
   const a = snapshot.run.tracker, b = project.tracker;
   if (snapshot.run.baseBranch !== project.integration || a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '')) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
   for (const ticket of snapshot.tickets) if (!ticket.completion && ticket.state !== 'done') requireBrowserCapability(project, ticket);
+  await preflightPiModels(cwd, project, home);
   return snapshot;
 }
 

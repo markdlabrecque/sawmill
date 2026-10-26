@@ -112,7 +112,7 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
 /** The same start as mill run, which then resumes only the tickets the board's Stop Run stopped. */
 async function startRun(cwd: string, home: string, project: ProjectConfig, writer: TicketWriter, options: Pick<CliOptions, 'sleep'>, done: string): Promise<CommandReply> {
   requireSchedulerConfiguration(home, project, cwd);
-  if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project);
+  if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project, true, home);
   await ensureExecutionScheduler(home, project, cwd);
   const stopped = readRun(cwd).run.stoppedTickets ?? [];
   activateRun(cwd);
