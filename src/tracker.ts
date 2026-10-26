@@ -33,6 +33,8 @@ export interface ChangeRequest {
   id: number | string;
   url: string;
   headCommit: string;
+  /** GitLab's reason a merge is currently blocked, when reported. */
+  mergeStatus?: string;
 }
 
 /** The same request read again to settle a merge whose response was lost; the merge commit is set once merged. */
@@ -90,6 +92,8 @@ export interface TicketWriter {
 export interface HostPolicy {
   /** Check names the host requires; absent when any of them could not be read. */
   required?: string[];
+  /** A known CI merge gate, even when the full set of named checks could not be read. */
+  pipelineRequired?: boolean;
   /** Merge modes the exact-source-head gate cannot deliver through, such as a merge queue. */
   unsupported: string[];
   gaps: string[];

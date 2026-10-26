@@ -202,6 +202,34 @@ process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\
   return { ...y, cli };
 }
 
+test('GitLab pipeline-required projects reject ci: none at draft with a configuration fix', async t => {
+  const y = await gitlabFixture(t, {
+    id: 71, merge_pipelines_enabled: false, merge_trains_enabled: false,
+    only_allow_merge_if_pipeline_succeeds: true,
+  }, 'none');
+  const refused = await y.cli('run', 'draft', '9');
+  assert.equal(refused.code, 2, refused.stdout);
+  assert.match(refused.stdout, /GitLab requires a passing pipeline to merge/);
+  assert.match(refused.stdout, /ci: wait/);
+  assert.notEqual((await y.cli('run', 'status')).code, 0, 'no undeliverable run is drafted');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  const fixed = await y.cli('run', 'draft', '9');
+  assert.equal(fixed.code, 0, fixed.stdout);
+});
+
+test('GitHub required status checks reject ci: none at draft with a configuration fix', async t => {
+  const y = await githubFixture(t, { rules: [requiredRule('phpunit')], branch: { protected: false }, queue: noQueue });
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: wait', 'ci: none'));
+  const refused = await y.cli(['run', 'draft', '9']);
+  assert.equal(refused.code, 2, refused.stdout);
+  assert.match(refused.stdout, /required status checks|requires.*passing/i);
+  assert.match(refused.stdout, /ci: wait/);
+  assert.notEqual((await y.cli(['run', 'status'])).code, 0, 'no undeliverable run is drafted');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('ci: none', 'ci: wait'));
+  const fixed = await y.cli(['run', 'draft', '9']);
+  assert.equal(fixed.code, 0, fixed.stdout);
+});
+
 test('GitLab merged results pipelines and merge trains are detected and refused before any work', async t => {
   for (const [settings, mode] of [
     [{ id: 71, merge_pipelines_enabled: true, merge_trains_enabled: false }, 'merged results pipelines'],

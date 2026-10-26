@@ -13,6 +13,7 @@ import { millyard } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { CliError } from '../src/errors.js';
 import { integrate } from '../src/integrate.js';
+import { GitLabTracker } from '../src/gitlab.js';
 import { withRunLock } from '../src/run-lock.js';
 import { readRun } from '../src/run-store.js';
 import { listSlots } from '../src/slots.js';
@@ -46,12 +47,12 @@ class FakeTracker {
   async deleteRemoteBranch(branch: string) { await this.delete(branch); }
 }
 
-async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = async () => {}) {
+async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = async () => {}, backend: 'github' | 'gitlab' = 'github') {
   const tracker = new FakeTracker();
   const yard = await millyard(t, { tracker, sleep });
   await yard.cli('build');
   await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8'))
-    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: team/tool')
+    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: team/tool').replace('backend: github', `backend: ${backend}`)
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', 'test_harness: none')
     .replace('ci: wait', 'ci: none').replace('command: npm test', 'command: test -f feature.test.ts'));
   assert.equal((await yard.cli('run', 'draft', '9')).code, 0);
@@ -690,6 +691,110 @@ test('push touches only the ticket branch even when Git config enables automatic
   assert.equal(result.code, 0, result.stdout);
 });
 
+
+// A real GitLab adapter supplies the HTTP refusal and MR status. The existing
+// local host fixture performs a successful merge; pipeline observations are
+// controlled at the tracker boundary so no remote service or real clock is used.
+async function gitlabRefusal(t: TestContext, status: string) {
+  const delays: number[] = [];
+  const y = await fixture(t, async ms => { delays.push(ms); }, 'gitlab');
+  await writeFile(join(y.userConfig, 'config.yaml'), 'ci_poll_interval: 2s\n');
+  const bin = join(y.root, 'refusal-bin');
+  await mkdir(bin);
+  const head = y.git('-C', y.path, 'rev-parse', 'HEAD');
+  await writeFile(join(bin, 'glab'), `#!${process.execPath}
+const endpoint = process.argv[3];
+if (endpoint.endsWith('/merge_requests/42/merge')) {
+  process.stdout.write('HTTP/2.0 405 Method Not Allowed\\r\\nContent-Type: application/json\\r\\n\\r\\n' + JSON.stringify({ message: 'Method Not Allowed' }));
+  process.stderr.write('glab: 405 Method Not Allowed (HTTP 405)\\n');
+  process.exit(1);
+}
+if (endpoint.endsWith('/merge_requests/42')) {
+  process.stdout.write('HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n' + JSON.stringify({
+    iid: 42, web_url: 'https://gitlab.com/team/tool/-/merge_requests/42',
+    sha: ${JSON.stringify(head)}, project_id: 71, source_project_id: 71, target_project_id: 71,
+    state: 'opened', detailed_merge_status: ${JSON.stringify(status)},
+    head_pipeline: { id: 91, sha: ${JSON.stringify(head)}, status: 'running' }
+  }));
+} else { process.stderr.write('Unscripted GitLab endpoint: ' + endpoint); process.exit(1); }
+`);
+  await chmod(join(bin, 'glab'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  t.after(() => { process.env.PATH = oldPath; });
+  const adapter = new GitLabTracker({ backend: 'gitlab', repo: 'team/tool' }, y.cwd);
+  y.tracker.getChangeRequest = async id => ({ ...y.tracker.requests[0]!, ...await adapter.getChangeRequest(id) });
+  const merge = y.tracker.merge;
+  y.tracker.merge = async (id, method, expected) => {
+    if (y.tracker.methods.length === 1) return adapter.mergeChangeRequest(id, method, expected);
+    return merge(id, method, expected);
+  };
+  return { ...y, delays, head };
+}
+
+for (const status of ['ci_still_running', 'ci_must_pass']) {
+  test(`ci: none waits after GitLab 405 with ${status}, then merges the tested head without a failure`, async t => {
+    const y = await gitlabRefusal(t, status);
+    const heads: string[] = [];
+    y.tracker.pipeline = async head => {
+      heads.push(head);
+      assert.equal((await y.status()).tickets[0].stage, 'ci-wait');
+      assert.equal(y.tracker.methods.length, 1, 'no second merge until CI passes');
+      return { headCommit: head, state: heads.length === 1 ? 'pending' : 'passed' };
+    };
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(reply.code, 0, reply.stdout);
+    assert.equal(JSON.parse(reply.stdout).outcome, 'merged', reply.stdout);
+    assert.deepEqual(heads, [y.head, y.head]);
+    assert.deepEqual(y.delays, [2000], 'use CI polling, not infrastructure backoff');
+    assert.deepEqual(y.tracker.methods, ['squash', 'squash']);
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.state, 'done');
+    assert.equal(row.bounces, 0);
+    assert.doesNotMatch((await y.cli('run', 'log', '9')).stdout, /\[infrastructure\]/);
+  });
+}
+
+test('ci: none reports failed CI after a pipeline-gated GitLab refusal instead of an infrastructure failure', async t => {
+  const y = await gitlabRefusal(t, 'ci_still_running');
+  let reads = 0;
+  y.tracker.pipeline = async head => ({ headCommit: head, state: ++reads === 1 ? 'pending' : 'failed', diagnostics: 'unit: assertion failed' });
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(reply.stdout).outcome, 'ci-failed', reply.stdout);
+  assert.match(JSON.parse(reply.stdout).message, /unit: assertion failed/);
+  assert.equal(reads, 2);
+  assert.deepEqual(y.tracker.methods, ['squash']);
+  assert.equal((await y.status()).tickets[0].bounces, 0);
+});
+
+test('non-CI GitLab refusal reports the host merge status without waiting for CI', async t => {
+  const y = await gitlabRefusal(t, 'not_approved');
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+  assert.match(JSON.parse(reply.stdout).message, /not_approved/);
+  assert.deepEqual(y.tracker.methods, ['squash']);
+  assert.deepEqual(y.delays, []);
+});
+
+test('merge retry reuses passing local tests for the unchanged tested and pushed head', async t => {
+  const y = await fixture(t);
+  const runs = join(y.root, 'local-test-runs');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: test -f feature.test.ts', `command: 'test -f feature.test.ts && echo tested >> "${runs}"'`));
+  const merge = y.tracker.merge;
+  y.tracker.merge = async () => { throw new MergeRefusedError('Approval policy refuses merge'); };
+  const first = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(first.stdout).outcome, 'infrastructure', first.stdout);
+  const progress = (await y.status()).tickets[0].integration;
+  assert.equal(progress.testedHead, y.git('-C', y.path, 'rev-parse', 'HEAD'));
+  assert.equal(progress.testedHead, progress.pushedHead);
+  assert.equal(await readFile(runs, 'utf8'), 'tested\n');
+  y.tracker.merge = merge;
+  const second = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(second.stdout).outcome, 'merged', second.stdout);
+  assert.equal(await readFile(runs, 'utf8'), 'tested\n', 'retrying only the merge must not execute local tests again');
+  assert.equal((await y.status()).tickets[0].integration.mergedHead, progress.testedHead);
+});
 
 test('ci wait polls at the machine interval and merges only the tested head after pending passes', async t => {
   const delays: number[] = [];

@@ -52,7 +52,7 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
       if (!queue?.data?.repository || queue.errors) gaps.push(`merge queue for ${branch}: GitHub did not report it`);
       else if (queue.data.repository.mergeQueue) unsupported.push(`a merge queue is enabled on ${branch}`);
     }
-    return { ...(complete ? { required: [...required] } : {}), unsupported: [...new Set(unsupported)], gaps };
+    return { ...(complete ? { required: [...required] } : {}), ...(required.size ? { pipelineRequired: true } : {}), unsupported: [...new Set(unsupported)], gaps };
   }
 
   async findOrOpenChangeRequest(input: { branch: string; base: string; title: string; body: string }): Promise<ChangeRequest> {
