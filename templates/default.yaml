@@ -29,6 +29,17 @@ integration: main
 # One of: claude-code, pi, codex.
 runtime: claude-code
 
+# Optional, only with runtime: pi. Absent: inherit pi.extensions from
+# ~/.config/sawmill/config.yaml. A project list replaces the global list;
+# extensions: [] disables all optional extensions here. Keep absent in this
+# template to inherit live global defaults instead of copying a per-project list.
+# Entries are existing local files/directories; ~ expands to the user's home,
+# relative paths resolve from the millyard root. Automatic discovery stays off.
+# TRUST: extension code runs with your full user permissions. See docs/pi-runtime.md.
+# pi:
+#   extensions:
+#     - ~/.pi/agent/extensions/pi-claude-subscription
+
 # Model and effort per role. effort is one of: low, medium, high, max.
 # Model ids are the runtime's own. Pick a cheap model to write tests, a strong
 # one to implement, and the strongest you can afford to review.
