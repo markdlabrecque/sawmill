@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { jevScreenOptions } from './jev-config.js';
 import type { Acceptance, AcceptanceResult } from './acceptance.js';
 import { readResults, type TestRun } from './test-results.js';
-import { jevModel, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 import { redact } from './view/diagnosis.js';
 
 const execute = promisify(execFile);
@@ -92,7 +92,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   if (options.enabled !== true) return [];
   const started = performance.now();
   const model = options.model ?? jevModel, questionVersion = options.questionVersion ?? acceptanceQuestionVersion;
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const limit = options.maxEvidenceChars ?? 4000, timeoutMs = options.timeoutMs ?? 10_000;
   const validConfiguration = /^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) && /^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion)
     && Number.isSafeInteger(limit) && limit >= 3 && limit <= 16_000

@@ -28,8 +28,9 @@ warning when `jev.ci` is absent. Move `enabled`, convert `timeoutMs` to a durati
 (round sub-second values up to `1s`), and rename `maxEvidenceChars` to
 `max_evidence_chars`, then remove JSON. If both exist, YAML wins (even explicit
 false) and the warning says JSON is ignored.
-Supply `TYPESAFE_API_KEY` through the process environment using your approved
-credential workflow; never put it in the config, command arguments or tickets.
+Supply `TYPESAFE_API_KEY` through the [shared settings file](operating-mill.md#shared-typesafe-key)
+or process environment using your approved credential workflow; never put it
+in project config, command arguments or tickets.
 The optional `@typesafe-ai/sdk` peer must be installed alongside Mill, as
 explained in [draft screening](draft-screening.md). Missing SDK/credentials,
 timeouts, rate limits, invalid answers and service failures preserve repair.

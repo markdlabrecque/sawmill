@@ -1,4 +1,4 @@
-import { requireTypeSafeKey } from './typesafe.js';
+import { requireTypeSafeKey, resolveTypeSafeKey } from './typesafe.js';
 import { acceptanceCorrection, acceptanceFor, acceptanceHandoff, refusePass, reportResubmissionLimit } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { exportRecords } from './attempt-record.js';
@@ -553,6 +553,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             // Commit both the concrete choice and original baseline before any vendor starts.
             await save({});
           }
+          // Capture an opted-in credential before invocation for redaction, never look up
+          // settings while recording an ordinary role or after work has completed.
+          const apiKey = resolveTypeSafeKey(routingEnabled(project) ? 'all' : 'environment');
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...selected, prompt: prompt + verificationInstructions(verificationFrom(project), role),
             handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${role === 'reviewer' && progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
@@ -566,7 +569,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
-          const execution = executionMeasurement(selected, invoked);
+          const execution = executionMeasurement(selected, invoked, apiKey);
           if (selection) selection.execution = execution;
           (progress.invocations ??= []).push({ role, round: invoked.round, ...(selection ? { selectionId: selection.id } : {}), execution });
           // Local execution evidence must survive questions and failed session mirrors as well as success.

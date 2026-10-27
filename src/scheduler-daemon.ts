@@ -29,7 +29,7 @@ const watchFiles = process.env.MILL_SCHEDULER_WATCH !== 'off';
 const say = (message: string) => console.log(`${new Date().toISOString()} ${message}`);
 const token = process.env.MILL_WORKER_TOKEN ?? randomUUID();
 const build = readBuildIdentity(packageRoot)?.id;
-const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString(), typeSafeKeyAvailable: typeSafeKeyAvailable(), ...(build ? { build } : {}) });
+const owner = claimScheduler(home, { pid: process.pid, processStart: processStart(process.pid), token, started: new Date().toISOString(), typeSafeKeyAvailable: typeSafeKeyAvailable('environment'), ...(build ? { build } : {}) });
 if (process.send) await new Promise<void>(resolve => process.send!({ type: 'scheduler', pid: owner.pid }, () => resolve()));
 if (process.connected) process.disconnect?.();
 if (owner.token !== token) {

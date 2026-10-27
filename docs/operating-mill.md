@@ -7,9 +7,38 @@ These rules are for the person working around a live run. Each rule comes from a
 - **Bring the integration branch up to date.** Merge `main` into it and push. Workspace preflight refuses tickets when local integration is behind or has diverged from `origin`.
 - **Run an installed `mill` built from the current HEAD.** An older copy repeats bugs that are already fixed. After you pull a Sawmill checkout, run `mill update <checkout>`. It replaces only an installed copy, such as the packed install in the [README](../README.md#install). It refuses a global `mill` that links to a checkout; reinstall that once from a packed copy. `mill --version` shows the executable and its **build identity**, which is a build id taken from the packaged code and role prompts, plus the source revision and whether that source had uncommitted edits. The build id changes whenever the compiled code or a prompt changes, even when HEAD does not.
 - **Make `.mill/setup.sh` install dependencies.** Otherwise every ticket logjams with reason `environment`.
-- **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `jev.routing.enabled: true` in `.mill/config.yaml` (with the [machine routing policy](model-routing.md#turning-it-on)) requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Export it through your approved credential workflow. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `jev.{draft,acceptance,ci,learn}.enabled` opt-in in the millyard's `.mill/config.yaml` checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. A Board process and the shared scheduler need routing credentials in their own environments, not just your current shell. A keyless scheduler continues serving projects without routing enabled. If an opted-in project needs a key its existing scheduler lacks, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
+- **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `jev.routing.enabled: true` in `.mill/config.yaml` (with the [machine routing policy](model-routing.md#turning-it-on)) requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Put it in the [shared settings file](#shared-typesafe-key) through your approved credential workflow, or export it in the execution environment. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `jev.{draft,acceptance,ci,learn}.enabled` opt-in in the millyard's `.mill/config.yaml` checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. The CLI, Board and shared scheduler reread the same settings file, so adding or changing its key needs no restart. A key set only in your current shell cannot authorize a scheduler that lacks it: use the shared file instead. For environment-only configuration, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. A keyless scheduler continues serving projects without routing enabled. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
+
+### Shared TypeSafe key
+
+Store only the TypeSafe credential in `~/.config/sawmill/.env`, or
+`$XDG_CONFIG_HOME/sawmill/.env` when `XDG_CONFIG_HOME` is set:
+
+```dotenv
+TYPESAFE_API_KEY="your-key"
+```
+
+A nonblank `TYPESAFE_API_KEY` in the real process environment wins over the
+file. An unset, empty or whitespace-only environment value falls back to the
+file. Mill rereads it at every credential lookup, never caches the key or copies
+it into the environment: new calls from the CLI, scheduler and Board see key
+changes without restarting. An environment override still wins until removed
+from that process's environment.
+
+Use plain `KEY=value` lines. Blank lines and comments are ignored; matching
+single or double quotes around values are stripped. Variables, escapes and shell
+commands are not expanded, and `export KEY=value` is not supported. Other keys
+are ignored; project `.env` files are not read.
+
+The settings file must belong to the current user. If any group or world access
+is present, Mill changes its mode to `600` before reading it. Ownership errors,
+unreadable files or a failed permission repair are configuration errors naming
+the path, mode and reason, never the key. Routing checks this before activation
+or dispatch, so fix the file and retry the same run. A missing file with Jev off
+does not block ordinary work. Never put this key in project YAML, tickets, run
+files, logs or command arguments.
 
 ### Jev settings and migration
 

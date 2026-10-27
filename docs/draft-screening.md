@@ -36,9 +36,9 @@ and rename `maxEvidenceChars` to `max_evidence_chars`, then remove the JSON file
 If both exist, YAML wins, including `enabled: false`, and the warning says JSON
 is ignored.
 
-Supply `TYPESAFE_API_KEY` through the process environment using your approved
-credential workflow. Never put it in config, a ticket, command arguments or a
-saved snapshot. Do not retrieve credentials just because this setting exists.
+Supply `TYPESAFE_API_KEY` through the [shared settings file](operating-mill.md#shared-typesafe-key)
+or process environment using your approved credential workflow. Never put it
+in project config, a ticket, command arguments or a saved snapshot. Do not retrieve credentials just because this setting exists.
 Set `jev.draft.enabled` to false to disable screening. The presence of a key
 alone never enables it.
 

@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { routingEnabled, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
-import { requireTypeSafeKey } from './typesafe.js';
+import { requireTypeSafeKey, typeSafeKeyAvailable } from './typesafe.js';
 import { processAlive } from './process-ownership.js';
 import { processStart } from './slots.js';
 
@@ -101,15 +101,15 @@ export function dispatchHeld(home: string): boolean {
   } catch { return false; }
 }
 
-/** The daemon's environment is fixed at startup. Its live ownership record attests
- * only availability, never the key. Older daemons without an attestation are not ready.
+/** The daemon's environment is fixed at startup, but the shared file is read live.
+ * Its ownership record attests only environment availability, never the key.
  * This bounded local read must precede activation, answers and integration-lock waits. */
 export function requireSchedulerConfiguration(home: string, project: ProjectConfig, cwd: string): void {
   if (!routingEnabled(project)) return;
   requireTypeSafeKey(project, cwd);
   const owner = readScheduler(home);
-  if (owner && processAlive(owner.pid, owner.processStart) && owner.typeSafeKeyAvailable !== true) {
-    throw new CliError(`Project ${cwd}: model routing is enabled, but TYPESAFE_API_KEY is missing from the shared scheduler's execution environment. Set/export TYPESAFE_API_KEY, run mill scheduler stop, then mill run to restart it. Other projects share this scheduler; do not restart it until safe.`, 2);
+  if (owner && processAlive(owner.pid, owner.processStart) && owner.typeSafeKeyAvailable !== true && !typeSafeKeyAvailable('file')) {
+    throw new CliError(`Project ${cwd}: model routing is enabled, but TYPESAFE_API_KEY is missing from the shared scheduler's execution environment. Set TYPESAFE_API_KEY in ~/.config/sawmill/.env (or $XDG_CONFIG_HOME/sawmill/.env) and retry without restarting. Alternatively, set/export TYPESAFE_API_KEY, run mill scheduler stop, then mill run to restart it. Other projects share this scheduler; do not restart it until safe.`, 2);
   }
 }
 
@@ -133,7 +133,7 @@ export async function ensureScheduler(home: string, daemon = fileURLToPath(new U
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [daemon, home], {
-      cwd: home, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
+      cwd: home, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }
   return new Promise((resolve, reject) => {
