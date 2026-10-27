@@ -1,0 +1,2 @@
+# Built from website/src by website/scripts/build.py; embeds fonts and images, so a text diff is unreadable.
+website/index.html -diff
