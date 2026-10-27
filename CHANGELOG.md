@@ -1,3 +1,52 @@
+## 1.1.0 - 2026-10-26
+
+- #194: Show Sawmill's learning process on the marketing website
+- #214: Read the TypeSafe key from one shared Sawmill settings file
+- #213: Board: archive tickets as soon as they merge, and tidy the Archive
+- #193: Offer run retrospectives with a clear configuration and upstream boundary
+- #211: A short GitLab delay after push uses up a merge attempt
+- #203: Show a spinning sawblade behind tickets being worked on, and centre the stage dots
+- #208: Pick up ticket edits made after a run is drafted
+- #207: Turn Jev features on from the project config, and document model routing
+- #205: Sawmill gives up on merging while CI is still running
+- #202: Let pi runs use approved pi extensions, like the Claude subscription provider
+- #192: Require the TypeSafe key only for opted-in Jev operations
+- #200: Mill can't draft tickets from newer GitLab servers
+- #198: Install Sawmill's agent skills only for agents on the machine
+- #195: Offer to install Sawmill's agent skills, including a new foreman skill
+
+## 1.0.0 - 2026-10-24
+
+- #190: Bring Sawmill branding to the Board and website
+- #184: Show picks and appended work on the Board
+- #163: Add work to an ongoing millyard with mill run draft
+- #164: Choose the next ticket with mill pick and clear it with mill pick --clear
+- #175: Do not invent acceptance IDs when the saved checklist is empty
+- #172: Help repair agents find the cause of CI failures
+- #170: Match coding model effort to each ticket
+- #173: Fail immediately when the TypeSafe API key is missing
+- #169: Check whether acceptance evidence supports the claimed result
+- #171: Reduce the effort of reviewing completed deliveries
+- #151: Preserve protected test checkpoints through conflict rebases
+- #168: Catch weak tickets before starting a team
+- #162: Stabilize nondeterministic hosted CI tests
+- #155: Clean generated outputs before red-proof baseline runs
+- #165: Support Codex browser cases and verify live runtimes
+- #145: Provide a release handoff that explains state changes and recovery
+- #146: Add a sawmill:learn skill for evidence-based delivery improvements
+- #144: Keep a compact record of what each delivery attempt proved
+- #143: Show the evidence and safe next action for a stopped ticket
+- #142: Verify that every required hosted check has finished
+- #140: Stop stalled delivery phases with a clear recovery path
+- #141: Recover safely when a remote action loses its response
+- #138: Distinguish a failing new test from a broken test environment
+- #136: Reject browser results from an outdated or different site
+- #139: Choose the smallest sufficient proof plan for each ticket
+- #135: Prepare a reproducible site for each reviewed change
+- #134: Keep incomplete work from passing when retries run out
+- #137: Run every required check before accepting a change
+- #132: Let writers delete files, cap hung tests and commit one-line messages
+
 ## 0.2.0 - 2026-10-23
 
 - #124: Let roles run declared verification commands and focused tests
