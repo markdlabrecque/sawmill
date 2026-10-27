@@ -88,21 +88,25 @@ a.tl[href]:hover .ti { text-decoration-color: currentColor; }
 .badge.jam { background: var(--jam); border-color: var(--jam); color: #fffdf5; }
 .badge.b { background: #fae7bf; border-color: #ccb173; color: var(--blk); }
 .lane { position: relative; display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); margin-top: 12px; height: 48px; }
-.lane::before { content: ''; position: absolute; left: 5%; right: 5%; top: 11px; height: 5px; border-block: 1px solid #abb79c; background: repeating-linear-gradient(90deg, #d7ddc6 0 10px, var(--card) 10px 12px); }
+.lane::before { content: ''; position: absolute; left: 5%; right: 5%; box-sizing: border-box; top: 9px; height: 8px; border-block: 1px solid #abb79c; background: repeating-linear-gradient(90deg, #d7ddc6 0 10px, var(--card) 10px 12px); }
 .c { position: relative; text-align: center; font-size: 9px; color: var(--dim); min-width: 0; }
-.c i { display: block; width: 8px; height: 8px; border: 1px solid #9eae92; border-radius: 50%; background: var(--card); margin: 9px auto 8px; }
+.c i { display: block; width: 12px; height: 12px; border: 1px solid #9eae92; border-radius: 50%; background: var(--card); margin: 7px auto 6px; }
 .c.past i { background: #71856a; border-color: #71856a; }
 .c.cur i { visibility: hidden; }
-.c.cur span { position: absolute; left: 50%; transform: translateX(-50%); top: 28px; padding: 1px 6px; font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--fg); background: #fbe0bf; border: 1px solid var(--fg); border-radius: 3px; line-height: 1.4; }
+.c.cur span { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%); top: 28px; padding: 1px 6px; font-size: 10px; font-weight: 700; white-space: nowrap; color: var(--fg); background: #fbe0bf; border: 1px solid var(--fg); border-radius: 3px; line-height: 1.4; }
 .c.cur .short { display: none !important; }
 .c.cur .full { display: inline-block !important; }
 .done .c.cur span { background: #e2edd9; color: #2d653d; border-color: #7b9d6c; }
 .logjam .c.cur span { background: var(--jam); color: #fff; border-color: var(--jam); }
 .blocked .c.cur span { background: #f6e6b3; color: var(--blk); border-color: #b89d63; }
 .queued:not(.picked) .c.cur span { background: var(--soft); }
-.chip { position: absolute; top: 3px; width: 20px; height: 20px; border: 1.5px solid var(--fg); border-radius: 3px; background: var(--work); transform: translateX(-50%); transition: left .7s cubic-bezier(.4,0,.2,1), background .3s; box-shadow: 2px 2px 0 var(--fg), 0 0 0 3px var(--card); }
+.chip { position: absolute; top: 3px; width: 20px; height: 20px; border: 1.5px solid var(--fg); border-radius: 3px; background: var(--work); transform: translateX(-50%); transition: left .7s cubic-bezier(.4,0,.2,1), background .3s; z-index: 2; box-shadow: none; }
 .chip::before { content: ''; position: absolute; inset: 4px; border-block: 1px solid currentColor; opacity: .55; }
-.working .chip::after { content: ''; position: absolute; inset: -5px; border: 1.5px solid transparent; border-top-color: var(--fg); border-radius: 50%; animation: spin 2.4s linear infinite; }
+.blade { position: absolute; top: -6px; width: 38px; height: 38px; transform: translateX(-50%); z-index: 1; pointer-events: none; transition: left .7s cubic-bezier(.4,0,.2,1); display: none; }
+.working .blade { display: block; }
+.blade svg { width: 100%; height: 100%; animation: spin 1.6s linear infinite; }
+.blade .disc { fill: #c3c9bc; stroke: var(--fg); stroke-width: .9; stroke-linejoin: round; }
+.blade .hub { fill: none; stroke: var(--fg); stroke-width: .7; opacity: .5; }
 .done .chip { background: #a9c79b; }
 .logjam .chip { background: var(--jam); color: white; }
 .blocked .chip { background: var(--yellow); }
@@ -143,7 +147,13 @@ button.ac:disabled { opacity: .65; cursor: wait; box-shadow: none; }
 .empty { color: var(--dim); text-align: center; padding: 44px 20px; background: var(--card); border: 1.5px dashed #9baa8c; border-radius: 8px; }
 .arc { margin-top: 30px; padding-top: 20px; border-top: 2px solid var(--fg); }
 .arc>summary { display: list-item; padding: 6px 0 14px; }
-.arc .p { margin-top: 14px; }
+.arc .p { margin-top: 14px; padding-bottom: 14px; }
+.arc .p h2 { align-items: center; flex-wrap: nowrap; }
+.expand { display: flex; flex: 1; flex-wrap: wrap; align-items: baseline; gap: 5px 14px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; font: inherit; letter-spacing: inherit; }
+.expand::before { content: '▸'; }
+.expand[aria-expanded=true]::before { content: '▾'; }
+.arc .expand .nm { white-space: normal; overflow-wrap: anywhere; }
+.arc .contents { margin-top: 10px; }
 .arc .empty { padding: 24px 16px; }
 .q { display: block; width: 100%; font-size: 16px; padding: 10px 12px; border-radius: 5px; border: 1.5px solid var(--fg); background: var(--card); margin: 0 0 14px; }
 .glass { flex: none; min-width: 38px; min-height: 38px; margin: -7px -9px -7px 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--fg); font-size: 18px; }
@@ -151,7 +161,7 @@ button.ac:disabled { opacity: .65; cursor: wait; box-shadow: none; }
 .glass svg { width: 17px; height: 17px; margin: auto; }
 .arc .path { margin-bottom: 12px; }
 .run { padding: 12px 0; border-top: 1px solid var(--line); }
-.run .rh { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.run .rh { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; margin-bottom: 8px; overflow-wrap: anywhere; }
 .ar { display: flex; gap: 10px; align-items: baseline; font-size: 13px; padding: 7px 0; min-width: 0; }
 .ar .st { font-size: 10px; color: var(--dim); white-space: nowrap; padding: 1px 6px; border-radius: 3px; background: var(--soft); }
 .none { color: var(--dim); font-size: 12px; padding: 4px 0 14px; }
@@ -212,11 +222,11 @@ dialog .ac { min-height: 40px; font-size: 12px; }
   .c.cur:first-child span { left: 0; transform: none; }
   .c.cur:nth-child(10) span { left: auto; right: 0; transform: none; }
   .c.cur span { font-size: 9px; padding-inline: 4px; }
-  .chip { width: 17px; height: 17px; top: 5px; }
+  .chip { width: 17px; height: 17px; top: 4.5px; }
   .board-footer { flex-direction: column; gap: 4px; }
   dialog { padding: 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chip, button.ac { transition: none; }
-  .working .chip::after, .logjam .chip, .t.bounce { animation: none; }
+  .chip, .blade, button.ac { transition: none; }
+  .blade svg, .logjam .chip, .t.bounce { animation: none; }
 }

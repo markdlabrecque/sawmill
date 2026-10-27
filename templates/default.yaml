@@ -29,6 +29,17 @@ integration: main
 # One of: claude-code, pi, codex.
 runtime: claude-code
 
+# Optional, only with runtime: pi. Absent: inherit pi.extensions from
+# ~/.config/sawmill/config.yaml. A project list replaces the global list;
+# extensions: [] disables all optional extensions here. Keep absent in this
+# template to inherit live global defaults instead of copying a per-project list.
+# Entries are existing local files/directories; ~ expands to the user's home,
+# relative paths resolve from the millyard root. Automatic discovery stays off.
+# TRUST: extension code runs with your full user permissions. See docs/pi-runtime.md.
+# pi:
+#   extensions:
+#     - ~/.pi/agent/extensions/pi-claude-subscription
+
 # Model and effort per role. effort is one of: low, medium, high, max.
 # Model ids are the runtime's own. Pick a cheap model to write tests, a strong
 # one to implement, and the strongest you can afford to review.
@@ -42,6 +53,27 @@ roles:
   reviewer:
     model: claude-opus-5-5
     effort: high
+
+# Jev (TypeSafe) features: independent opt-ins, all off by default. Each sends
+# bounded, redacted excerpts to TypeSafe only when invoked. Requires the optional
+# @typesafe-ai/sdk and TYPESAFE_API_KEY in Mill's environment; never put the key here.
+# Advisory screens never replace reasoning review or authorize a merge. Routing
+# selects coding-role models within the machine policy; it never reroutes reviewers.
+# Screen timeout: positive duration up to 60s (1m); max_evidence_chars: 1-16000.
+# Defaults below. See docs/{draft,acceptance,ci}-screening.md, the learn skill's
+# screening.md, and docs/model-routing.md for evidence and privacy boundaries.
+# jev:
+#   # Reviews ticket clarity/scope/blocked-by; sends title, body and selected comments.
+#   draft: { enabled: false, timeout: 10s, max_evidence_chars: 4000 }
+#   # Checks acceptance claims; sends requirement, test source and observed result excerpts.
+#   acceptance: { enabled: false, timeout: 10s, max_evidence_chars: 4000 }
+#   # Helps investigate failed CI; sends selected saved-log diagnostic excerpts.
+#   ci: { enabled: false, timeout: 10s, max_evidence_chars: 4000 }
+#   # Sorts learning observations; sends only scoped observation evidence excerpts.
+#   learn: { enabled: false, timeout: 10s, max_evidence_chars: 4000 }
+#   # Recommends coding tiers; sends requirements/comments and relevant tracked code.
+#   # Needs model_routing policy in ~/.config/sawmill/config.yaml.
+#   routing: { enabled: false }
 
 # How long one role may run before it is treated as an infrastructure failure
 # and retried. Suffixes: s, m, h.

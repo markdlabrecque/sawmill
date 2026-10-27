@@ -27,7 +27,7 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div id="root"><div class="empty">Connecting to your workshop…</div></div></section>
 <details class="arc" id="arc"><summary class="sec">Archive <span id="acount"></span></summary>
 <input type="search" class="q" id="aq" placeholder="Search projects" aria-label="Search archived projects" autocomplete="off" spellcheck="false">
-<div id="alist"></div><div class="empty" id="aempty">No archived runs yet.</div></details>
+<div id="alist"></div><div class="empty" id="aempty">No archived tickets yet.</div></details>
 <footer class="board-footer"><span>Sawmill · Good work needs good machinery.</span><span>Updates automatically from this machine.</span></footer>
 </main>
 <dialog id="dlg" aria-labelledby="dt"><form id="dform"><h3 id="dt"></h3><div class="dq" id="dq"></div>
@@ -93,14 +93,14 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0,queue
     const ts=card.querySelector('.ts');
     for(const t of p.tickets){const key=p.millyard+'#'+t.number;let row=rows.get(key);
       if(!row){row=document.createElement('div');row.innerHTML='<div class="h"><a class="tl"><span class="n"></span><span class="ti"></span></a><span class="bb"></span><button type="button" class="more" aria-expanded="false">Actions</button></div><div class="d"></div><div class="why"></div>'
-          +'<div class="dx" hidden><div class="dxh"></div><div class="dxi"></div><div class="dxn">Next: <code></code> <span></span></div><details><summary>Output</summary><pre></pre><div class="dxl"></div></details></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="chip"></div></div>'
+          +'<div class="dx" hidden><div class="dxh"></div><div class="dxi"></div><div class="dxn">Next: <code></code> <span></span></div><details><summary>Output</summary><pre></pre><div class="dxl"></div></details></div><div class="lane">'+LANES.map((l,i)=>'<div class="c"><i></i><span class="full">'+l+'</span><span class="short">'+SHORT[i]+'</span></div>').join('')+'<div class="blade" aria-hidden="true"><svg viewBox="0 0 34 34"><path class="disc" d="M17 3.80 L22.13 0.79 L22.39 2.04 L22.05 4.80 L27.94 3.99 L27.70 5.24 L26.33 7.67 L32.09 9.16 L31.39 10.23 L29.20 11.95 L33.94 15.53 L32.88 16.25 L30.20 17 L33.21 22.13 L31.96 22.39 L29.20 22.05 L30.01 27.94 L28.76 27.70 L26.33 26.33 L24.84 32.09 L23.77 31.39 L22.05 29.20 L18.47 33.94 L17.75 32.88 L17 30.20 L11.87 33.21 L11.61 31.96 L11.95 29.20 L6.06 30.01 L6.30 28.76 L7.67 26.33 L1.91 24.84 L2.61 23.77 L4.80 22.05 L0.06 18.47 L1.12 17.75 L3.80 17 L0.79 11.87 L2.04 11.61 L4.80 11.95 L3.99 6.06 L5.24 6.30 L7.67 7.67 L9.16 1.91 L10.23 2.61 L11.95 4.80 L15.53 0.06 L16.25 1.12 Z"/><circle class="hub" cx="17" cy="17" r="4"/></svg></div><div class="chip"></div></div>'
         +'<div class="acts" hidden>'+ACTIONS.map(([a,label])=>'<button type="button" class="ac" data-a="'+a+'">'+label+'</button>').join('')+'</div><div class="fb" role="status"></div>';
         const mill=p.millyard;row.querySelector('.more').onclick=()=>{if(opened.has(key))opened.delete(key);else opened.add(key);render()};row.querySelectorAll('.acts button').forEach(b=>b.onclick=()=>act(key,rows.get(mill).data,row.data,b.dataset.a));ts.appendChild(row);rows.set(key,row)}
       seen.add(key);row.data=t;const index=LANES.indexOf(t.lane);row.querySelector('.why').textContent=t.blockage||'';
       diagnosis(row.querySelector('.dx'),t);controls(row.querySelector('.acts'),key,a=>t.actions[a]);feedback(row.querySelector('.fb'),key);
       row.className='t '+t.state+(t.picked?' picked':'');row.querySelector('.n').textContent='#'+t.number;row.querySelector('.ti').textContent=t.title;row.querySelector('.ti').title=t.title;link(row.querySelector('.tl'),t);
       row.querySelector('.bb').innerHTML=(t.picked?'<span class="badge">Pending pick</span> ':'')+(t.appended?'<span class="badge">Appended</span> ':'')+(t.bounces?'<span class="badge b">↺ '+t.bounces+'</span>':'')+(t.stopRequested?' <span class="badge">stop</span>':'')+(t.state==='logjam'?' <span class="badge jam">logjam</span>':'');
-      row.querySelectorAll('.c').forEach((c,i)=>{c.classList.toggle('past',i<index);c.classList.toggle('cur',i===index)});const open=opened.has(key),more=row.querySelector('.more');row.querySelector('.acts').hidden=!open;more.setAttribute('aria-expanded',String(open));more.setAttribute('aria-label',(open?'Hide':'Show')+' actions for #'+t.number);row.querySelector('.chip').style.left=(index*10+5)+'%';
+      row.querySelectorAll('.c').forEach((c,i)=>{c.classList.toggle('past',i<index);c.classList.toggle('cur',i===index)});const open=opened.has(key),more=row.querySelector('.more');row.querySelector('.acts').hidden=!open;more.setAttribute('aria-expanded',String(open));more.setAttribute('aria-label',(open?'Hide':'Show')+' actions for #'+t.number);row.querySelectorAll('.chip,.blade').forEach(marker=>marker.style.left=(index*10+5)+'%');
       if(prevBounces.has(key)&&prevBounces.get(key)<t.bounces){row.classList.add('bounce');setTimeout(()=>row.classList.remove('bounce'),600)}prevBounces.set(key,t.bounces)}}
   for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key);opened.delete(key)}
   const empty=root.querySelector('.empty');if(view.projects.length)empty?.remove();else if(!empty)root.innerHTML='<div class="empty">No active runs. Your workshop is clear.</div>';else empty.textContent='No active runs. Your workshop is clear.';
@@ -121,30 +121,33 @@ function loose(q,name){const want=[...fold(q).trim()];let i=0;for(const ch of fo
 function ticketMatch(q,t){q=fold(q).trim();if(!q)return true;return String(t.number)===(q.charAt(0)==='#'?q.slice(1):q)||fold(t.title).includes(q)}
 function renderArchive(){const seen=new Set(),archive=view.archive||[];
   archive.forEach((a,index)=>{let card=acards.get(a.millyard);const key=a.millyard;
-    if(!card){card=el('div','p');card.innerHTML='<h2><span class="nm"></span><small></small><button type="button" class="glass" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="8" r="5.5"/><path d="m12 12 5 5"/></svg></button></h2><div class="path"></div><input type="search" class="q" hidden placeholder="Ticket number or name" autocomplete="off" spellcheck="false"><div class="runs"></div><div class="none" hidden>No tickets match.</div>';
+    if(!card){card=el('div','p');card.innerHTML='<h2><button type="button" class="expand" aria-expanded="false"><span class="nm"></span><small></small></button><button type="button" class="glass" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="8" r="5.5"/><path d="m12 12 5 5"/></svg></button></h2><div class="contents" hidden><div class="path"></div><input type="search" class="q" hidden placeholder="Ticket number or name" autocomplete="off" spellcheck="false"><div class="runs"></div><div class="none" hidden>No tickets match.</div></div>';
       const box=card.querySelector('.q');card.querySelector('.glass').onclick=()=>setGlass(card,key,!glass.has(key),true);
-      box.oninput=()=>{glass.set(key,box.value);filterTickets(card,key)};
+      card.querySelector('.expand').onclick=()=>setExpanded(card,card.querySelector('.contents').hidden);
+      box.oninput=()=>{glass.set(key,box.value);setExpanded(card,true);filterTickets(card,key)};
       box.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();setGlass(card,key,false,true)}};acards.set(key,card)}
     if(alist.children[index]!==card)alist.insertBefore(card,alist.children[index]||null);
     seen.add(key);card.data=a;card.querySelector('.nm').textContent=a.name;card.querySelector('.nm').title=a.name;
-    card.querySelector('small').textContent=a.runs.length+' run'+(a.runs.length===1?'':'s');card.querySelector('.path').textContent=a.millyard;
+    const count=a.runs.reduce((n,r)=>n+r.tickets.length,0);card.querySelector('small').textContent=count+' ticket'+(count===1?'':'s');card.querySelector('.path').textContent=a.millyard;
     card.querySelector('.glass').setAttribute('aria-label','Search tickets in '+a.name);card.querySelector('.q').setAttribute('aria-label','Search tickets in '+a.name);
     card.querySelector('.runs').replaceChildren(...a.runs.map(r=>{const run=el('div','run');
-      run.append(el('div','rh',(r.created?new Date(r.created).toLocaleString():'run '+r.runId)+' · '+r.tickets.length+' ticket'+(r.tickets.length===1?'':'s')));
+      run.append(el('div','rh',(r.day?new Date(r.day+'T12:00:00').toLocaleDateString():r.created?new Date(r.created).toLocaleDateString():'No merge date')+' · '+r.tickets.length+' ticket'+(r.tickets.length===1?'':'s')));
       if(r.error)run.append(el('div','err',r.error));
       for(const t of r.tickets){const row=el('div','ar'),a=el('a','tl'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;a.append(el('span','n','#'+t.number),ti);link(a,t);row.append(a,el('span','st',t.state));run.append(row)}
-      return run}));
+      return run}),...(a.errors||[]).map(r=>el('div','err',r.runId+': '+r.error)));
     filterTickets(card,key)});
   for(const [key,card] of acards)if(!seen.has(key)){card.remove();acards.delete(key);glass.delete(key)}
   acount.textContent=archive.length?'('+archive.length+')':'';filterProjects()}
 function filterProjects(){let shown=0;for(const card of acards.values()){const ok=loose(aq.value,card.data.name);card.hidden=!ok;if(ok)shown++}
-  aq.hidden=!acards.size;aempty.hidden=shown>0;aempty.textContent=acards.size?'No projects match.':'No archived runs yet.'}
+  aq.hidden=!acards.size;aempty.hidden=shown>0;aempty.textContent=acards.size?'No projects match.':'No archived tickets yet.'}
 function filterTickets(card,key){const q=glass.get(key)||'';let total=0;
   for(const run of card.querySelectorAll('.run')){let shown=0;for(const row of run.querySelectorAll('.ar')){const ok=ticketMatch(q,row.ticket);row.hidden=!ok;if(ok)shown++}run.hidden=Boolean(q.trim())&&!shown;total+=shown}
   card.querySelector('.none').hidden=!q.trim()||total>0}
-/** Closing a ticket box clears it, so every ticket shows again. */
+/** Cards are retained across snapshots, so their expanded state survives every refresh. */
+function setExpanded(card,open){card.querySelector('.contents').hidden=!open;card.querySelector('.expand').setAttribute('aria-expanded',String(open))}
+/** Closing a ticket box clears it, so every ticket shows again. Searching opens the project. */
 function setGlass(card,key,open,focus){const box=card.querySelector('.q'),btn=card.querySelector('.glass');
-  if(open)glass.set(key,'');else glass.delete(key);box.value='';box.hidden=!open;btn.setAttribute('aria-expanded',String(open));filterTickets(card,key);if(focus)(open?box:btn).focus()}
+  if(open){glass.set(key,'');setExpanded(card,true)}else glass.delete(key);box.value='';box.hidden=!open;btn.setAttribute('aria-expanded',String(open));filterTickets(card,key);if(focus)(open?box:btn).focus()}
 aq.oninput=filterProjects;
 aq.onkeydown=e=>{if(e.key!=='Escape')return;e.preventDefault();if(aq.value){aq.value='';filterProjects()}else{arc.open=false;arc.querySelector('summary').focus()}};
 function tick(){if(!view)return;const extra=Math.floor((Date.now()-got)/1000);at.textContent=new Date(view.time).toLocaleTimeString();

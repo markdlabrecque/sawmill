@@ -1,5 +1,5 @@
 {
   "name": "sawmill",
-  "version": "0.2.0",
+  "version": "1.1.0",
   "description": "Draft a validated Sawmill run from labels, spec children, or ticket numbers, and learn from finished deliveries with an evidence-based retrospective."
 }

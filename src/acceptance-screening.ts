@@ -4,10 +4,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
-import { z } from 'zod';
+import { jevScreenOptions } from './jev-config.js';
 import type { Acceptance, AcceptanceResult } from './acceptance.js';
 import { readResults, type TestRun } from './test-results.js';
-import { jevModel, typeSafeChoices, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 import { redact } from './view/diagnosis.js';
 
 const execute = promisify(execFile);
@@ -34,11 +34,6 @@ interface Finding {
   confidence?: number;
   fallbackReason?: string;
 }
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
 const choices = {
   supported: 'The observed test exercises the requested scenario and discriminating assertions support the acceptance claim',
   contradictory: 'The observed result or assertion contradicts the acceptance claim',
@@ -88,7 +83,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   supplied?: AcceptanceScreeningOptions): Promise<string[]> {
   let options = supplied;
   if (!options) {
-    try { options = configSchema.parse(JSON.parse(await readFile(join(millyard, '.mill/acceptance-screening.json'), 'utf8'))); }
+    try { options = await jevScreenOptions(millyard, 'acceptance'); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
       return ['Acceptance evidence advisory: insufficient (invalid-configuration).'];
@@ -97,7 +92,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   if (options.enabled !== true) return [];
   const started = performance.now();
   const model = options.model ?? jevModel, questionVersion = options.questionVersion ?? acceptanceQuestionVersion;
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const limit = options.maxEvidenceChars ?? 4000, timeoutMs = options.timeoutMs ?? 10_000;
   const validConfiguration = /^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) && /^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion)
     && Number.isSafeInteger(limit) && limit >= 3 && limit <= 16_000
@@ -199,5 +194,7 @@ export async function acceptanceDiagnostics(millyard: string, worktree: string, 
   }
   const telemetry = { model: validConfiguration ? model : jevModel, questionVersion: validConfiguration ? questionVersion : acceptanceQuestionVersion,
     latencyMs: performance.now() - started, usage: usage ?? null, cost: null };
-  return findings.map(finding => `Acceptance evidence advisory: ${JSON.stringify({ ...finding, ...telemetry })}`);
+  const configurationError = unavailable === 'missing-credentials' ? `Acceptance screening: ${typeSafeConfigurationMessage}` : undefined;
+  if (configurationError && !findings.length) return [configurationError];
+  return findings.map(finding => `Acceptance evidence advisory: ${JSON.stringify({ ...finding, ...telemetry, ...(configurationError ? { configurationError } : {}) })}`);
 }

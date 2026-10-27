@@ -9,25 +9,36 @@ checks are unchanged. Screening has no tracker or run-state write capability.
 ## Project opt-in
 
 After confirming that redacted excerpts of this project's CI logs may be sent
-to TypeSafe, create `.mill/ci-screening.json` in the millyard:
+to TypeSafe, enable it in the millyard's `.mill/config.yaml` (merge into any
+existing `jev:` mapping):
 
-```json
-{"enabled": true, "timeoutMs": 10000, "maxEvidenceChars": 4000}
+```yaml
+jev:
+  ci: { enabled: true, timeout: 10s, max_evidence_chars: 4000 }
 ```
 
-This is independent of draft screening. Remove the file or set `enabled` to
-false to disable it. Missing/malformed config and unknown fields leave the
-ordinary saved-log handoff in place. No credentials are read until enabled.
-Supply `TYPESAFE_API_KEY` through the process environment using your approved
-credential workflow; never put it in the config, command arguments or tickets.
+This is independent of draft screening. Set `jev.ci.enabled` to false to disable
+it. Unknown keys and invalid values are normal config validation errors.
+`timeout` is a positive duration up to `60s` (`1m`); `max_evidence_chars` is an
+integer from 1 to 16000. The example shows the defaults apart from opt-in.
+No credentials are read until enabled.
+
+**Moving from the JSON file:** `.mill/ci-screening.json` is still honored with a
+warning when `jev.ci` is absent. Move `enabled`, convert `timeoutMs` to a duration
+(round sub-second values up to `1s`), and rename `maxEvidenceChars` to
+`max_evidence_chars`, then remove JSON. If both exist, YAML wins (even explicit
+false) and the warning says JSON is ignored.
+Supply `TYPESAFE_API_KEY` through the [shared settings file](operating-mill.md#shared-typesafe-key)
+or process environment using your approved credential workflow; never put it
+in project config, command arguments or tickets.
 The optional `@typesafe-ai/sdk` peer must be installed alongside Mill, as
 explained in [draft screening](draft-screening.md). Missing SDK/credentials,
 timeouts, rate limits, invalid answers and service failures preserve repair.
 Nothing is installed automatically and no service call is retried.
 
 `ciLogReport` accepts an optional fifth `CiScreeningOptions` argument for host
-integrations and offline mocked tests. Omitting it reads the project-local opt-in
-file; passing an options object without `enabled: true` disables screening.
+integrations and offline mocked tests. Omitting it reads `jev.ci` from the
+millyard's project config; passing options without `enabled: true` disables screening.
 The injected `classify(request, signal)` receives neither credentials nor
 tracker/run-store capabilities. Tests use this seam, never a live service.
 

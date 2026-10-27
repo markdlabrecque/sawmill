@@ -33,6 +33,8 @@ export interface ChangeRequest {
   id: number | string;
   url: string;
   headCommit: string;
+  /** GitLab's reason a merge is currently blocked, when reported. */
+  mergeStatus?: string;
 }
 
 /** The same request read again to settle a merge whose response was lost; the merge commit is set once merged. */
@@ -90,6 +92,8 @@ export interface TicketWriter {
 export interface HostPolicy {
   /** Check names the host requires; absent when any of them could not be read. */
   required?: string[];
+  /** A known CI merge gate, even when the full set of named checks could not be read. */
+  pipelineRequired?: boolean;
   /** Merge modes the exact-source-head gate cannot deliver through, such as a merge queue. */
   unsupported: string[];
   gaps: string[];
@@ -117,7 +121,7 @@ export interface IntegrationTracker extends TicketWriter {
   hostPolicy?(branch: string): Promise<HostPolicy>;
   /** Download one verified failed job's log through the tracker's own authentication. */
   getJobLog?(job: CiJob, limits: LogLimits): Promise<JobLog>;
-  /** One final PR/MR read before merging; never an issue read or a polling loop. */
+  /** Read the PR/MR head after push and before merging; never an issue read. */
   getChangeRequest?(id: number | string): Promise<ChangeRequest>;
   /** Open, merged or closed state of one request, read before an unacknowledged merge is retried. */
   reconcileChangeRequest?(id: number | string): Promise<ReconciledChangeRequest>;

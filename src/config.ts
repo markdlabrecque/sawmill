@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { access, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { nameFlag, requiredCheckNames, simpleCommand, testScope, type Checks, type FocusedTests, type RequiredCheckName, type RequiredChecks } from './verification.js';
 
@@ -10,12 +10,18 @@ export type Role = 'test-writers' | 'implementer' | 'reviewer';
 export type Phase = 'setup' | 'prepare' | 'site' | 'install' | 'readiness' | 'ci' | 'teardown';
 export const phaseDefaults: Record<Phase, string> = { setup: '30m', prepare: '1m', site: '30m', install: '30m', readiness: '15m', ci: '3h', teardown: '10m' };
 export const updateDrainDefault = '4h';
+export interface JevScreenConfig { enabled: boolean; timeout: string; max_evidence_chars: number }
+export type JevScreen = 'draft' | 'acceptance' | 'ci' | 'learn';
 export interface ProjectConfig {
   name: string;
   tracker: { backend: 'github' | 'gitlab'; repo: string; host?: string };
   integration: string;
   runtime: 'claude-code' | 'pi' | 'codex';
+  /** Effective optional extension allowlist, resolved from project or machine config. */
+  pi?: { extensions?: string[] };
   roles: Record<Role, { model: string; effort: Effort }>;
+  jev?: Partial<Record<JevScreen, JevScreenConfig>> & { routing?: { enabled: boolean } };
+  /** Legacy alias; jev.routing takes precedence. */
   model_routing?: { enabled: boolean };
   role_timeout: string;
   /** none: the project has no tests, on purpose. No red check, no test run before merge. */
@@ -46,6 +52,7 @@ export interface RoutingPolicy {
   families: Partial<Record<'gpt' | 'claude', Partial<Record<string, { model: string; effort: Effort }>>>>;
 }
 export interface MachineConfig {
+  pi?: { extensions?: string[] };
   model_routing?: RoutingPolicy;
   concurrency: number;
   infrastructure_retries: number;
@@ -102,7 +109,13 @@ const integer = (value: number, minimum: number): Rule => ({ type: 'number', def
 const literal: Rule = { type: 'string', check: value => simpleCommand.test(String(value)), hint: 'expected one command with literal arguments, no shell syntax' };
 const names: Rule = { type: 'list', hint: 'expected a non-empty list of distinct check names' };
 const role = object({ model: string, effort: choice('low', 'medium', 'high', 'max') });
+const piSchema: Rule = { ...object({ extensions: { type: 'list', items: string, optional: true } }), optional: true };
 const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } });
+const jevScreenSchema: Rule = { ...object({
+  enabled: { type: 'boolean', default: false },
+  timeout: { ...duration, default: '10s', check: value => /^[1-9]\d*(s|m|h)$/.test(String(value)) && milliseconds(String(value)) <= 60000, hint: 'expected a positive duration up to 60s (1m)' },
+  max_evidence_chars: { ...integer(4000, 1), check: value => Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 16000, hint: 'expected an integer from 1 to 16000' },
+}), optional: true };
 const projectSchema = object({
   name: { ...string, check: value => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(String(value)), hint: 'use letters, digits, and hyphens, beginning with a letter or digit' },
   tracker: trackerSchema,
@@ -112,7 +125,11 @@ const projectSchema = object({
     catch { return false; }
   }, hint: 'expected a valid git branch name' },
   runtime: choice('claude-code', 'pi', 'codex'),
+  pi: piSchema,
   roles: object({ 'test-writers': role, implementer: role, reviewer: role }),
+  jev: { ...object({ draft: jevScreenSchema, acceptance: jevScreenSchema, ci: jevScreenSchema, learn: jevScreenSchema,
+    routing: { ...object({ enabled: { type: 'boolean', default: false } }), optional: true },
+  }), optional: true },
   model_routing: { ...object({ enabled: { type: 'boolean' } }), optional: true },
   role_timeout: { ...duration, default: '60m' },
   tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true }, focused: { ...object({
@@ -149,6 +166,7 @@ const projectSchema = object({
 const tierMapping = object(Object.fromEntries(['low', 'medium', 'high'].flatMap(model =>
   ['low', 'medium', 'high'].map(effort => [`${model}-${effort}`, { ...role, optional: true }]))));
 const machineSchema = object({
+  pi: piSchema,
   model_routing: { ...object({
     policy_version: { ...string, check: value => /^[a-zA-Z0-9.-]{1,80}$/.test(String(value)) },
     model: { ...choice('jev-1.14.0') },
@@ -235,11 +253,36 @@ export type Configuration =
   | { valid: true; project: ProjectConfig; machine: MachineConfig; issues: ConfigIssue[] }
   | { valid: false; issues: ConfigIssue[] };
 
-export async function loadConfig(cwd: string, home: string): Promise<Configuration> {
+/** Project-only reader for advisory screens, which do not need machine settings. */
+export async function loadProjectConfig(cwd: string) {
   const issues: ConfigIssue[] = [];
+  const project = await readConfig(join(cwd, '.mill/config.yaml'), projectSchema, issues) as ProjectConfig | undefined;
+  return { project, issues };
+}
+
+export const routingEnabled = (project: ProjectConfig): boolean => project.jev?.routing?.enabled ?? project.model_routing?.enabled ?? false;
+
+export async function loadConfig(cwd: string, home: string): Promise<Configuration> {
+  const { project, issues } = await loadProjectConfig(cwd);
   const projectPath = join(cwd, '.mill/config.yaml');
-  const project = await readConfig(projectPath, projectSchema, issues) as ProjectConfig | undefined;
-  const machine = await readConfig(join(home, '.config/sawmill/config.yaml'), machineSchema, issues) as MachineConfig | undefined;
+  const machinePath = join(home, '.config/sawmill/config.yaml');
+  const machine = await readConfig(machinePath, machineSchema, issues) as MachineConfig | undefined;
+  if (project?.pi && project.runtime !== 'pi') {
+    issues.push({ source: projectPath, key: 'pi', problem: 'bad value', message: 'bad value; pi settings require runtime: pi' });
+  }
+  if (project?.runtime === 'pi') {
+    const overridden = project.pi?.extensions !== undefined;
+    const extensions = overridden ? project.pi!.extensions : machine?.pi?.extensions;
+    const source = overridden ? projectPath : machinePath;
+    if (extensions && !issues.some(issue => issue.source === source && issue.key.startsWith('pi'))) {
+      const resolved = extensions.map(path => resolve(overridden ? cwd : join(home, '.config/sawmill'), path === '~' ? home : path.startsWith('~/') ? join(home, path.slice(2)) : path));
+      for (const [index, path] of resolved.entries()) {
+        try { await access(path); }
+        catch (error) { issues.push({ source, key: `pi.extensions.${index}`, problem: 'bad value', message: `Extension path missing or inaccessible: ${path}: ${(error as Error).message}` }); }
+      }
+      project.pi = { extensions: resolved };
+    }
+  }
   if (project?.test_harness === 'docker' && project.test_url === undefined && !issues.some(issue => issue.source === projectPath && issue.key === 'test_url')) {
     issues.push({ source: projectPath, key: 'test_url', problem: 'missing', message: 'missing; required when test_harness is docker' });
   }

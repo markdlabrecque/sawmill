@@ -10,21 +10,30 @@ or relax any existing acceptance, protected-test, revision or CI check. A
 ## Project opt-in
 
 After confirming that this project's acceptance text, test source and selected
-observed results may be sent to TypeSafe, create
-`.mill/acceptance-screening.json` **in the millyard**:
+observed results may be sent to TypeSafe, enable it in the millyard's
+`.mill/config.yaml` (merge into any existing `jev:` mapping):
 
-```json
-{"enabled": true, "timeoutMs": 10000, "maxEvidenceChars": 4000}
+```yaml
+jev:
+  acceptance: { enabled: true, timeout: 10s, max_evidence_chars: 4000 }
 ```
 
-Remove the file or set `enabled` to false to disable it. A credential alone does
-not enable screening. Unknown configuration fields safely disable screening.
+Set `jev.acceptance.enabled` to false to disable it. A credential alone does
+not enable screening. Unknown keys are reported by normal config validation.
+`timeout` is a positive duration up to `60s` (`1m`); `max_evidence_chars` is an
+integer from 1 to 16000. The example shows the defaults apart from opt-in.
+
+**Moving from the JSON file:** legacy `.mill/acceptance-screening.json` is still
+honored with a warning if `jev.acceptance` is absent. Move `enabled`, convert
+`timeoutMs` to a duration (round sub-second values up to `1s`), and rename
+`maxEvidenceChars` to `max_evidence_chars`, then remove the JSON file. YAML wins
+when both exist, including explicit false, with a warning that JSON is ignored.
 Install the optional `@typesafe-ai/sdk` alongside the Mill installation, as
 [described for draft screening](draft-screening.md#opt-in-for-one-project), only
-if you want live screening. Supply `TYPESAFE_API_KEY` in Mill's process
-environment through your approved credential workflow; never put it in this
-file, a ticket, logs or command arguments. A running scheduler inherits its
-startup environment. Do not fetch credentials merely because an opt-in file
+if you want live screening. Supply `TYPESAFE_API_KEY` in the
+[shared settings file](operating-mill.md#shared-typesafe-key) or Mill's process
+environment through your approved credential workflow; never put it in project
+config, a ticket, logs or command arguments. File changes need no scheduler restart. Do not fetch credentials merely because an opt-in setting
 exists.
 
 Production uses the shared optional choice client (`src/typesafe.ts`), pinned

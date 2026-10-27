@@ -3,10 +3,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { stripVTControlCharacters } from 'node:util';
-import { z } from 'zod';
+import { jevScreenOptions } from './jev-config.js';
 import { readResults } from './test-results.js';
 import type { CiJob } from './tracker.js';
-import { jevModel, typeSafeChoices, type ChoiceQuestion, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type ChoiceQuestion, type Evidence } from './typesafe.js';
 import { redact } from './view/diagnosis.js';
 
 export const ciScreenQuestionVersion = 'ci-screen-v1';
@@ -38,15 +38,9 @@ interface Report {
   usage?: { inputTokens: number | null; outputTokens: number | null };
   cost: null;
 }
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
-
-/** A separate, project-local opt-in. Credentials alone never enable screening. */
+/** An independent project opt-in. Credentials alone never enable screening. */
 export async function ciScreeningOptions(cwd: string): Promise<CiScreeningOptions> {
-  try { return configSchema.parse(JSON.parse(await readFile(join(cwd, '.mill/ci-screening.json'), 'utf8'))); }
+  try { return await jevScreenOptions(cwd, 'ci'); }
   catch { return {}; }
 }
 
@@ -158,9 +152,9 @@ export async function ciScreeningNote(directory: string, job: CiJob, head: strin
   const model = options.model ?? jevModel;
   const questionVersion = options.questionVersion ?? ciScreenQuestionVersion;
   const limit = options.maxEvidenceChars ?? 4000, timeoutMs = options.timeoutMs ?? 10_000;
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const fallback = (reason: string) => `Advisory CI screening: uncertain (${reason}); investigate the saved full log. CI remains failed; retry budgets and merge authorization are unchanged.`;
-  if (!apiKey?.trim()) return fallback('missing-credentials');
+  if (!apiKey?.trim()) return `${fallback('missing-credentials')} CI screening: ${typeSafeConfigurationMessage}`;
   if (!/^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) || !/^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion)
     || !Number.isSafeInteger(limit) || limit < 1 || limit > 16_000
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000

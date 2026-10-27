@@ -1,15 +1,59 @@
+import fs from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { routingEnabled, type ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 
-/** Execution startup is mandatory even when optional screening is disabled.
- * Presence only: never authenticate, return, or record the credential here. */
-export function requireTypeSafeKey(): void {
-  if (!process.env.TYPESAFE_API_KEY?.trim()) {
-    throw new CliError('TYPESAFE_API_KEY is required to start work. Set/export TYPESAFE_API_KEY in the execution environment, then retry.', 2);
+export const typeSafeConfigurationMessage = 'TYPESAFE_API_KEY is required for this opted-in Jev operation. Set TYPESAFE_API_KEY in ~/.config/sawmill/.env (or $XDG_CONFIG_HOME/sawmill/.env), or export it in the execution environment, then retry.';
+
+type KeySource = 'all' | 'environment' | 'file';
+
+/** Read afresh, never copy a file secret into the environment or durable metadata.
+ * Source-specific reads let scheduler admission distinguish a shared file from a
+ * key available only in the initiating shell. */
+export function resolveTypeSafeKey(source: KeySource = 'all'): string | undefined {
+  const environmentKey = process.env.TYPESAFE_API_KEY;
+  if (source !== 'file' && environmentKey?.trim()) return environmentKey;
+  if (source === 'environment') return undefined;
+  const path = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'sawmill', '.env');
+  let info: fs.Stats;
+  try { info = fs.statSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new CliError(`Cannot inspect TypeSafe settings ${path} (mode unknown): ${(error as NodeJS.ErrnoException).code ?? 'filesystem error'}.`, 2);
+  }
+  const mode = (info.mode & 0o7777).toString(8).padStart(3, '0');
+  const fail = (reason: string): never => { throw new CliError(`Cannot use TypeSafe settings ${path} (mode ${mode}): ${reason}.`, 2); };
+  if (!info.isFile()) fail('not a regular file');
+  if (process.getuid && info.uid !== process.getuid()) fail('file is not owned by the current user');
+  let text: string;
+  try {
+    if (info.mode & 0o077) fs.chmodSync(path, 0o600);
+    text = fs.readFileSync(path, 'utf8');
+  } catch (error) {
+    fail(`${(error as NodeJS.ErrnoException).code ?? 'filesystem error'} while securing or reading the file; require owner-only permissions (600)`);
+  }
+  let key: string | undefined;
+  for (const line of text!.split(/\r?\n/)) {
+    const match = /^\s*TYPESAFE_API_KEY\s*=\s*(.*?)\s*$/.exec(line);
+    if (!match) continue;
+    let value = match[1]!;
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    key = value.trim() ? value : undefined;
+  }
+  return key;
+}
+
+/** Only role routing opts execution into Jev. Screens check their separate opt-ins
+ * at invocation. Presence only: never authenticate or record the credential here. */
+export function requireTypeSafeKey(project: ProjectConfig, cwd?: string): void {
+  if (routingEnabled(project) && !typeSafeKeyAvailable()) {
+    throw new CliError(`Project ${cwd ?? project.name}: model routing is enabled. ${typeSafeConfigurationMessage}`, 2);
   }
 }
 
-export function typeSafeKeyAvailable(): boolean {
-  return Boolean(process.env.TYPESAFE_API_KEY?.trim());
+export function typeSafeKeyAvailable(source: KeySource = 'all'): boolean {
+  return Boolean(resolveTypeSafeKey(source)?.trim());
 }
 
 export const jevModel = 'jev-1.14.0';

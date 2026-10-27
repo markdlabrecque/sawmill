@@ -6,7 +6,12 @@ import type { CheckPolicy, HostPolicy } from './tracker.js';
 export function resolveCheckPolicy(project: ProjectConfig, host: HostPolicy): { policy?: CheckPolicy; problems: string[] } {
   const branch = project.integration;
   const problems = host.unsupported.map(mode => `Unsupported: ${mode}. Mill merges only the exact source head it tested; turn this off for ${branch}, or deliver this project by hand.`);
-  if (project.ci !== 'wait') return { problems };
+  if (project.ci !== 'wait') {
+    if (host.pipelineRequired || host.required?.length) problems.push(project.tracker.backend === 'gitlab'
+      ? 'GitLab requires a passing pipeline to merge; set `ci: wait` in .mill/config.yaml.'
+      : `GitHub requires passing required status checks on ${branch}; set \`ci: wait\` in .mill/config.yaml.`);
+    return { problems };
+  }
   const gaps = host.gaps.length ? { gaps: host.gaps } : {};
   if (project.tracker.backend === 'gitlab') return { problems, policy: { required: [], advisory: [], source: 'GitLab pipeline rules on the merge request', ...gaps } };
   const configured = project.ci_checks;

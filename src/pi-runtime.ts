@@ -1,4 +1,6 @@
 import { directChild } from './direct-child.js';
+import type { ProjectConfig } from './config.js';
+import { CliError } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
@@ -9,6 +11,35 @@ import { literalCommand } from './pi-policy.js';
 import { infrastructure, parseOutcome, RuntimeUsage, selectionUnavailable, type Runtime, type RuntimeRequest, type RuntimeResult, type RuntimeSink } from './runtime.js';
 import { authorizeVerification } from './verification.js';
 
+const resourceFlags = ['--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-approve'];
+const extensionArgs = (paths: string[] = []) => paths.flatMap(path => ['--extension', path]);
+const piEnvironment = (home?: string): NodeJS.ProcessEnv => ({ ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: `${home}/.config`,
+  ...(home !== homedir() ? { PI_CODING_AGENT_DIR: `${home}/.pi/agent` } : {}) } : {}) });
+
+/** Resolve every configured role against Pi's available model table, without a
+ * session or model call. Use the same discovery lockdown and optional extensions
+ * as role execution, but not the session-only Sawmill policy extension. */
+export async function preflightPiModels(cwd: string, project: ProjectConfig, home?: string): Promise<void> {
+  if (project.runtime !== 'pi') return;
+  const checked = new Set<string>();
+  for (const [role, selection] of Object.entries(project.roles)) {
+    if (checked.has(selection.model)) continue;
+    checked.add(selection.model);
+    const models = new Set<string>();
+    const child = await directChild({ role: 'reviewer', cwd, home, prompt: '', handoff: '', ...selection, timeoutMs: 30000, browser: false },
+      { stdout() {}, stderr() {}, session() {} }, {
+        executable: 'pi', args: ['--model', selection.model, ...resourceFlags, ...extensionArgs(project.pi?.extensions), '--list-models'],
+        env: piEnvironment(home), label: 'Pi model preflight',
+        stdoutLine(line) {
+          const columns = line.trim().split(/\s+/);
+          if (columns.length === 6 && columns[0] !== 'provider') models.add(`${columns[0]}/${columns[1]}`);
+        },
+      });
+    if (child.failure || child.code !== 0) throw new CliError(`Pi model preflight for ${role} (${selection.model}) failed: ${child.failure ?? (child.stderr.trim() || `exit ${child.code ?? child.signal}`)}`, 2);
+    if (!models.has(selection.model)) throw new CliError(`Pi model "${selection.model}" not found for ${role} with the effective pi.extensions allowlist. Check the provider extension and Pi credentials.`, 2);
+  }
+}
+
 /** Direct Pi 1.4.0 JSON-mode adapter. Protocol fixtures are source-derived. */
 export class PiRuntime implements Runtime {
   constructor(readonly options: { executable?: string; env?: NodeJS.ProcessEnv } = {}) {}
@@ -18,8 +49,7 @@ export class PiRuntime implements Runtime {
     if (request.signal?.aborted) return { outcome: infrastructure('Pi role interrupted before startup.') };
     if (process.platform === 'win32') return { outcome: infrastructure('Pi process-group cleanup is not supported on Windows.') };
     if (request.browser && request.role !== 'reviewer') return { outcome: infrastructure('Pi browser capability is supported only for the reviewer.') };
-    const env: NodeJS.ProcessEnv = { ...process.env, ...(request.home ? { HOME: request.home, XDG_CONFIG_HOME: `${request.home}/.config`,
-      ...(request.home !== homedir() ? { PI_CODING_AGENT_DIR: `${request.home}/.pi/agent` } : {}) } : {}), ...this.options.env };
+    const env: NodeJS.ProcessEnv = { ...piEnvironment(request.home), ...this.options.env };
     let browserExecutable: string | undefined;
     if (request.browser) {
       for (const directory of (env.PATH ?? '').split(':')) {
@@ -34,7 +64,7 @@ export class PiRuntime implements Runtime {
     const tools = request.role === 'reviewer' ? 'read,grep,find,ls,bash' : 'read,grep,find,ls,bash,edit,write';
     const nonce = randomUUID();
     const args = ['--print', '--mode', 'json', '--model', request.model, '--thinking', request.effort,
-      '--tools', tools, '--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-approve',
+      '--tools', tools, ...resourceFlags, ...extensionArgs(request.piExtensions),
       '--extension', fileURLToPath(new URL('./pi-policy.js', import.meta.url))];
     let failure: string | undefined;
     let sessionId: string | undefined;

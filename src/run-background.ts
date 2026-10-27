@@ -14,7 +14,7 @@ export function startBackgroundRun(cwd: string, home: string): Promise<{ pid: nu
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [fileURLToPath(new URL('./bin.js', import.meta.url)), 'run', '--foreground'], {
-      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
+      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: randomUUID(), HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }
   return new Promise((resolve, reject) => {

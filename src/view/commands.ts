@@ -84,13 +84,13 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
         : failed(`#${ticket.number} is done locally, but the tracker did not accept the change; it is held for retry.`);
     }
     if (action === 'reset') {
-      const reset = await resetTicket(cwd, project, writer, ticket.number, { home, sleep: options.sleep });
+      const reset = await resetTicket(cwd, project, writer, ticket.number, { home, sleep: options.sleep, reader: options.tracker });
       return reset.status === 'ok' ? ok(`Reset #${ticket.number}; it is queued and starts fresh.`)
         : failed(`The tracker did not accept the reset of #${ticket.number}; pending writes are held. Try again.`);
     }
     if (run.run.lifecycle === 'active' || (run.run.lifecycle === 'stopped' && runActions(run).start.available)) {
-      requireSchedulerConfiguration(home);
-      if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home);
+      requireSchedulerConfiguration(home, project, cwd);
+      if (!lockHeld(cwd, 'loop')) await ensureExecutionScheduler(home, project, cwd);
     }
     const message = typeof request.message === 'string' && request.message.trim() ? request.message : undefined;
     if (!await answerTicket(cwd, project, writer, ticket.number, message, options)) return failed(`The tracker did not accept the answer to #${ticket.number}; it is held for retry.`);
@@ -111,9 +111,9 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
 
 /** The same start as mill run, which then resumes only the tickets the board's Stop Run stopped. */
 async function startRun(cwd: string, home: string, project: ProjectConfig, writer: TicketWriter, options: Pick<CliOptions, 'sleep'>, done: string): Promise<CommandReply> {
-  requireSchedulerConfiguration(home);
-  if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project);
-  await ensureExecutionScheduler(home);
+  requireSchedulerConfiguration(home, project, cwd);
+  if (!lockHeld(cwd, 'integration')) await dispatchPreflight(cwd, project, true, home);
+  await ensureExecutionScheduler(home, project, cwd);
   const stopped = readRun(cwd).run.stoppedTickets ?? [];
   activateRun(cwd);
   await registerMillyard(home, cwd);

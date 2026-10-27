@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { redact } from './view/diagnosis.js';
-import { jevModel, typeSafeChoices, type Evidence } from './typesafe.js';
+import { jevModel, resolveTypeSafeKey, typeSafeChoices, typeSafeConfigurationMessage, type Evidence } from './typesafe.js';
 
 export const learnScreenModel = jevModel;
 export const learnScreenQuestionVersion = 'learn-screen-v1';
@@ -31,6 +31,7 @@ export interface LearningReport {
   usage?: { inputTokens: number | null; outputTokens: number | null };
   cost: null;
   fallbackReason?: string;
+  configurationError?: string;
 }
 export interface LearningOptions {
   enabled?: boolean;
@@ -107,7 +108,7 @@ export async function screenLearning(observations: readonly LearningObservation[
   const report: LearningReport = { model, requestedModel: model, questionVersion, results: [], latencyMs: 0, cost: null };
   const finish = () => { report.latencyMs = performance.now() - started; return report; };
   if (options.enabled !== true) { report.fallbackReason = 'disabled'; return finish(); }
-  const apiKey = options.apiKey ?? (options.classify ? undefined : process.env.TYPESAFE_API_KEY);
+  const apiKey = options.apiKey ?? (options.classify ? undefined : resolveTypeSafeKey());
   const limit = options.maxEvidenceChars ?? 4000;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const validMetadata = /^jev-[a-zA-Z0-9.-]{1,80}$/.test(model) && /^[a-zA-Z0-9.-]{1,80}$/.test(questionVersion);
@@ -123,7 +124,10 @@ export async function screenLearning(observations: readonly LearningObservation[
     report.results = prepared.map(o => ({ ...o, answer: 'uncertain', fallbackReason: reason }));
     return finish();
   };
-  if (!apiKey?.trim()) return fallback('missing-credentials');
+  if (!apiKey?.trim()) {
+    report.configurationError = `Learning screening: ${typeSafeConfigurationMessage}`;
+    return fallback('missing-credentials');
+  }
   if (!validMetadata || !validLimits || (!options.classify && (model !== learnScreenModel || questionVersion !== learnScreenQuestionVersion))) return fallback('invalid-configuration');
   if (!prepared.length) return finish();
   // Bound both metadata and the total outbound batch. Never silently drop observations/sources.

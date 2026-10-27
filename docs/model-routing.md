@@ -19,6 +19,76 @@ alias must have the same canonical path as its tracked name; file and parent-dir
 symlinks are excluded. Only small regular text files are read, with no-follow file opens.
 The same bounded redacted evidence is retained for transport and export.
 
+## Turning it on
+
+Routing is off by default. After consenting to send bounded, redacted requirements
+(title, body, up to three recent comments) and relevant tracked-code excerpts to
+TypeSafe, opt in in the millyard's `.mill/config.yaml`. Merge into any existing
+`jev:` mapping:
+
+```yaml
+jev:
+  routing: { enabled: true }
+```
+
+Set `jev.routing.enabled` to false to disable new routing decisions. Other Jev
+features remain independent. Routing applies to test writers and implementers,
+never reviewers, and never relaxes tests, permissions or merge gates. Already
+started roles retain their saved selection on resume rather than being rerouted.
+
+Configure the machine policy in `~/.config/sawmill/config.yaml` as well:
+
+```yaml
+model_routing:
+  policy_version: local-v1
+  model: jev-1.14.0
+  question_version: coding-tiers-v1
+  timeout: 10s
+  max_evidence_chars: 4000
+  min_confidence: 0.95
+  families:
+    gpt:
+      low-low: { model: openai/gpt-6.1, effort: low }
+      high-high: { model: openai/gpt-6.1, effort: high }
+    claude:
+      low-low: { model: anthropic/claude-sonnet-4-6, effort: low }
+      high-high: { model: anthropic/claude-opus-4-6, effort: high }
+```
+
+These are **Pi** model IDs. For Codex use literal `gpt-6.1` IDs; for Claude Code
+use literal `claude-...` IDs without the provider prefix. Mapping never switches
+runtime or model family. Unsupported model/effort combinations fall back to the
+configured baseline. Choose mappings supported by your installed runtime/account.
+
+- `policy_version`: required policy identity, 1–80 letters, digits, dots or hyphens.
+- `model` and `question_version`: required, pinned to the values shown.
+- `timeout`: default `10s`, positive whole seconds up to `60s`.
+- `max_evidence_chars`: default 4000, integer from 1 to 16000; total excerpt budget.
+- `min_confidence`: required, from 0 to 1; an explicit policy cutoff, not calibrated
+  proof. The example's 0.95 is a local policy choice, not a validated threshold.
+- `families`: required mapping with optional `gpt` and `claude` mappings. Each tier
+  key is `<model-tier>-<effort-tier>`, independently `low`, `medium` or `high` (nine
+  possible keys). Each entry has a required literal `model` and `effort` (`low`,
+  `medium`, `high`, `max`, subject to runtime validation). Omitted mappings,
+  uncertainty, low confidence and unavailable service preserve the baseline.
+
+Install the optional `@typesafe-ai/sdk` alongside Mill. Supply `TYPESAFE_API_KEY`
+in the [shared settings file](operating-mill.md#shared-typesafe-key),
+`~/.config/sawmill/.env` (respecting `XDG_CONFIG_HOME`), or the execution
+environment. A nonblank environment value wins; file changes take effect without
+restarting the scheduler or Board. The file must be user-owned and private;
+Mill repairs group/world access to mode `600` or refuses to start the run.
+Never put the key in project YAML, arguments, logs or tickets. Routing checks
+nonblank credentials before activation/dispatch; do not retrieve a secret just
+because a project opts in.
+No opt-in means no routing key check or TypeSafe call.
+
+Evidence is limited to small, explicitly relevant tracked text files (up to six),
+excluding ignored/sensitive paths, symlinks and repository dumps. Redaction cannot
+guarantee removal of confidential business/personal prose: do not opt in content
+that cannot be sent. No raw provider logs are uploaded. See the validation rules
+above for fallback and saved-selection behavior.
+
 ## Measurements and comparison
 
 Codex terminal-turn usage, Pi assistant-message usage, and Claude terminal-result usage

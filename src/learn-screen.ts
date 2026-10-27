@@ -1,14 +1,9 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { jevScreenOptions } from './jev-config.js';
 import { z } from 'zod';
 import { screenLearning } from './learn-screening.js';
 
 // Separate opt-in: draft screening permission never permits delivery evidence uploads.
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
 const identity = z.string().min(1).max(512);
 const observationSchema = z.object({
   id: identity, incidentId: identity, basis: z.enum(['observed', 'inferred', 'predicted']),
@@ -20,7 +15,7 @@ const observationSchema = z.object({
 let report = await screenLearning([]);
 try {
   if (process.argv.length !== 2) throw new Error('unexpected-arguments');
-  const config = configSchema.parse(JSON.parse(await readFile('.mill/learn-screening.json', 'utf8')));
+  const config = await jevScreenOptions(process.cwd(), 'learn');
   if (config.enabled === true) {
     const chunks: Buffer[] = [];
     let size = 0;

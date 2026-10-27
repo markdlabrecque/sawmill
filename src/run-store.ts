@@ -160,6 +160,8 @@ export interface PhaseRecord { phase: Phase; reason: string; deadline: string; s
 export type Assignment = AssignResult | { status: 'pending' | 'refused'; error: string };
 export interface RunTicket extends Omit<Ticket, 'state'> {
   trackerState: Ticket['state'];
+  /** Latest explicit tracker refresh, recorded in the run log, including resets. */
+  refreshed?: { time: string; by: string; snapshot: string; previous: string };
   /** First-start override for this selection; older rows fall back to the run setting. */
   includeClosed?: boolean;
   position: number;
@@ -175,6 +177,8 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   branch: string | null;
   mergeCommit: string | null;
   completion: 'manual' | 'merged' | null;
+  /** Last done transition, falling back to updated for legacy rows; derived read-only. */
+  mergedAt?: string | null;
   integration: IntegrationProgress;
   team: TeamProgress;
   worker: WorkerOwnership | null;
@@ -358,13 +362,23 @@ export function readRunFile(file: string): RunSnapshot {
     const run = db.prepare('SELECT * FROM run').get();
     if (!run) throw new CliError(noRunMessage);
     const edges: RunEdge[] = db.prepare('SELECT * FROM edges ORDER BY blocked, blocker').all().map(row => ({ blocked: Number(row.blocked), blocker: Number(row.blocker), outsideClosed: Boolean(row.outside_closed) }));
+    const refreshed = new Map<number, NonNullable<RunTicket['refreshed']>>();
+    for (const row of db.prepare("SELECT ticket, time, event FROM log WHERE json_extract(event, '$.refreshed') IS NOT NULL ORDER BY id").all()) {
+      refreshed.set(Number(row.ticket), { ...JSON.parse(String(row.event)).refreshed, time: String(row.time) });
+    }
+    const mergedAt = new Map<number, string>();
+    for (const row of db.prepare("SELECT ticket, time FROM log WHERE json_extract(event, '$.change.state') = 'done' ORDER BY id").all()) {
+      mergedAt.set(Number(row.ticket), String(row.time));
+    }
     const tickets: RunTicket[] = db.prepare('SELECT * FROM tickets ORDER BY position').all().map(row => ({
+      ...(refreshed.has(Number(row.number)) ? { refreshed: refreshed.get(Number(row.number))! } : {}),
       number: Number(row.number), title: String(row.title), body: String(row.body), labels: JSON.parse(String(row.labels)) as string[],
       ...(row.include_closed != null ? { includeClosed: Boolean(row.include_closed) } : {}),
       trackerState: row.tracker_state as Ticket['state'], comments: JSON.parse(String(row.comments)) as TicketComment[], blockedBy: JSON.parse(String(row.blocked_by)) as number[] | null,
       position: Number(row.position), appended: Boolean(row.appended), state: row.state as TicketState, reason: row.reason as string | null, stage: row.stage as string | null,
       bounces: Number(row.bounces), sessionIds: JSON.parse(String(row.session_ids)) as RunTicket['sessionIds'],
       provisioned: Boolean(row.provisioned), worktree: row.worktree as string | null, branch: row.branch as string | null, mergeCommit: row.merge_commit as string | null, completion: (row.completion ?? (row.merge_commit ? 'merged' : null)) as RunTicket['completion'],
+      mergedAt: row.state === 'done' ? mergedAt.get(Number(row.number)) ?? String(row.updated) : null,
       integration: row.integration ? JSON.parse(String(row.integration)) as IntegrationProgress : {},
       team: row.team ? JSON.parse(String(row.team)) as TeamProgress : {},
       worker: row.worker ? JSON.parse(String(row.worker)) as WorkerOwnership : null,
@@ -424,6 +438,7 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
   };
   return [snapshot.run.loop?.pausedReason, snapshot.run.pendingPick ? `Pending pick: ${ref(snapshot.run.pendingPick)}.` : undefined, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
     ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref)),
+    ...snapshot.tickets.map(ticket => ticket.refreshed ? `${ref(ticket.number)}: text refreshed at ${ticket.refreshed.time} by ${ticket.refreshed.by} (checklist ${ticket.refreshed.snapshot}).` : undefined),
     // The undeclared default stays implicit; a ticket's own plan is shown before work starts.
     ...snapshot.tickets.map(({ number, proofPlan: plan }) => plan && plan.reason !== defaultProofPlan.reason ? `${ref(number)}: proof plan ${plan.path}: ${plan.reason}` : undefined),
     ...snapshot.tickets.flatMap(({ number, proofPlanRevisions }) => (proofPlanRevisions ?? []).map(({ from, to, reason }) => `${ref(number)}: proof plan revised ${from} -> ${to}: ${reason}`)),
@@ -457,6 +472,7 @@ export function formatTicketLog(entries: LogEntry[]): string {
     if (event.mirrorError !== undefined) return `${time} mirror failed: ${String(event.mirrorError)}`;
     if (event.stateLookupError !== undefined) return `${time} state check failed: ${String(event.stateLookupError)}`;
     if (typeof event.pick === 'string') return `${time} ${event.pick}`;
+    if (event.refreshed) { const { by, snapshot } = event.refreshed as NonNullable<RunTicket['refreshed']>; return `${time} text refreshed by ${by}; checklist ${snapshot}`; }
     if (event.testsApproved) { const { by, commit } = event.testsApproved as { by: string; commit: string }; return `${time} tests approved at ${commit} by ${by}`; }
     if (event.waived) { const { item, reason, by, snapshot } = event.waived as import('./acceptance.js').AcceptanceWaiver; return `${time} ${item} waived by ${by} for checklist ${snapshot}: ${reason}`; }
     if (event.rerun) { const { stage, passed } = event.rerun as { stage: string; passed: boolean }; return `${time} [${stage}] test rerun ${passed ? 'passed' : 'failed'}`; }

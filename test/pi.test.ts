@@ -19,7 +19,7 @@ const settled = { type: 'agent_settled', aborted: false };
 const complete = (text = fence({ outcome: 'pass', summary: 'Reviewed café 🪵\u2028retained' })) => [session,
   { type: 'agent_start' }, assistant(text), { type: 'agent_end', messages: [], willRetry: false }, settled];
 
-async function piYard(t: TestContext, body = 'Preserve the full patch.', browser = false) {
+async function piYard(t: TestContext, body = 'Preserve the full patch.', browser = false, createWorktree = true) {
   const ticket: Ticket = { number: 21, title: 'Use direct Pi', body, state: 'open', labels: [], comments: [{ body: 'Cached answer' }], blockedBy: [] };
   const tracker = {
     async getTicket() { return structuredClone(ticket); },
@@ -35,7 +35,7 @@ async function piYard(t: TestContext, body = 'Preserve the full patch.', browser
     .replace('runtime: claude-code', 'runtime: pi').replaceAll(/claude-[\w-]+/g, 'openai/gpt-6.1')
     .replaceAll('effort: high', 'effort: max').replaceAll('effort: medium', 'effort: max').replace('ci: wait', 'ci: none'));
   assert.equal((await yard.cli('run', 'draft', '21')).code, 0);
-  assert.equal((await yard.cli('worktree', 'create', '21')).code, 0);
+  if (createWorktree) assert.equal((await yard.cli('worktree', 'create', '21')).code, 0);
   const worktree = join(yard.root, '21');
   const bin = join(yard.root, 'bin'); await mkdir(bin);
   const originalPath = process.env.PATH;
@@ -516,6 +516,164 @@ test('Pi refuses writer browser requests and missing browser executables before 
     assert.match(JSON.parse(result.stdout).outcome.error, mode === 'writer' ? /only.*reviewer/ : /browser executable.*unavailable/);
     assert.equal(await readFile(marker).catch(() => undefined), undefined);
   }
+});
+
+// Ticket 202: a scripted vendor transport loads explicit extensions in order.
+// This does not claim live provider coverage: it exercises Sawmill's CLI wiring,
+// model selection and shipped native policy without subscription credentials.
+const approvedExtensionTransport = `
+  const fs = require('node:fs');
+  const { pathToFileURL } = require('node:url');
+  const argv = process.argv.slice(2);
+  const arg = name => argv[argv.indexOf(name) + 1];
+  const providers = new Map(); const hooks = new Map();
+  const tools = (arg('--tools') || '').split(',');
+  const pi = {
+    registerProvider(name, config) { providers.set(name, config); },
+    registerTool(tool) { tools.push(tool.name); },
+    on(name, handler) { hooks.set(name, [...(hooks.get(name) || []), handler]); },
+    getThinkingLevel() { return arg('--thinking'); }, getActiveTools() { return tools; }
+  };
+  const fire = async (name, event, context) => {
+    for (const handler of hooks.get(name) || []) {
+      const result = await handler({ type: name, ...event }, context);
+      if (result?.block) return result;
+    }
+  };
+  (async () => {
+    if (!argv.includes('--no-extensions')) throw new Error('Automatic discovery must stay disabled');
+    const loaded = [];
+    for (let i = 0; i < argv.length; i++) if (argv[i] === '--extension') {
+      const path = argv[++i]; loaded.push(path);
+      (await import(pathToFileURL(path).href)).default(pi);
+    }
+    if (argv.includes('--list-models')) {
+      console.log('provider model context max-out thinking images');
+      for (const [provider, config] of providers) for (const model of config.models) console.log(provider + ' ' + model.id + ' 200000 8192 yes no');
+      return;
+    }
+    const model = arg('--model'); const slash = model.indexOf('/');
+    const provider = model.slice(0, slash), id = model.slice(slash + 1);
+    if (!providers.get(provider)?.models.some(model => model.id === id)) throw new Error('Model "' + model + '" not found');
+    let prompt = ''; for await (const chunk of process.stdin) prompt += chunk;
+    const context = { cwd: process.cwd(), model: { provider, id } };
+    await fire('session_start', {}, context); await fire('before_agent_start', {}, context);
+    const probes = [];
+    for (const [toolName, command] of [['bash', 'git status --short'], ['bash', 'git push origin HEAD'], ['bash', 'node evil.js'], ['write', undefined]]) {
+      probes.push((await fire('tool_call', { toolName, input: { command } }, context))?.block === true);
+    }
+    fs.writeFileSync(require('node:path').join(process.env.HOME, 'approved-invocation.json'), JSON.stringify({ loaded, tools, probes, prompt }));
+    const emit = value => console.log(JSON.stringify(value));
+    emit({ type: 'session', id: 'approved-provider-session' }); emit({ type: 'agent_start' });
+    emit({ type: 'message_end', message: { role: 'assistant', provider, model: id, stopReason: 'stop', content: [{ type: 'text', text: ${JSON.stringify(fence({ outcome: 'pass', summary: 'Extension model reviewed' }))} }] } });
+    emit({ type: 'agent_end', willRetry: false }); emit({ type: 'agent_settled', aborted: false });
+  })().catch(error => { console.error(error.stack); process.exitCode = 1; });
+`;
+
+for (const scope of ['global', 'project'] as const) {
+  test(`Pi CLI loads the ${scope} approved provider and retains reviewer lockdown`, async t => {
+    const y = await piYard(t);
+    const extension = join(y.home, 'subscription.mjs');
+    await writeFile(extension, `export default pi => pi.registerProvider('subscription', { models: [{ id: 'claude-sonnet-5-5' }] });`);
+    const unapproved = join(y.home, '.pi/agent/extensions');
+    await mkdir(unapproved, { recursive: true });
+    await writeFile(join(unapproved, 'unapproved.mjs'), `throw new Error('Unapproved extension loaded');`);
+    const configPath = scope === 'global' ? join(y.userConfig, 'config.yaml') : y.projectConfig;
+    await writeFile(configPath, (await readFile(configPath, 'utf8')) + `\npi:\n  extensions:\n    - ${JSON.stringify(extension)}\n`);
+    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replaceAll('openai/gpt-6.1', 'subscription/claude-sonnet-5-5'));
+    await y.fake(approvedExtensionTransport);
+    const result = await y.invoke(['team', 'review', '21', '--json']);
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(JSON.parse(result.stdout).outcome.summary, 'Extension model reviewed');
+    const call = JSON.parse(await readFile(join(y.home, 'approved-invocation.json'), 'utf8'));
+    assert.deepEqual(call.loaded.slice(0, -1), [extension], 'Only effective allowlist entries load before Sawmill policy');
+    assert.match(call.loaded.at(-1), /pi-policy\.js$/);
+    assert.deepEqual(call.tools, ['read', 'grep', 'find', 'ls', 'bash']);
+    assert.deepEqual(call.probes, [false, true, true, true]);
+  });
+}
+
+for (const scope of ['global', 'project'] as const) {
+  test(`Pi extension model runs all three team roles with a ${scope} allowlist`, async t => {
+    const y = await piYard(t);
+    const extension = join(y.home, 'team-provider.mjs');
+    await writeFile(extension, `export default pi => pi.registerProvider('subscription', { models: [{ id: 'claude-sonnet-5-5' }] });`);
+    const configPath = scope === 'global' ? join(y.userConfig, 'config.yaml') : y.projectConfig;
+    await writeFile(configPath, (await readFile(configPath, 'utf8')) + `\npi:\n  extensions:\n    - ${JSON.stringify(extension)}\n`);
+    await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replaceAll('openai/gpt-6.1', 'subscription/claude-sonnet-5-5').replace('command: npm test', 'command: node answer.test.cjs'));
+    await writeFile(join(y.worktree, 'answer.cjs'), 'module.exports = 0;\n');
+    y.git('-C', y.worktree, 'add', 'answer.cjs');
+    y.git('-C', y.worktree, 'commit', '-m', 'Seed team provider fixture');
+    const rolesLog = join(y.root, 'roles.jsonl');
+    const roleWork = `
+      const role = JSON.parse(process.env.SAWMILL_PI_POLICY).role;
+      fs.appendFileSync(${JSON.stringify(rolesLog)}, JSON.stringify({ role, model, tools }) + '\\n');
+      const git = (...args) => require('node:child_process').execFileSync('git', args, { stdio: 'pipe' });
+      if (role === 'test-writers') {
+        fs.writeFileSync('answer.test.cjs', "require('node:assert/strict').equal(require('./answer.cjs'), 42);\\n");
+        git('add', 'answer.test.cjs'); git('commit', '-m', '#202: Specify provider fixture');
+      }
+      if (role === 'implementer') {
+        fs.writeFileSync('answer.cjs', 'module.exports = 42;\\n');
+        git('add', 'answer.cjs'); git('commit', '-m', '#202: Implement provider fixture');
+      }
+      // Stop before hosting/merge: the feature under test is every role's
+      // provider, not a fake hosting integration.
+      const terminal = '\x60\x60\x60mill-outcome\\n' + JSON.stringify(role === 'reviewer'
+        ? { outcome: 'question', question: 'All three extension-backed roles executed.' }
+        : { outcome: 'done', summary: 'Committed role fixture.' }) + '\\n\x60\x60\x60';
+    `;
+    await y.fake(approvedExtensionTransport.replace('const emit = value =>', roleWork + '\nconst emit = value =>')
+      .replace(JSON.stringify(fence({ outcome: 'pass', summary: 'Extension model reviewed' })), 'terminal'));
+    const tracker = { ...y.tracker,
+      async findOrOpenChangeRequest() { throw new Error('Question must stop before hosting'); },
+      async mergeChangeRequest() { throw new Error('Question must stop before merge'); },
+      async deleteRemoteBranch() {},
+    };
+    const result = await y.invoke(['team', 'run', '21', '--json'], { tracker });
+    const calls = (await readFile(rolesLog, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.deepEqual(calls.map(call => call.role), ['test-writers', 'implementer', 'reviewer'], result.stdout);
+    assert.ok(calls.every(call => call.model === 'subscription/claude-sonnet-5-5'));
+    for (const call of calls) assert.deepEqual(call.tools, ['read', 'grep', 'find', 'ls', 'bash', ...(call.role === 'reviewer' ? [] : ['edit', 'write'])]);
+    assert.match(JSON.stringify(await y.status()), /All three extension-backed roles executed/);
+  });
+}
+
+test('An approved Pi extension cannot activate an extra tool unnoticed', async t => {
+  const y = await piYard(t);
+  const extension = join(y.home, 'extra-tool.mjs');
+  await writeFile(extension, `export default pi => { pi.registerProvider('subscription', { models: [{ id: 'claude-sonnet-5-5' }] }); pi.registerTool({ name: 'escape' }); };`);
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replaceAll('openai/gpt-6.1', 'subscription/claude-sonnet-5-5') + `\npi:\n  extensions:\n    - ${JSON.stringify(extension)}\n`);
+  await y.fake(approvedExtensionTransport);
+  const result = await y.invoke(['team', 'review', '21', '--json']);
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(JSON.parse(result.stdout).outcome.error, /tools mismatch|tool.*(denied|unexpected|unsupported)/i);
+});
+
+test('Pi rejects an unavailable role model at dispatch preflight before a ticket starts', async t => {
+  const y = await piYard(t, undefined, false, false);
+  const before = await y.status();
+  assert.equal(before.state, 'queued');
+  assert.deepEqual(before.sessionIds, {});
+  // No pi config key here: this isolates the missing preflight from the missing
+  // allowlist schema. The reviewer alone is unavailable, so checking only the
+  // first role would not satisfy this test.
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('reviewer:\n    model: openai/gpt-6.1', 'reviewer:\n    model: missing-provider/not-installed'));
+  const { loadConfig } = await import('../src/config.js');
+  const { dispatchPreflight } = await import('../src/dispatch.js');
+  const config = await loadConfig(y.cwd, y.home);
+  assert.ok(config.valid, JSON.stringify(config.issues));
+  assert.equal(config.project.roles.reviewer.model, 'missing-provider/not-installed');
+  await y.fake(`
+    process.stdin.resume();
+    if (process.argv.includes('missing-provider/not-installed')) {
+      console.error('Model "missing-provider/not-installed" not found'); process.exitCode = 1;
+    } else console.log('provider model context max-out thinking images\\nopenai gpt-6.1 200000 8192 yes no');
+  `);
+  await assert.rejects(() => dispatchPreflight(y.cwd, config.project), /missing-provider\/not-installed[^]*not found|not found[^]*missing-provider\/not-installed/i);
+  const status = await y.status();
+  assert.equal(status.state, 'queued');
+  assert.deepEqual(status.sessionIds, {});
 });
 
 test('Pi distinguishes startup/flag failures from nonzero exits after a completed stream', async t => {

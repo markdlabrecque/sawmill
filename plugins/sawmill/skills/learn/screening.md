@@ -10,18 +10,31 @@ review and human approval of ledger/ticket changes all remain required.
 Use Node 22.13 or later and the optional `@typesafe-ai/sdk` installed alongside
 Sawmill. Ordinary users do not need the SDK; never install it automatically to
 recover a failed screening. After confirming that this project's selected,
-redacted evidence may be sent to TypeSafe, the user can create
-`.mill/learn-screening.json` in the invocation checkout:
+redacted evidence may be sent to TypeSafe, the user can enable it in the
+millyard's `.mill/config.yaml` (merge into any existing `jev:` mapping):
 
-```json
-{"enabled":true,"timeoutMs":10000,"maxEvidenceChars":4000}
+```yaml
+jev:
+  learn: { enabled: true, timeout: 10s, max_evidence_chars: 4000 }
 ```
 
-Removing this file or setting `enabled` to false disables screening. Permission
+The helper resolves the millyard from ticket worktrees too. `timeout` is a
+positive duration up to `60s` (`1m`); `max_evidence_chars` is an integer from 1
+to 16000. Defaults are shown apart from opt-in. Typos are config errors.
+
+**Moving from the JSON file:** `.mill/learn-screening.json` in the millyard is
+still honored with a warning when `jev.learn` is absent. Move `enabled`, convert
+`timeoutMs` to a duration (round sub-second values up to `1s`), rename
+`maxEvidenceChars` to `max_evidence_chars`, then remove JSON. YAML wins if both
+exist, including false, with a warning that JSON is ignored.
+
+Setting `jev.learn.enabled` to false disables screening. Permission
 for draft screening is not permission to upload delivery evidence. Supply
-`TYPESAFE_API_KEY` in the process environment through the user's approved
-credential workflow. Never put credentials in config, arguments, fixtures or
-reports; never retrieve them merely because config exists.
+`TYPESAFE_API_KEY` in the private `~/.config/sawmill/.env` (respecting
+`XDG_CONFIG_HOME`) or process environment through the user's approved credential
+workflow. A nonblank environment key wins; the file is reread on every call.
+Never put credentials in project config, arguments, fixtures or reports; never
+retrieve them merely because config exists.
 
 Prepare only short observations whose interpretation is open. Use structured
 attempt findings directly when the answer is already known. First select scope,
@@ -37,8 +50,8 @@ Pass JSON to `mill-learn-screen` on stdin without shell interpolation:
 ```
 
 IDs are stable caller-assigned references, not model-generated text. The CLI
-reads only its separate opt-in config and stdin; it writes only its report to
-stdout. It never opens a run, tracker, transcript or ledger. Only the fields in
+reads project config and stdin; it writes its report to stdout and legacy
+migration warnings to stderr. It never opens a run, tracker, transcript or ledger. Only the fields in
 the example, plus an optional evidence `truncated` boolean, are accepted. An
 invalid/oversized input produces a fixed fallback reason, not the input or an
 exception. Keep the original local evidence index and continue reasoning if the

@@ -24,6 +24,8 @@ export interface RuntimeRequest {
   role: Role;
   cwd: string;
   home?: string;
+  /** Absolute paths from the effective Sawmill Pi extension allowlist. */
+  piExtensions?: string[];
   prompt: string;
   handoff: string;
   model: string;

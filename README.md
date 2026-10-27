@@ -32,6 +32,44 @@ mill update /path/to/sawmill
 
 `mill update` builds the checkout, waits for working tickets to finish, swaps in the new build, and restarts the scheduler. It never fetches or changes the checkout. `mill --version` shows the running build. See [Operating Mill](docs/operating-mill.md) for the details.
 
+### Agent skills
+
+Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done or only needs a person, and `learn` runs a retrospective on completed or interrupted runs. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of each agent it detects on your machine, plus the shared `~/.agents/skills`. The skills CLI also reports PromptScript as failed on every global install; that is expected and harmless.
+
+After its final run log and report, Foreman offers one opt-in `/sawmill:learn`
+retrospective for the exact run identity in the same millyard, including when
+all remaining tickets are escalated, intentionally stopped or blocked behind
+those tickets. It does not offer while work is progressing, paused or
+recoverable, or on repeated polling walks. Accepting starts the learning skill
+(or gives its exact invocation if the host cannot); declining changes nothing.
+Learning examines retained attempt records and relevant logs for friction,
+helpful safeguards and measurable improvements; it does not clear unresolved
+work or change run state.
+
+The [learning workflow](plugins/sawmill/skills/learn/SKILL.md) is read-only:
+**project configuration** findings identify a user-owned file and setting,
+proposed change, expected effect, reversal and measurement for the user to
+decide on, without editing configuration. **Sawmill upstream** findings search
+`markdlabrecque/sawmill` for an existing issue and link it instead of duplicating
+it; a new issue requires the user's request or approval of that specific
+proposal and scoped, redacted evidence. Learning never patches an installed
+package, local Sawmill checkout or generated files. Separately requested source
+development is outside this retrospective boundary. Only accepted learning is
+recorded in `.mill/learning.md`, with the decision, owner, follow-up ticket if
+any, baseline and later measurement. A finding alone creates no ticket or
+ledger entry and changes no workflow; recording a recommendation does not
+apply it.
+
+The first time you run `mill` at a terminal without them, it offers to install them. Answer `y` to run the install, or `n` to skip it. Mill remembers a skip in `~/.config/sawmill/skills-declined` and never asks again; delete that file to be asked once more. Scripts, `--json`, `--help`, and `--version` are never asked.
+
+To install them yourself, from the copy that ships with your `mill`:
+
+```sh
+npx skills add "$(npm root -g)/@markdlabrecque/sawmill" --skill '*' -g -y
+```
+
+Run it again after `mill update` to pick up changed skills.
+
 ## Quickstart
 
 This example uses GitHub, Codex, and a Node project with an `npm test` command. Use your own repository, issue numbers, and available GPT model IDs.
@@ -197,7 +235,8 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill run stop` | Stop the run: no new tickets start until `mill run`. |
 | `mill scheduler status` | Show the shared scheduler, its log, and every registered run. |
 | `mill scheduler stop` | Stop the shared scheduler; working tickets keep going. |
-| `mill run reset 12` | Start a ticket over: delete its agent comments, worktree, branches and saved progress, and requeue it. |
+| `mill run refresh 12` | Pick up the latest ticket text and comments without resetting its work or state. |
+| `mill run reset 12` | Pick up the latest ticket text, then delete its agent comments, worktree, branches and saved progress, and requeue it. |
 | `mill run approve-tests 12` | Accept a logjammed ticket's committed tests as its new protected baseline. |
 | `mill run waive 12 AC2 --reason "..."` | Waive one item of a ticket's acceptance checklist, with the reason. |
 | `mill team run 12` | Run or resume one drafted ticket through the team workflow. |
@@ -290,7 +329,9 @@ mill run waive 12 AC2 --reason "Manual proof deferred to the pilot."
 mill run answer 12
 ```
 
-A waiver applies to that item of the checklist as drafted. The run log records who waived it and why. It does not bypass the tests, the protected-test check, review of the head, or CI.
+A waiver applies to that item of the saved checklist. The run log records who waived it and why. It does not bypass the tests, the protected-test check, review of the head, or CI.
+
+If someone edits the ticket after drafting, run `mill run refresh 12` to fetch its latest body and comments. This works for queued, blocked and logjam tickets; stop a working ticket and wait for its logjam first. It keeps work, sessions, questions and ticket state, without activating or resuming anything. Removed acceptance items stop being enforced, new ones need proof, and waivers carry over only when the item's text is unchanged, even if its AC number moves. An approval of older ticket text requires a fresh review. Status and the run log show when the text was refreshed and by whom. Blocked-by links and the drafted proof plan stay unchanged; changing those still needs a re-draft. If fetching fails, the saved ticket and work stay untouched.
 
 Request a stop at the next stage boundary:
 
@@ -300,7 +341,7 @@ mill run stop 12
 
 The active stage finishes naturally. Wait for the stopped logjam before answering to resume.
 
-When a ticket has gone wrong and resuming would only repeat it, `mill run reset 12` starts it over. It deletes the comments the run posted on the issue (those whose first line starts with `[sawmill:`; a comment you wrote that starts that way is deleted too), removes the logjam label, runs teardown and force-removes the worktree with any WIP, deletes the `mill/12` branch locally and on `origin`, and deletes `.mill/logs/12/`. The ticket goes back to `queued` with no saved progress. In an active run the scheduler starts it again from the test writers. Reset refuses a `working` ticket (stop it with `mill run stop 12` first) and a `done` one. If a tracker write fails part-way, the ticket keeps its old progress; run the reset again.
+When a ticket has gone wrong and resuming would only repeat it, `mill run reset 12` first fetches its latest body and comments, leaving everything untouched if that fetch fails, then starts it over. It rebuilds acceptance and keeps waivers on unchanged items, just like refresh. It deletes the comments the run posted on the issue (those whose first line starts with `[sawmill:`; a comment you wrote that starts that way is deleted too), removes the logjam label, runs teardown and force-removes the worktree with any WIP, deletes the `mill/12` branch locally and on `origin`, and deletes `.mill/logs/12/`. The ticket goes back to `queued` with no saved progress. In an active run the scheduler starts it again from the test writers. Reset refuses a `working` ticket (stop it with `mill run stop 12` first) and a `done` one. If a tracker write fails part-way, the ticket keeps its old progress; run the reset again.
 
 To mark a ticket complete by hand and close its tracker issue without merging:
 
@@ -320,7 +361,7 @@ Mill keeps a compact record of every delivery attempt in `.mill/records.sqlite`,
 - `policy`: the proof plan, the test command, CI, declared and required checks, a hash of `.mill/config.yaml`, and the acceptance items with any waived.
 - `environment`: the Node version, platform, Mill build, hashes of the hooks, `.mill/fixtures.json` and dependency lock files, the prepared site, and each role's model and effort.
 - `results`: the tested head, red scenarios, required-check exit codes, CI state, browser cases and the approved head.
-- `findings`: these counts are kept apart because they are different kinds of work: `reviewBounces` (defects the reviewer caught), `testCorrections` (wrong tests the reviewer sent back to the test writers), `flakes` (failed final runs that passed on the rerun), `environmentFailures` and `infrastructureRetries`, `testsNotRed` send-backs, `repairBounces` from failed tests, checks, CI or conflicts, and `humanActions` (answers, closes, stops, test approvals and waivers).
+- `findings`: these counts are kept apart because they are different kinds of work: `reviewBounces` (defects the reviewer caught), `testCorrections` (wrong tests the reviewer sent back to the test writers), `flakes` (failed final runs that passed on the rerun), `environmentFailures` and `infrastructureRetries`, `testsNotRed` send-backs, `repairBounces` from failed tests, checks, CI or conflicts, and `humanActions` (answers, closes, stops, test approvals, waivers and ticket refreshes).
 - `cost`, `humanMinutes`, `escapedDefects` and `phaseDurations` read `"unknown"` until something supplies them, never `0`. Mill does not measure cost or phase durations yet, and it never treats time spent waiting as a person's effort. Note those yourself:
 
 ```sh
@@ -557,6 +598,13 @@ Before push, the final gate checks each ticket case, and each smoke case that is
 Codex browser cases require Chromium on `PATH`; its browser tool limits requests to the prepared site's origin. See [Codex](docs/codex-runtime.md), [Pi](docs/pi-runtime.md), and [GitLab](docs/gitlab.md) for backend setup, permission limits, and evidence. GitLab spec membership uses a first-line `Part of #<spec>` convention; it is not native work-item hierarchy selection.
 
 An optional [draft plugin](plugins/sawmill/README.md) provides `/sawmill:draft` in Claude Code. The `mill` CLI works independently of that plugin. Project-opted-in [draft screening](docs/draft-screening.md) can add bounded, redacted Jev judgments to that review; it is off by default, advisory only, and never required by the scheduler. Optional [acceptance evidence screening](docs/acceptance-screening.md) similarly adds advisory findings to team and standalone code review, without changing acceptance or merge gates.
+
+For opted-in Jev features, put `TYPESAFE_API_KEY` in the user-owned, private
+`~/.config/sawmill/.env` (or `$XDG_CONFIG_HOME/sawmill/.env`). The CLI, scheduler
+and Board reread it on each lookup, so file changes need no restart. A nonblank
+real environment value takes precedence. Mill repairs group/world access to mode
+`600` or rejects the operation before work starts. See [shared key setup and
+parsing rules](docs/operating-mill.md#shared-typesafe-key).
 
 ## Development
 

@@ -1,4 +1,4 @@
-import { requireTypeSafeKey } from './typesafe.js';
+import { requireTypeSafeKey, resolveTypeSafeKey } from './typesafe.js';
 import { acceptanceCorrection, acceptanceFor, acceptanceHandoff, refusePass, reportResubmissionLimit } from './acceptance.js';
 import { acceptanceDiagnostics, type AcceptanceObservation, type AcceptanceScreeningOptions } from './acceptance-screening.js';
 import { exportRecords } from './attempt-record.js';
@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createRuntime } from './runtime-factory.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
-import type { MachineConfig, ProjectConfig, Role } from './config.js';
+import { routingEnabled, type MachineConfig, type ProjectConfig, type Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
 import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
@@ -58,7 +58,7 @@ export interface TeamResult {
 /** One bounded ticket team. Owns the lock; runRole must not acquire it again. */
 export async function runTeam(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number,
   tracker: IntegrationTracker, options: TeamOptions = {}): Promise<TeamResult> {
-  requireTypeSafeKey();
+  requireTypeSafeKey(project, cwd);
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;
@@ -238,7 +238,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         ? ['implemented', 'reviewer', 'review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(recovery.stage) ? 'reviewer' : 'implementer'
         : 'test-writers') : undefined;
       let resuming = progress.question?.role ?? progress.stop?.resume ?? progress.next ?? recoveredRole ?? (progress.testCommit ? resume : undefined);
-      // A person's waivers outlive a fresh start; only mill run reset drops them.
+      // A person's waivers outlive a fresh start; refresh/reset carry them only for unchanged items.
       if (!repairing && !resuming) progress = { infrastructureAttempts: progress.infrastructureAttempts, outputs: {}, testBase: await git(path, 'rev-parse', 'HEAD'), ...(progress.acceptance ? { acceptance: progress.acceptance } : {}) };
       if (!progress.testBase) progress.testBase = await git(path, 'rev-parse', 'HEAD');
       delete progress.recovery;
@@ -540,7 +540,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const rejected = decisionId ? progress.selections?.find(event =>
             (event.id === decisionId || event.reusedFrom === decisionId) && event.execution.selectionRejected) : undefined;
           const saved = rejected ?? original;
-          const routed = role !== 'reviewer' && (project.model_routing?.enabled || saved);
+          const routed = role !== 'reviewer' && (routingEnabled(project) || saved);
           const attempt = routed ? exportRecords(cwd).attempts.filter(attempt => attempt.ticket === number).at(-1) : undefined;
           if (routed && !attempt) throw new Error('Cannot persist model selection without a delivery attempt.');
           const selection = routed ? await selectModel({ path, project, machine, ticket: current(), attempt: attempt!, role,
@@ -553,6 +553,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             // Commit both the concrete choice and original baseline before any vendor starts.
             await save({});
           }
+          // Capture an opted-in credential before invocation for redaction, never look up
+          // settings while recording an ordinary role or after work has completed.
+          const apiKey = resolveTypeSafeKey(routingEnabled(project) ? 'all' : 'environment');
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...selected, prompt: prompt + verificationInstructions(verificationFrom(project), role),
             handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${role === 'reviewer' && progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
@@ -566,7 +569,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const testing = browser && userTestingResult(browser, invoked.outcome);
           if (testing) progress.userTesting = testing;
           progress.outputs![role] = invoked;
-          const execution = executionMeasurement(selected, invoked);
+          const execution = executionMeasurement(selected, invoked, apiKey);
           if (selection) selection.execution = execution;
           (progress.invocations ??= []).push({ role, round: invoked.round, ...(selection ? { selectionId: selection.id } : {}), execution });
           // Local execution evidence must survive questions and failed session mirrors as well as success.

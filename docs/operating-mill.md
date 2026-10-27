@@ -7,9 +7,58 @@ These rules are for the person working around a live run. Each rule comes from a
 - **Bring the integration branch up to date.** Merge `main` into it and push. Workspace preflight refuses tickets when local integration is behind or has diverged from `origin`.
 - **Run an installed `mill` built from the current HEAD.** An older copy repeats bugs that are already fixed. After you pull a Sawmill checkout, run `mill update <checkout>`. It replaces only an installed copy, such as the packed install in the [README](../README.md#install). It refuses a global `mill` that links to a checkout; reinstall that once from a packed copy. `mill --version` shows the executable and its **build identity**, which is a build id taken from the packaged code and role prompts, plus the source revision and whether that source had uncommitted edits. The build id changes whenever the compiled code or a prompt changes, even when HEAD does not.
 - **Make `.mill/setup.sh` install dependencies.** Otherwise every ticket logjams with reason `environment`.
-- **Set `TYPESAFE_API_KEY` in the execution environment.** Execution starts require a nonblank value, even with optional TypeSafe screening disabled. Export it through your approved credential workflow before starting `mill run`, foreground/one-shot work, direct teams/reviews or Board start/resume actions. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. A Board process and the shared scheduler need the key in their own environments, not just your current shell. If an existing scheduler lacks it, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without it. Never put the key in project configuration, SQLite or command arguments.
+- **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `jev.routing.enabled: true` in `.mill/config.yaml` (with the [machine routing policy](model-routing.md#turning-it-on)) requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Put it in the [shared settings file](#shared-typesafe-key) through your approved credential workflow, or export it in the execution environment. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `jev.{draft,acceptance,ci,learn}.enabled` opt-in in the millyard's `.mill/config.yaml` checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. The CLI, Board and shared scheduler reread the same settings file, so adding or changing its key needs no restart. A key set only in your current shell cannot authorize a scheduler that lacks it: use the shared file instead. For environment-only configuration, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. A keyless scheduler continues serving projects without routing enabled. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
+
+### Shared TypeSafe key
+
+Store only the TypeSafe credential in `~/.config/sawmill/.env`, or
+`$XDG_CONFIG_HOME/sawmill/.env` when `XDG_CONFIG_HOME` is set:
+
+```dotenv
+TYPESAFE_API_KEY="your-key"
+```
+
+A nonblank `TYPESAFE_API_KEY` in the real process environment wins over the
+file. An unset, empty or whitespace-only environment value falls back to the
+file. Mill rereads it at every credential lookup, never caches the key or copies
+it into the environment: new calls from the CLI, scheduler and Board see key
+changes without restarting. An environment override still wins until removed
+from that process's environment.
+
+Use plain `KEY=value` lines. Blank lines and comments are ignored; matching
+single or double quotes around values are stripped. Variables, escapes and shell
+commands are not expanded, and `export KEY=value` is not supported. Other keys
+are ignored; project `.env` files are not read.
+
+The settings file must belong to the current user. If any group or world access
+is present, Mill changes its mode to `600` before reading it. Ownership errors,
+unreadable files or a failed permission repair are configuration errors naming
+the path, mode and reason, never the key. Routing checks this before activation
+or dispatch, so fix the file and retry the same run. A missing file with Jev off
+does not block ordinary work. Never put this key in project YAML, tickets, run
+files, logs or command arguments.
+
+### Jev settings and migration
+
+The commented `jev:` section in `.mill/config.yaml` lists all five independent
+features, off by default, with the excerpts each sends to TypeSafe. Screens use
+`enabled`, `timeout` (default `10s`, up to `60s` or `1m`) and
+`max_evidence_chars` (default 4000, range 1–16000). Routing has only `enabled`;
+its policy and evidence limits live in `~/.config/sawmill/config.yaml`.
+Unknown Jev keys are config errors, including a nested typo such as
+`jev.draft.enabeld`. Draft and learn helpers resolve the millyard from ticket
+worktrees, so one setting covers the whole project.
+
+Moving from `.mill/{draft,acceptance,ci,learn}-screening.json`: copy each file's
+`enabled` to the matching `jev` feature, convert `timeoutMs` to a duration
+(round sub-second values up to `1s`), and rename `maxEvidenceChars` to
+`max_evidence_chars`. Remove the old files afterwards. Until then, an old file
+is honored with a migration warning if that feature's YAML mapping is absent;
+if the mapping exists, YAML wins (including false) and Mill warns that JSON is
+ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
+[CI](ci-screening.md), and the learn skill's `screening.md` for privacy details.
 
 ## Starting a run and keeping it going
 
@@ -72,7 +121,9 @@ Every board ticket action carries the attempt the page drew, whatever state the 
 | CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
 | Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
 
-To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. None of these needs `run.sqlite`.
+If the tracker ticket changed after drafting, use `mill run refresh <n>` to pick up its latest body and comments without resetting its work, sessions, question or state. It accepts queued, blocked or logjam tickets; stop a working ticket and wait for its logjam first. Removed acceptance items stop being enforced, added items require proof, and human waivers survive only for items whose text is unchanged, even when their AC numbers move. Status and the run log show the refresh and who requested it. It neither answers a question nor activates a run; answer separately when ready to resume. Drafted blocked-by links and the proof plan stay unchanged; changing those needs a re-draft.
+
+To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. Reset also fetches the latest text and comments and keeps waivers on unchanged items before clearing progress. If the tracker fetch fails, both commands report the failure and leave the saved ticket and work untouched. None of these needs `run.sqlite`.
 
 ## Being told when to act
 
@@ -108,6 +159,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 | --- | --- |
 | Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). Automatic reviewer-requested corrections (#97) need neither. |
 | Edit `acceptance` in `run.sqlite` to let an unproved "Done when" item pass | `mill run waive <n> <item> --reason <text>`, then `mill run answer <n>` (#134). |
+| Edit a drafted ticket's body or acceptance in `run.sqlite` after changing it in the tracker | `mill run refresh <n>`; stop a working ticket first and wait for its logjam. |
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |

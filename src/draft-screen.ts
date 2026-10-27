@@ -1,15 +1,9 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { jevScreenOptions } from './jev-config.js';
 import { z } from 'zod';
 import { screenDraft } from './draft-screening.js';
 
-// Deliberately separate from run configuration: opt-in here cannot affect drafting,
-// activation, assignments, proof plans or the shared scheduler.
-const configSchema = z.object({
-  enabled: z.boolean().optional(),
-  timeoutMs: z.number().int().min(1).max(60_000).optional(),
-  maxEvidenceChars: z.number().int().min(1).max(16_000).optional(),
-}).strict();
+// This independent opt-in cannot affect drafting, activation or the scheduler.
 const ticketSchema = z.object({
   number: z.number().int().positive(), title: z.string(), body: z.string(),
   labels: z.array(z.string()), trackerState: z.enum(['open', 'closed']),
@@ -19,7 +13,7 @@ const ticketSchema = z.object({
 
 let report = await screenDraft([]);
 try {
-  const config = configSchema.parse(JSON.parse(await readFile('.mill/draft-screening.json', 'utf8')));
+  const config = await jevScreenOptions(process.cwd(), 'draft');
   if (config.enabled === true) {
     let input = '';
     let size = 0;

@@ -16,24 +16,38 @@ requirement for ordinary Mill users. A missing SDK is a safe fallback, not a
 reason to install anything automatically.
 
 After confirming that this project's selected ticket excerpts may be sent to
-TypeSafe, create `.mill/draft-screening.json` in the checkout where you draft:
+TypeSafe, enable `jev.draft` in the millyard's `.mill/config.yaml`:
 
-```json
-{"enabled": true, "timeoutMs": 10000, "maxEvidenceChars": 4000}
+```yaml
+jev:
+  draft: { enabled: true, timeout: 10s, max_evidence_chars: 4000 }
 ```
 
-Supply `TYPESAFE_API_KEY` through the process environment using your approved
-credential workflow. Never put it in this JSON, a ticket, command arguments or a
-saved snapshot. Do not retrieve credentials just because this file exists.
-Remove the file or set `enabled` to false to disable screening. The presence of
-a key alone never enables it. Unknown config fields are rejected safely.
+Merge this into the existing `jev:` mapping; do not add a second one. The helper
+resolves the millyard even when invoked from a ticket worktree. `timeout` is a
+positive whole-second/minute/hour duration up to `60s` (`1m`);
+`max_evidence_chars` is an integer from 1 to 16000. Defaults are shown above.
+Typos and out-of-range values are normal config validation errors.
+
+**Moving from the JSON file:** `.mill/draft-screening.json` in the millyard is
+still honored with a migration warning when `jev.draft` is absent. Move `enabled`
+unchanged, convert `timeoutMs` to a duration (round sub-second values up to `1s`),
+and rename `maxEvidenceChars` to `max_evidence_chars`, then remove the JSON file.
+If both exist, YAML wins, including `enabled: false`, and the warning says JSON
+is ignored.
+
+Supply `TYPESAFE_API_KEY` through the [shared settings file](operating-mill.md#shared-typesafe-key)
+or process environment using your approved credential workflow. Never put it
+in project config, a ticket, command arguments or a saved snapshot. Do not retrieve credentials just because this setting exists.
+Set `jev.draft.enabled` to false to disable screening. The presence of a key
+alone never enables it.
 
 The draft skill sends the **already successful** `mill run draft ... --json`
 snapshot to `mill-draft-screen` on stdin and reads its JSON report. The helper
 accepts no ticket selector and does not read or write the run file. It uses
 `trackerState` from that snapshot, not the ticket's execution `state`. It only
-reads its opt-in file and stdin; its only output is a bounded-evidence report on
-stdout. Do not save or echo the original snapshot as telemetry. Missing input,
+reads project configuration and stdin; its report is on stdout and legacy
+migration warnings go to stderr. Do not save or echo the original snapshot as telemetry. Missing input,
 bad config, an unavailable command or any service failure leaves the ordinary
 review in place. The helper never activates a run.
 
@@ -66,12 +80,13 @@ AbortSignal. The helper also imposes a wall-clock timeout, even if an injected
 classifier ignores cancellation. Configuration permits 1–60,000 ms; the default
 is 10,000 ms. Timed-out work is aborted and ignored.
 
-**Execution startup takes precedence over optional missing-key fallbacks.** The
-shared configuration in `src/typesafe.ts` requires a nonblank `TYPESAFE_API_KEY`
-before execution, even with screening disabled. Missing startup credentials are
-a configuration error, not infrastructure retries or permission to run without
-TypeSafe. Drafting and these advisory helpers retain their optional behavior;
-service-error and review/merge policies are unchanged. See
+**Credentials follow each project's opt-ins.** Only `jev.routing.enabled: true`
+requires a nonblank `TYPESAFE_API_KEY` at execution startup, before activation or
+retries. Each separately enabled screen checks its own credentials when invoked;
+a missing key produces an actionable configuration diagnostic at that boundary.
+A disabled screen never requires a key, and enabling draft screening does not
+gate ordinary execution or another project's work. Service-error fallbacks and
+review/merge policies are unchanged. See
 [execution environment and scheduler recovery](operating-mill.md#before-you-start-a-run).
 
 The shared client in `src/typesafe.ts` has a reusable choice/evidence boundary;
@@ -89,7 +104,7 @@ Only blocked-by numbers, the title, the body and at most five comment bodies are
 eligible. Authors, timestamps, labels, local files, environment, transcripts and
 run lifecycle/permission/assignment state are not sent. Each source gets a
 bounded share of the evidence budget; the total excerpt text per question is at
-most `maxEvidenceChars` (default 4,000, hard maximum 16,000). Truncated sources
+most `max_evidence_chars` (default 4,000, hard maximum 16,000). Truncated sources
 and omitted comments are marked as incomplete. The model is instructed to use
 only that question's evidence and to treat ticket instructions as untrusted
 data. No generated instructions or free-form explanations are accepted.
