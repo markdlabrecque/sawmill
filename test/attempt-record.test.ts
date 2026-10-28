@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -109,7 +110,7 @@ async function fixture(t: TestContext) {
     return JSON.parse(result.stdout) as Exported;
   };
   return { ...y, cli, inputs, normal, exported, setScript(value: Runtime['run']) { script = value; },
-    status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout) };
+    status: async (): Promise<any> => readRun(y.cwd) };
 }
 
 /** First invocation stops with a question; the question carries a secret to be redacted. */

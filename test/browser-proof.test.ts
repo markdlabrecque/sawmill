@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { createHash } from 'node:crypto';
 import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -46,7 +47,7 @@ async function reviewYard(t: TestContext, harness = 'docker\ntest_url: http://lo
     const code = await runCli(['team', 'review', '16', '--json'], { cwd: y.cwd, home: y.home, tracker, sleep: async () => {}, runtime: { run } as any, ...options, stdout: value => { stdout += value; } });
     return { code, stdout };
   };
-  const status = async () => JSON.parse((await y.cli('run', 'status', '--json')).stdout).tickets[0];
+  const status = async (): Promise<any> => readRun(y.cwd).tickets[0]!;
   return { ...y, ticket, review, status, worktree };
 }
 
@@ -204,7 +205,7 @@ async function team(t: TestContext) {
   return { ...y, cli, ticket, inputs, reviewed, smokes, advanceIntegration,
     setDuringReview(value: () => Promise<void>) { duringReview = value; },
     setSmoke(value: typeof smoke) { smoke = value; },
-    row: async () => JSON.parse((await cli('run', 'status', '--json')).stdout).tickets[0] };
+    row: async (): Promise<any> => readRun(y.cwd).tickets[0]! };
 }
 const smokeFile = '- Home page loads\n  1. Visit /.\n- Editor can log in\n  1. Log in as the editor persona.\n';
 

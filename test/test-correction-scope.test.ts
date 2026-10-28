@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -81,7 +82,7 @@ async function fixture(t: TestContext) {
   }
   return { ...y, cli, commit, requests, inputs, normal,
     setScript(value: Runtime['run']) { script = value; },
-    row: async () => JSON.parse((await cli('run', 'status', '--json')).stdout).tickets[0] };
+    row: async (): Promise<any> => readRun(y.cwd).tickets[0]! };
 }
 
 test('a rejected attempt in one protected file is reverted before a correction that names another file', async t => {

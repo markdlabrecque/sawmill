@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -252,12 +253,12 @@ test('gc retires only locally done tickets including hand finishes, preserves di
   assert.equal(await readFile(join(yard.cwd, '.mill/retired'), 'utf8'), '7\n9\n');
   assert.throws(() => yard.git('rev-parse', '--verify', 'refs/heads/mill/7'));
   assert.equal(yard.git('rev-parse', 'mill/9'), wip);
-  const rows = JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets;
+  const rows = readRun(yard.cwd).tickets;
   assert.deepEqual(rows.map((row: { state: string }) => row.state), ['done', 'done', 'done', 'logjam', 'working', 'queued']);
-  assert.equal(rows[0].worktree, null);
-  assert.equal(rows[0].branch, null);
-  assert.equal(rows[2].worktree, null);
-  assert.equal(rows[2].branch, 'mill/9');
+  assert.equal(rows[0]!.worktree, null);
+  assert.equal(rows[0]!.branch, null);
+  assert.equal(rows[2]!.worktree, null);
+  assert.equal(rows[2]!.branch, 'mill/9');
   for (const n of [8, 10, 11]) assert.equal(await readFile(join(yard.root, String(n), 'README.md'), 'utf8'), 'Test millyard\n');
   assert.equal(await readFile(join(yard.root, '8/dirty'), 'utf8'), 'Keep me\n');
 });

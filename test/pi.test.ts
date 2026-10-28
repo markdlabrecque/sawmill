@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,7 +51,7 @@ async function piYard(t: TestContext, body = 'Preserve the full patch.', browser
     const executable = join(bin, 'pi');
     await writeFile(executable, `#!${process.execPath}\n${source}\n`); await chmod(executable, 0o755);
   };
-  const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout).tickets[0];
+  const status = async (): Promise<any> => readRun(yard.cwd).tickets[0]!;
   return { ...yard, ticket, tracker, worktree, bin, invoke, fake, status };
 }
 

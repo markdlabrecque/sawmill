@@ -6,6 +6,7 @@ import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { GitHubDraftReader, type GitHubApi, type GitHubIssue, GitHubApiError } from '../src/github.js';
 import { millyard } from './helpers.js';
+import { readRun } from '../src/run-store.js';
 
 class FakeTracker implements TicketReader {
   offline = false;
@@ -220,23 +221,26 @@ test('status exposes saved execution details, derives blockers, and works offlin
   await writeFile(join(yard.cwd, 'untracked'), 'dirt');
   const result = await yard.cli('run', 'status', '--json');
   assert.equal(result.code, 0, result.stdout);
-  const rows = JSON.parse(result.stdout).tickets;
-  assert.deepEqual(rows.map((row: { state: string }) => row.state), ['done', 'working', 'logjam', 'queued', 'blocked']);
-  assert.equal(rows[0].mergeCommit, 'deadbeef');
-  assert.equal(rows[1].stage, 'implementer');
-  assert.equal(rows[1].bounces, 2);
-  assert.deepEqual(rows[1].sessionIds, { implementer: ['session-1'] });
-  assert.equal(rows[1].worktree, '/tmp/ticket-2');
-  assert.equal(rows[1].branch, 'mill/2');
-  assert.ok(rows[1].timeInStageSeconds >= 120 && rows[1].timeInStageSeconds < 125);
-  assert.equal(rows[2].reason, 'question: which format?');
-  assert.deepEqual(rows[3].blockers, []);
-  assert.deepEqual(rows[4].blockers, [2]);
+  const status = JSON.parse(result.stdout);
+  assert.deepEqual(status.tickets.map((row: { number: number }) => row.number), [2, 3, 4]);
+  const rows = readRun(yard.cwd).tickets;
+  assert.deepEqual(rows.map(row => row.state), ['done', 'working', 'logjam', 'queued', 'blocked']);
+  assert.equal(rows[0]!.mergeCommit, 'deadbeef');
+  assert.equal(rows[1]!.stage, 'implementer');
+  assert.equal(rows[1]!.bounces, 2);
+  assert.deepEqual(rows[1]!.sessionIds, { implementer: ['session-1'] });
+  assert.equal(rows[1]!.worktree, '/tmp/ticket-2');
+  assert.equal(rows[1]!.branch, 'mill/2');
+  assert.ok(rows[1]!.timeInStageSeconds! >= 120 && rows[1]!.timeInStageSeconds! < 125);
+  assert.equal(rows[2]!.reason, 'question: which format?');
+  assert.deepEqual(rows[3]!.blockers, []);
+  assert.deepEqual(rows[4]!.blockers, [2]);
+  assert.deepEqual(status.tickets, rows.filter(row => ['queued', 'working', 'logjam'].includes(row.state)));
   const text = await yard.cli('run', 'status');
-  assert.match(text.stdout, /done\s+deadbeef/);
+  assert.doesNotMatch(text.stdout, /#1\s+Ticket 1|deadbeef/);
   assert.match(text.stdout, /working\s+implementer; round 3; bounces 2; 12\ds in stage/);
   assert.match(text.stdout, /logjam\s+question: which format/);
-  assert.match(text.stdout, /blocked\s+#2/);
+  assert.doesNotMatch(text.stdout, /#5\s+Ticket 5|blocked\s+#2/);
 });
 
 test('status with no run is an outcome error and creates no database; config errors still exit 2', async (t) => {
@@ -286,7 +290,10 @@ test('GitHub falls back only when dependencies are unavailable, never on authent
     const failure = await yard.cli('run', 'draft', '1', '2', '--json');
     assert.equal(failure.code, 1);
     assert.match(failure.stdout, new RegExp(`HTTP ${status}`));
-    assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), JSON.parse(fallback.stdout));
+    assert.deepEqual(readRun(yard.cwd).tickets, JSON.parse(fallback.stdout).tickets);
+    assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), {
+      ...JSON.parse(fallback.stdout), tickets: JSON.parse(fallback.stdout).tickets.filter((row: { state: string }) => row.state === 'queued'),
+    });
   }
 });
 
@@ -367,7 +374,10 @@ test('GitLab-configured drafts use the same injected contract and cache the body
   assert.equal(output.run.tracker.backend, 'gitlab');
   assert.deepEqual(output.tickets.map((row: Ticket) => row.number), [2, 1]);
   tracker.offline = true;
-  assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), output);
+  assert.deepEqual(readRun(yard.cwd).tickets, output.tickets);
+  assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), {
+    ...output, tickets: output.tickets.filter((row: { state: string }) => row.state === 'queued'),
+  });
 });
 
 test('draft refuses a detached HEAD and a configured folder outside git', async (t) => {

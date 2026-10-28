@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -96,7 +97,7 @@ async function fixture(t: TestContext) {
     return { mergeCommit };
   };
   tracker.delete = async branch => { yard.git('push', '--no-follow-tags', 'origin', '--delete', branch); };
-  const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
+  const status = async (): Promise<any> => readRun(yard.cwd);
   /** The host merges, then the response never arrives. */
   const dropMergeResponse = () => { tracker.mergeBehavior = async real => { await real(); throw new Error('read ECONNRESET'); }; };
   const restoreMerge = () => { tracker.mergeBehavior = real => real(); };

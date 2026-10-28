@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -92,7 +93,7 @@ async function team(t: TestContext) {
     y.git('add', 'notes.txt'); y.git('commit', '-m', 'Advance integration'); y.git('push');
   };
   return { ...y, cli, inputs, reviewed, advanceIntegration, setDuringReview(value: () => Promise<void>) { duringReview = value; },
-    row: async () => JSON.parse((await cli('run', 'status', '--json')).stdout).tickets[0] };
+    row: async (): Promise<any> => readRun(y.cwd).tickets[0]! };
 }
 
 test('review sees the site prepared at its head, and a rebase prepares once at the new commit without setup', async t => {

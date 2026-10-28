@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -101,7 +102,7 @@ async function fixture(t: TestContext, baseline?: string) {
     writes(value: typeof writes) { writes = value; },
     reviewer(value: typeof reviewer) { reviewer = value; },
     correct(value: typeof correct) { correct = value; },
-    row: async () => JSON.parse((await cli('run', 'status', '--json')).stdout).tickets[0],
+    row: async (): Promise<any> => readRun(y.cwd).tickets[0]!,
     /** The ticket worktree is back on its branch with nothing left over from a run at another commit. */
     onBranch() {
       assert.equal(y.git('-C', join(y.root, '12'), 'symbolic-ref', '--short', 'HEAD'), 'mill/12');

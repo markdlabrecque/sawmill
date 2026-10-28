@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
-import type { RunSnapshot } from '../src/run-store.js';
+import { readRun, type RunSnapshot } from '../src/run-store.js';
 import { GitHubDraftReader, GitHubApiError, type GitHubApi, type GitHubIssue } from '../src/github.js';
 import { millyard } from './helpers.js';
 
@@ -77,7 +77,8 @@ test('label selection omits closed tickets, persists the same ordered run rows a
   tracker.offline = true;
   const status = await selectedYard.cli('run', 'status', '--json');
   assert.equal(status.code, 0, status.stdout);
-  assert.deepEqual(JSON.parse(status.stdout), result);
+  assert.deepEqual(readRun(selectedYard.cwd).tickets, result.tickets);
+  assert.deepEqual(JSON.parse(status.stdout), { ...result, tickets: result.tickets.filter(row => row.state === 'queued') });
 });
 
 test('spec selects only direct children and produces equivalent rows despite duplicate or reordered membership', async (t) => {
@@ -109,7 +110,8 @@ test('spec selects only direct children and produces equivalent rows despite dup
   assert.match(text.stdout, /#3\s+Ticket 3\s+queued/);
   assert.match(text.stdout, /#20\s+Ticket 20\s+blocked\s+#3/);
   const status = await selectedYard.cli('run', 'status', '--json');
-  assert.deepEqual(JSON.parse(status.stdout), result);
+  assert.deepEqual(readRun(selectedYard.cwd).tickets, result.tickets);
+  assert.deepEqual(JSON.parse(status.stdout), { ...result, tickets: result.tickets.filter(row => row.state === 'queued') });
 });
 
 test('empty tracker selections name the selector and preserve the previous draft', async (t) => {
