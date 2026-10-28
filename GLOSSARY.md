@@ -214,7 +214,7 @@ The document a role is given to start work: the ticket, earlier roles' output, a
 _Avoid_: Prompt, context
 
 **Outcome**:
-The single structured result a role ends with: done, pass, bounce, question, no-change, or infrastructure.
+The single structured result a role ends with: done, pass, bounce, test-correction, question, no-change, or infrastructure.
 _Avoid_: Result, verdict
 
 **Question**:
