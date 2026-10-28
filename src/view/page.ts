@@ -1,10 +1,10 @@
 import { lanes } from './model.js';
-import { boardIcon, boardStyles, boardWordmark } from './appearance.js';
+import { boardIcon, boardTouchIcon, boardStyles, boardWordmark } from './appearance.js';
 
 const short = ['Q', 'L', 'W', 'T', 'I', 'R', 'B', 'PR', 'CI', 'M'];
 
 /** One document, no framework or build step. The server pushes snapshots; the browser counts time in stage between them. */
-export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sawmill Board</title><meta name="theme-color" content="#214538"><link rel="icon" href="${boardIcon}">
+export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sawmill Board</title><meta name="theme-color" content="#214538"><link rel="icon" href="${boardIcon}"><link rel="apple-touch-icon" href="${boardTouchIcon}">
 <style>${boardStyles}</style></head><body>
 <a class="skip" href="#main">Skip to runs</a>
 <header class="topbar"><div class="topbar-inner wrap">
