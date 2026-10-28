@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { recordSchema, type Attempt, type Findings, type RecordExport } from '../src/attempt-record.js';
 
-// The learn skill's evaluation set (#146): each case is a saved `mill record export`, the excerpts it needs, and the
+// The sawdust skill's evaluation set (#146): each case is a saved `mill record export`, the excerpts it needs, and the
 // judgment a report must reach. These tests check only the structure; judging a report needs Claude.
 const repo = fileURLToPath(new URL('../../', import.meta.url));
-const learn = join(repo, 'plugins/sawmill/skills/learn');
+const learn = join(repo, 'plugins/sawmill/skills/sawdust');
 const evals = join(learn, 'evals');
 const cases = join(evals, 'cases');
 const required = ['review-catch', 'faulty-test', 'fixed-bug', 'duplicate-transcripts', 'missing-run', 'acceptance-near-retry-limit', 'learning-loop'];

@@ -28,7 +28,7 @@ test('Foreman finishes with its report before offering one scoped opt-in retrosp
     [/decision.*needs/i, 'retain decisions needing a human'],
     [/(?:report[\s\S]*then[\s\S]*(?:ask|offer)|after[\s\S]*report[\s\S]*(?:ask|offer))/i, 'offer only after the final report'],
     [/(?:once|one|single)[\s\S]{0,120}(?:offer|question|retrospective)|(?:offer|ask)[\s\S]{0,120}(?:once|one time)/i, 'offer once, not on each walk'],
-    [/\/sawmill:learn/, 'ask whether to invoke the existing learning workflow'],
+    [/\/sawmill:sawdust/, 'ask whether to invoke the existing learning workflow'],
     [/(?:exact|same)[\s\S]{0,80}run[\s\S]{0,40}(?:id|identity|scope)/i, 'name the exact run identity'],
     [/retained[\s\S]{0,50}attempt[\s\S]{0,80}logs/i, 'explain the learning evidence'],
     [/friction/i, 'explain that friction is examined'],
@@ -57,16 +57,16 @@ test('Foreman offers learning for unresolved terminal work but not ongoing or re
 test('Foreman acceptance hands off the exact run in the same millyard; decline changes nothing', async () => {
   const finish = section(await skill('foreman'), 'Finish');
   requires(finish, [
-    [/(?:accept|yes)[\s\S]{0,200}\/sawmill:learn/i, 'acceptance invokes learn'],
+    [/(?:accept|yes)[\s\S]{0,200}\/sawmill:sawdust/i, 'acceptance invokes sawdust'],
     [/(?:same|exact)[\s\S]{0,60}millyard/i, 'preserve the millyard'],
     [/(?:same|exact)[\s\S]{0,80}run[\s\S]{0,40}(?:id|identity|scope)/i, 'preserve the run identity in the handoff'],
-    [/(?:cannot|can't|unable|does not support)[\s\S]{0,200}(?:invocation|\/sawmill:learn)/i, 'provide an exact invocation when the host cannot start a skill'],
+    [/(?:cannot|can't|unable|does not support)[\s\S]{0,200}(?:invocation|\/sawmill:sawdust)/i, 'provide an exact invocation when the host cannot start a skill'],
     [/(?:declin|\bno\b)[\s\S]{0,200}(?:unchanged|without[\s\S]{0,40}(?:chang|writ)|do not[\s\S]{0,40}(?:chang|writ))/i, 'declining leaves the run and records unchanged'],
   ]);
 });
 
-test('learn presents user-owned configuration proposals without applying them', async () => {
-  const body = await skill('learn');
+test('sawdust presents user-owned configuration proposals without applying them', async () => {
+  const body = await skill('sawdust');
   requires(body, [
     [/project configuration/i, 'classify project configuration ownership'],
     [/(?:user-owned|user owned)[\s\S]{0,120}(?:file|setting)/i, 'identify the user-owned file and setting'],
@@ -78,8 +78,8 @@ test('learn presents user-owned configuration proposals without applying them', 
   ]);
 });
 
-test('learn routes distributed-source findings to Sawmill upstream with specific issue approval', async () => {
-  const body = await skill('learn');
+test('sawdust routes distributed-source findings to Sawmill upstream with specific issue approval', async () => {
+  const body = await skill('sawdust');
   requires(body, [
     [/Sawmill upstream/i, 'classify upstream ownership separately'],
     [/(?:markdlabrecque\/sawmill|Sawmill (?:repository|repo))/i, 'use the Sawmill tracker, not the analyzed project tracker'],
@@ -97,7 +97,7 @@ test('learn routes distributed-source findings to Sawmill upstream with specific
 });
 
 test('accepted learning records ownership and measurement without automatically adopting findings', async () => {
-  const body = await skill('learn');
+  const body = await skill('sawdust');
   const report = section(body, 'Report');
   const ledger = section(body, 'Record accepted learning');
   requires(report, [

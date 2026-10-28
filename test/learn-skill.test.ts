@@ -9,7 +9,7 @@ import { findCommand } from '../src/help.js';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const plugin = join(repo, 'plugins/sawmill');
-const skillPath = join(plugin, 'skills/learn/SKILL.md');
+const skillPath = join(plugin, 'skills/sawdust/SKILL.md');
 
 async function frontmatter(path: string) {
   const text = await readFile(path, 'utf8').catch(() => undefined);
@@ -21,9 +21,9 @@ async function frontmatter(path: string) {
   return { metadata: parse(lines.slice(1, end).join('\n')), body: lines.slice(end + 1).join('\n') };
 }
 
-test('learn skill is an explicitly invoked sibling of draft with real instructions', async () => {
+test('sawdust skill is an explicitly invoked sibling of draft with real instructions', async () => {
   const { metadata, body } = await frontmatter(skillPath);
-  assert.equal(metadata.name, 'learn');
+  assert.equal(metadata.name, 'sawdust');
   assert.equal(typeof metadata.description, 'string');
   assert.ok(metadata.description.trim());
   // Retrospectives must never start on their own: they read evidence and can propose tickets.
@@ -33,7 +33,29 @@ test('learn skill is an explicitly invoked sibling of draft with real instructio
   assert.equal(draft.metadata.name, 'draft');
 });
 
-test('learn skill reads the delivery export through a command Mill really ships', async () => {
+test('active retrospective instructions and examples use sawdust without renaming screening contracts', async () => {
+  const paths = [
+    'README.md', 'plugins/sawmill/README.md', 'docs/operating-mill.md',
+    'plugins/sawmill/skills/foreman/SKILL.md', 'plugins/sawmill/skills/nightwatch/SKILL.md',
+    'plugins/sawmill/skills/mill-report/SKILL.md', 'plugins/sawmill/skills/sawdust/SKILL.md',
+    'plugins/sawmill/skills/sawdust/screening.md', 'plugins/sawmill/skills/sawdust/evals/README.md',
+    '.claude-plugin/marketplace.json', 'plugins/sawmill/.claude-plugin/plugin.json',
+    'website/src/index.html', 'website/index.html',
+  ];
+  for (const path of paths) {
+    const body = await readFile(join(repo, path), 'utf8');
+    assert.doesNotMatch(body, /(?:\/sawmill:learn\b|\bsawmill:learn\b|skills\/learn(?:\/|\b)|`learn`)/, `${path}: retire the user-facing skill name only`);
+    if (/README\.md$|skills\/(?:foreman|nightwatch|mill-report)\/SKILL\.md$/.test(path) && !path.includes('sawdust/screening')) {
+      assert.match(body, /sawdust/, `${path}: expose the new skill name`);
+    }
+  }
+  const screening = await readFile(join(plugin, 'skills/sawdust/screening.md'), 'utf8');
+  for (const contract of ['mill-learn-screen', 'jev.learn', '.mill/learn-screening.json', 'learn-screening', 'learn-screen-v1']) {
+    assert.ok(screening.includes(contract), `screening retains ${contract}`);
+  }
+});
+
+test('sawdust skill reads the delivery export through a command Mill really ships', async () => {
   const { body } = await frontmatter(skillPath);
   const command = findCommand(['record', 'export']);
   assert.ok(command, 'mill record export exists');
@@ -41,7 +63,7 @@ test('learn skill reads the delivery export through a command Mill really ships'
   assert.ok(body.includes(invocation), `skill invokes \`${invocation}\``);
 });
 
-test('every file the learn skill links to ships beside it', async () => {
+test('every file the sawdust skill links to ships beside it', async () => {
   const { body } = await frontmatter(skillPath);
   const links = [...body.matchAll(/\]\(([^)#\s]+)\)/g)].map(match => match[1]!).filter(link => !/^[a-z]+:/i.test(link));
   for (const link of links) {
@@ -50,13 +72,15 @@ test('every file the learn skill links to ships beside it', async () => {
     assert.notEqual(await readFile(target, 'utf8').catch(() => undefined), undefined, `${link} exists`);
   }});
 
-test('plugin manifest describes the learn skill and the packed package contains it', async () => {
+test('plugin manifest describes the sawdust skill and the packed package contains it', async () => {
   const manifest = JSON.parse(await readFile(join(plugin, '.claude-plugin/plugin.json'), 'utf8'));
-  assert.match(manifest.description, /learn|retrospective/i);
+  assert.match(manifest.description, /sawdust|retrospective/i);
   const [packed] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], {
     cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }));
   const files: string[] = packed.files.map((file: { path: string }) => file.path);
-  assert.ok(files.includes('plugins/sawmill/skills/learn/SKILL.md'));
+  assert.ok(files.includes('plugins/sawmill/skills/sawdust/SKILL.md'));
+  assert.ok(files.includes('plugins/sawmill/skills/sawdust/screening.md'));
+  assert.ok(!files.some(file => file.startsWith('plugins/sawmill/skills/learn/')), 'the retired skill is not shipped');
   assert.ok(files.includes('plugins/sawmill/skills/draft/SKILL.md'));
 });
