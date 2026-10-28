@@ -1,7 +1,8 @@
 # Sawmill plugin
 
 Requires the Sawmill `mill` CLI on PATH and a configured millyard. The plugin
-contains two user-invoked skills, `/sawmill:draft` and `/sawmill:learn`.
+contains the user-invoked skills `/sawmill:draft`, `/sawmill:foreman`,
+`/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:learn`.
 
 From a repository checkout, register the repository root and install the plugin:
 
@@ -38,6 +39,24 @@ scope changes when needed, and displays `mill run status`. It saves a draft,
 which stays inactive. Starting the run is a separate, explicit action: run
 `mill run` once after inspecting the draft, and the shared scheduler keeps it
 moving from there.
+
+While a run is active, `/sawmill:foreman` keeps it moving and asks a person
+the questions nothing in the repo settles. `/sawmill:nightwatch` does the same
+with nobody around: it answers those with a best guess, parks a ticket whose
+jam returns after two plays, never closes a ticket, and logs every call with
+its reasoning and confidence. Both load the shared `watch` skill, which holds the walk, the logjam
+playbook and the decision entry format, and add only their own rules on top. At the
+end of a run, either one invokes `/sawmill:mill-report`, which lists the calls
+made, which ones to re-check, and how each turned out, with times as `HH:mm`.
+Ask for it at any time too:
+
+```text
+/sawmill:mill-report
+/sawmill:mill-report run 4f1c2a90
+```
+
+Nightwatch's two signature calls are evaluated by hand against the cases in
+[skills/nightwatch/evals](skills/nightwatch/evals/README.md).
 
 After a batch, ask for a retrospective:
 

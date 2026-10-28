@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "run": { "id": "4f1c2a90-7b3e-4d58-9a61-0c2e8f5b7d13", "baseBranch": "main", "lifecycle": "active" },
+  "scheduler": { "available": true },
+  "tickets": [
+    { "number": 43, "title": "Retry a failed upload once", "state": "logjam", "reason": "review-bounce", "stage": "reviewer", "bounces": 3 },
+    { "number": 45, "title": "Link the help page from the footer", "state": "ready", "reason": null, "stage": null, "bounces": 0 }
+  ]
+}
