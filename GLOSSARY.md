@@ -4,11 +4,13 @@ Sawmill is a software factory: it takes a batch of feature-sized tickets and tur
 
 ## Language
 
+Preferred terms and `_Avoid_` alternatives apply when naming these domain concepts, not to literal API identifiers, historical quotations or ordinary programming language. For example, a package dependency is not a blocked-by link, and a process owner is not another name for the human user.
+
 ### People and work
 
 **Human user**:
-Whoever files tickets, drafts runs and answers logjams; the only person the factory ever waits on.
-_Avoid_: Operator, owner, admin
+The person who directs the factory: files tickets, drafts runs and settles decisions that require a person. Watchers may answer logjams within their instructions, but cannot replace a required human decision.
+_Avoid_: Operator, owner, admin (as names for this person)
 
 **Ticket**:
 A feature-sized unit of work filed as an issue in the tracker.
@@ -26,17 +28,17 @@ _Avoid_: Dependency, prerequisite, parent
 A queued ticket with no unresolved blocked-by links. A merged blocked-by ticket releases its dependents only once the millyard contains its merged work.
 
 **User test cases**:
-A section of a ticket listing things a person should be able to do on the running site, one case per item.
+Named scenarios under a ticket's “User test cases” section that the reviewer performs as the user on the ticket's running site.
 _Avoid_: QA steps
 
 **Acceptance checklist**:
-The required outcomes listed under a ticket's "Done when", separate from its user test cases. Each item needs evidence or a human waiver before review can pass.
+The saved list of required outcomes parsed from checkboxes under a ticket's “Done when”, separate from user test cases. Each item needs evidence or a human waiver before review can pass; an empty checklist does not remove the ticket's requirements.
 
 **Acceptance item**:
 One required outcome in the acceptance checklist, identified as AC1, AC2 and so on.
 
 **Proof plan**:
-A ticket's chosen way to prove its change, either new failing tests first or existing checks, with a reason why that proof is sufficient.
+A ticket's draft-time choice of `test-first` (new failing tests) or `existing-checks`, with a reason why that proof is sufficient. A project's explicit test opt-out is separate.
 
 ### Runs
 
@@ -77,15 +79,18 @@ Where a ticket stands in a run: queued, blocked, working, done, or logjam.
 _Avoid_: Status
 
 **Logjam**:
-The one ticket state meaning a person must act, with a reason: an agent question, the retry cap, an environment failure, a stop, a failed tracker write, or an unreproducible failure.
+The ticket state requiring intervention through Mill before work can resume, with a recorded reason such as a question, retry cap, environment failure, stop, failed tracker write, tests not proving missing behavior, or unreproducible failure.
 _Avoid_: Stuck, failed, escalated, needs-human
 
 **Stage**:
 The step of the ticket lifecycle it has reached, from worktree creation through merge and cleanup.
-_Avoid_: Phase, step
+_Avoid_: Phase (for lifecycle position)
 
 **Stage boundary**:
-The point between two stages, the only place a working ticket can be stopped.
+A safe checkpoint between lifecycle stages where Mill can honor a working ticket's stop request without interrupting the current stage.
+
+**Phase**:
+A bounded delivery operation that a ticket can be waiting on, such as setup, site preparation or CI; distinct from its lifecycle stage.
 
 ### Watching a run
 
@@ -118,11 +123,11 @@ The foreman's play of leaving a ticket in logjam for the human user, with what i
 _Avoid_: Hand off, punt
 
 **Park**:
-Nightwatch's play of leaving a ticket in logjam after its jam came back twice, so the rest of the run carries on; nobody waits on it.
+Nightwatch's play of ending its attempts on a ticket or run pause while leaving it unresolved, so other runnable work can continue; not a done state.
 _Avoid_: Give up, skip, escalate
 
 **Ledger**:
-A watcher's running record of the run, with one decision entry per play and one line per quiet walk.
+A watcher's running record of the run, with one decision entry per play and one line per quiet walk; distinct from the learning ledger.
 _Avoid_: Journal, notes
 
 **Decision entry**:
@@ -136,7 +141,7 @@ _Avoid_: Retrospective, morning report
 ### Machinery
 
 **Mill**:
-The command-line tool that holds every deterministic step and is the only thing that writes state.
+The command-line tool that owns deterministic delivery operations and run-state writes, also used by Board controls.
 _Avoid_: Sawmill CLI, the tool
 
 **Orchestrator**:
@@ -151,12 +156,15 @@ _Avoid_: Daemon, coordinator, orchestrator loop
 One unit of the machine-wide limit on how many tickets work at once.
 _Avoid_: Worker, lane
 
+**Worker**:
+The Mill process carrying one ticket's team and integration work while holding a slot; not an agent role.
+
 **Worktree**:
 A ticket worktree: the isolated sandbox for one ticket, cut from the integration branch. Other git worktrees of the project are just part of the project.
 _Avoid_: Sandbox, workspace, checkout
 
 **Hook**:
-A per-project script run after a worktree is created or before one is removed.
+A project-supplied script Mill invokes at a supported delivery event, such as worktree setup, teardown, site preparation or notification.
 _Avoid_: Callback, lifecycle script
 
 **Test harness**:
@@ -171,18 +179,18 @@ The copy of run-file changes posted to the tracker for visibility, written after
 _Avoid_: Sync
 
 **Registry**:
-The machine-wide list of millyards that have had a run, used by the board and the scheduler to find them. Being registered does not activate a run.
+The machine-wide list of registered millyards, populated by build, draft or run activation and used by the Board and scheduler for discovery. Being registered does not imply a run exists or is active.
 
 **Board**:
 The page showing every current, unfinished run on the machine at once, each unfinished ticket placed on its lane, with controls to stop, answer, reset and close tickets and to start or stop a run.
 _Avoid_: Dashboard, Live view, UI
 
 **Active Section**:
-The part of the board showing each project's current, unfinished run, with done tickets omitted. A run leaves the board when every ticket is done.
+The part of the Board showing unfinished tickets in each project's current, unfinished run; “Active” here does not imply the run is activated. A run leaves the Board when every ticket is done.
 _Avoid_: Main board, Live
 
 **Lane**:
-The board's ordered track of lifecycle stops, from queued to merged, along which a ticket's marker moves.
+One of the Board's ordered lifecycle positions, from queued to merged, where a ticket's marker appears; not a slot or a ticket state.
 _Avoid_: Column, swimlane
 
 ### Teams and agents
@@ -203,10 +211,10 @@ The role that makes the ticket's change and addresses review or gate feedback, w
 _Avoid_: Coder, developer
 
 **Reviewer**:
-The role that checks the change against the ticket, performs any user test cases, and passes or bounces it.
+The role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
 
 **Agent runtime**:
-The vendor tool a role runs on: Claude Code, Pi, or Codex, with a model and effort per role.
+The agent tool a role runs on: Claude Code, Pi, or Codex, with a model and effort per role.
 _Avoid_: Provider, harness, engine
 
 **Handoff**:
@@ -250,11 +258,11 @@ A review that looks only at the fix for a bounce and the reviewer's own earlier 
 The commit that saves a team's unfinished changes on the ticket branch when it stops.
 
 **Rebase gate**:
-The required rebase onto integration and full test run before merge; where conflicts between parallel tickets are resolved.
+The pre-merge gate that rebases onto integration and runs the project's full test command unless tests are explicitly opted out, plus required checks and applicable browser proof; where parallel-ticket conflicts are resolved.
 _Avoid_: Pre-merge check
 
 **CI gate**:
-Waiting, when the project has CI, for the pipeline to pass on the exact commit about to merge.
+The hosted verification gate on the exact commit about to merge, using required-check policy on GitHub or native pipeline rules on GitLab.
 
 **Merge acceptance**:
 The tracker's confirmation that a ticket's change has merged into the integration branch. It is irreversible completion of the merge, not proof that the millyard has caught up or cleanup has finished.
@@ -265,9 +273,46 @@ The local update that brings the millyard's integration branch up to the merged 
 **Release handoff**:
 The saved account of a merged ticket's delivered revision, acceptance evidence and release steps, including what remains unverified or needs separate recovery. It is not a deployment or promotion to main.
 
+**Required check**:
+A project-declared verification command whose successful evidence on the final head is required for delivery, even when tests are opted out; distinct from an advisory or focused check.
+
+**Prepared site**:
+The ticket-owned running site brought into agreement with its worktree revision for browser verification, identified by its environment and fixtures as well as its address.
+
+**Shared smoke cases**:
+Project-declared browser scenarios run on the re-prepared site when integration moves the reviewed code.
+
 **Integration branch**:
-The branch approved tickets merge into, through a pull or merge request; sits in front of main.
+The configured branch approved tickets merge into through a pull or merge request, before manual release promotion.
 _Avoid_: Develop, staging branch
 
 **Main**:
-The release branch; promotion to it from integration is done by hand, outside the factory.
+The release branch in Sawmill's integration-to-release workflow; promotion from integration is manual and outside the factory.
+
+### Selection and retained evidence
+
+**Pick**:
+The single pending preference for a ready ticket at a run's next dispatch opportunity; it does not activate the run or override shared capacity and fairness.
+_Avoid_: Priority (when it implies permanent ordering)
+
+**Build identity**:
+The identity of an installed Mill's packaged runtime and role prompts, with its source revision and whether that source had uncommitted edits.
+
+**Attempt record**:
+Retained evidence of one ticket delivery attempt, including its code, verification policy, environment and results; earlier attempts survive a reset.
+
+**Retrospective**:
+The learning skill's evidence-based analysis of scoped deliveries and proposed measurable improvements; it neither resolves unfinished work nor authorizes changes.
+_Avoid_: Decision report
+
+**Learning ledger**:
+The record of human-accepted improvement proposals, their ownership, baseline and later measurements; distinct from a watcher's ledger.
+
+**Jev**:
+Sawmill's optional semantic assistance for model routing and draft, acceptance, CI and learning screens; its findings are advisory, not delivery authority.
+
+**Screening**:
+Jev's bounded semantic assessment of supplied evidence to guide reasoning review, without replacing deterministic checks or authorizing actions.
+
+**Model routing**:
+The opted-in selection of model and effort for coding roles under the machine's routing policy; the reviewer keeps its configured selection.

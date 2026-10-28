@@ -25,7 +25,8 @@ When the playbook says a call is unsettled, decide it yourself:
 
 - **Never** run `mill run close`. A wrong close is the costliest call to undo in the morning. Where the playbook says close, park the ticket instead and say why.
 - `mill run reset` at most **once per ticket** for the whole run. A ticket that needs a second reset is parked.
-- `mill run waive` and `mill run approve-tests` are allowed on a best guess. Log them with `Play: waive` or `Play: approve-tests`; the report lists them for a person to re-check.
+- `mill run waive` requires an explicit human decision for the saved acceptance item; never waive on a best guess. If that decision is missing, park the ticket without asking. An already authorized waiver is logged with `Play: waive` and its human decision as evidence.
+- `mill run approve-tests` is allowed on a best guess. Log it with `Play: approve-tests`; the report lists it for a person to re-check.
 
 ## Two plays per jam, then park
 
