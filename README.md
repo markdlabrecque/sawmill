@@ -34,9 +34,9 @@ mill update /path/to/sawmill
 
 ### Agent skills
 
-Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done or only needs a person, `nightwatch` watches an unattended run and makes best-guess calls instead of asking, `mill-report` lists the calls either one made with their times, impact and result, and `learn` runs a retrospective on completed or interrupted runs. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of each agent it detects on your machine, plus the shared `~/.agents/skills`. The skills CLI also reports PromptScript as failed on every global install; that is expected and harmless.
+Sawmill ships agent skills alongside `mill`: `draft` selects a run, `foreman` watches a run and clears its logjams until the batch is done or only needs a person, `nightwatch` watches an unattended run and makes best-guess calls instead of asking, `mill-report` lists the calls either one made with their times, impact and result, and `sawdust` runs a retrospective on completed or interrupted runs. They install with the [skills CLI](https://github.com/vercel-labs/skills) into the global skill directory of each agent it detects on your machine, plus the shared `~/.agents/skills`. The skills CLI also reports PromptScript as failed on every global install; that is expected and harmless.
 
-After its final run log and report, Foreman offers one opt-in `/sawmill:learn`
+After its final run log and report, Foreman offers one opt-in `/sawmill:sawdust`
 retrospective for the exact run identity in the same millyard, including when
 all remaining tickets are escalated, intentionally stopped or blocked behind
 those tickets. It does not offer while work is progressing, paused or
@@ -46,7 +46,7 @@ Learning examines retained attempt records and relevant logs for friction,
 helpful safeguards and measurable improvements; it does not clear unresolved
 work or change run state.
 
-The [learning workflow](plugins/sawmill/skills/learn/SKILL.md) is read-only:
+The [learning workflow](plugins/sawmill/skills/sawdust/SKILL.md) is read-only:
 **project configuration** findings identify a user-owned file and setting,
 proposed change, expected effect, reversal and measurement for the user to
 decide on, without editing configuration. **Sawmill upstream** findings search
@@ -68,7 +68,9 @@ To install them yourself, from the copy that ships with your `mill`:
 npx skills add "$(npm root -g)/@markdlabrecque/sawmill" --skill '*' -g -y
 ```
 
-Run it again after `mill update` to pick up changed skills.
+Run it again after `mill update` to pick up changed skills; updating Mill does not automatically refresh installed skills. The shipped directory names drive discovery, so an old retrospective installation alone does not satisfy the new `sawdust` skill.
+
+After refreshing, verify that `sawdust/SKILL.md` is installed under `~/.agents/skills` or your agent's global skill directory. If a stale old retrospective copy remains (the previous name was learn), inspect that copy and any agent symlinks to confirm they belong to Sawmill, then remove only those old skill entries. Do not delete the whole skills directory or unrelated user skills. For the Claude plugin installation and refresh procedure, see the [plugin README](plugins/sawmill/README.md).
 
 ## Quickstart
 

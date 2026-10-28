@@ -60,7 +60,7 @@ roles:
 # Advisory screens never replace reasoning review or authorize a merge. Routing
 # selects coding-role models within the machine policy; it never reroutes reviewers.
 # Screen timeout: positive duration up to 60s (1m); max_evidence_chars: 1-16000.
-# Defaults below. See docs/{draft,acceptance,ci}-screening.md, the learn skill's
+# Defaults below. See docs/{draft,acceptance,ci}-screening.md, the sawdust skill's
 # screening.md, and docs/model-routing.md for evidence and privacy boundaries.
 # jev:
 #   # Reviews ticket clarity/scope/blocked-by; sends title, body and selected comments.

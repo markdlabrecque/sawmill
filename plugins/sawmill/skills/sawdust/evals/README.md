@@ -1,4 +1,4 @@
-# Evaluating sawmill:learn
+# Evaluating sawmill:sawdust
 
 Seven small cases, each one a past kind of delivery evidence the skill must
 judge correctly. They are reconstructed and redacted from incidents found in
@@ -53,14 +53,14 @@ Each folder under `cases/` holds:
 Load the plugin from a checkout and start Claude Code inside the case folder:
 
 ```sh
-cd plugins/sawmill/skills/learn/evals/cases/fixed-bug
+cd plugins/sawmill/skills/sawdust/evals/cases/fixed-bug
 claude --plugin-dir ../../../../..
 ```
 
 Then invoke the skill with the case's `scope` and its saved files, for example:
 
 ```text
-/sawmill:learn ticket #37, using the saved export export.json and the files listed in expected.json inputs
+/sawmill:sawdust ticket #37, using the saved export export.json and the files listed in expected.json inputs
 ```
 
 Score the report against `expected.json`. A case passes when the coverage,

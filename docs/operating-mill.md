@@ -58,7 +58,7 @@ Moving from `.mill/{draft,acceptance,ci,learn}-screening.json`: copy each file's
 is honored with a migration warning if that feature's YAML mapping is absent;
 if the mapping exists, YAML wins (including false) and Mill warns that JSON is
 ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
-[CI](ci-screening.md), and the learn skill's `screening.md` for privacy details.
+[CI](ci-screening.md), and the [sawdust skill's screening contract](../plugins/sawmill/skills/sawdust/screening.md) for privacy details.
 
 ## Starting a run and keeping it going
 

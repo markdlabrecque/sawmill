@@ -1,5 +1,5 @@
 ---
-name: learn
+name: sawdust
 description: Review finished and interrupted Sawmill deliveries and propose the next small, measurable improvement.
 argument-hint: "<project, run identity and millyard, tickets or date range>"
 disable-model-invocation: true

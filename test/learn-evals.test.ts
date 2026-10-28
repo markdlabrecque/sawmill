@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { recordSchema, type Attempt, type Findings, type RecordExport } from '../src/attempt-record.js';
 
-// The learn skill's evaluation set (#146): each case is a saved `mill record export`, the excerpts it needs, and the
+// The sawdust skill's evaluation set (#146): each case is a saved `mill record export`, the excerpts it needs, and the
 // judgment a report must reach. These tests check only the structure; judging a report needs Claude.
 const repo = fileURLToPath(new URL('../../', import.meta.url));
-const learn = join(repo, 'plugins/sawmill/skills/learn');
+const learn = join(repo, 'plugins/sawmill/skills/sawdust');
 const evals = join(learn, 'evals');
 const cases = join(evals, 'cases');
 const required = ['review-catch', 'faulty-test', 'fixed-bug', 'duplicate-transcripts', 'missing-run', 'acceptance-near-retry-limit', 'learning-loop'];
@@ -86,11 +87,13 @@ async function files(folder: string): Promise<string[]> {
 const lines = (content: string) => content.replace(/\n$/, '').split('\n');
 
 test('the evaluation set covers each kind of evidence the ticket names', async () => {
+  assert.ok(existsSync(cases), 'sawdust ships its evaluation cases');
   const present = (await readdir(cases, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name);
   for (const name of required) assert.ok(present.includes(name), `cases/${name} exists`);
 });
 
 test('each case has a saved export in the record shape and a complete expectation whose evidence resolves', async () => {
+  assert.ok(existsSync(cases), 'sawdust ships its evaluation cases');
   const names = (await readdir(cases, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => entry.name);
   for (const name of names) {
     const folder = join(cases, name);
@@ -142,11 +145,13 @@ test('each case has a saved export in the record shape and a complete expectatio
 });
 
 test('the learning-loop case settles at least one earlier ledger entry against a newer batch', async () => {
+  assert.ok(existsSync(join(cases, 'learning-loop/expected.json')), 'sawdust ships the learning-loop expectation');
   const expected = JSON.parse(await readFile(join(cases, 'learning-loop/expected.json'), 'utf8')) as Expected;
   assert.ok(expected.ledger && expected.ledger.entries.length > 0);
 });
 
 test('the skill links the evaluation set, which links every case, and the package ships them', async () => {
+  assert.ok(existsSync(join(learn, 'SKILL.md')), 'sawdust/SKILL.md ships with the plugin');
   const skill = await readFile(join(learn, 'SKILL.md'), 'utf8');
   assert.ok([...skill.matchAll(/\]\(([^)#\s]+)\)/g)].some(match => match[1] === 'evals/README.md'), 'SKILL.md links evals/README.md');
   const readme = await readFile(join(evals, 'README.md'), 'utf8');

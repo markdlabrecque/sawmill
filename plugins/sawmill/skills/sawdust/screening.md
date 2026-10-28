@@ -1,7 +1,7 @@
 # Optional learning observation screening
 
 Screening sorts bounded observations for deeper reasoning. It does not investigate
-causes, make recommendations or write anything. The existing learning skill's
+causes, make recommendations or write anything. The sawdust skill's
 scope, deterministic accounting, code/history checks, tracker search, reasoning
 review and human approval of ledger/ticket changes all remain required.
 

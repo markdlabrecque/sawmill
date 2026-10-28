@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { declinedMarker, offerSkills } from '../src/agent-skills.js';
+import { declinedMarker, missingSkills, offerSkills } from '../src/agent-skills.js';
 import { findCommand } from '../src/help.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -37,6 +37,46 @@ test('installed skills are not offered again, and an accepted offer installs', a
   }
   assert.equal(await offer(), 'skipped');
   assert.equal(installs, 1);
+});
+
+test('fresh installation discovers sawdust rather than the retired learn skill', async t => {
+  const home = await tempHome(t);
+  const missing = missingSkills(root, home);
+  assert.ok(missing.includes('sawdust'), 'fresh installs discover sawdust');
+  assert.ok(!missing.includes('learn'), 'fresh installs do not offer the retired name');
+  let prompt = '';
+  assert.equal(await offerSkills({
+    root, home, ask: async question => { prompt = question; return 'y'; },
+    install: () => true, stdout: () => {},
+  }), 'installed');
+  assert.match(prompt, /\bsawdust\b/);
+});
+
+test('an existing learn installation still offers sawdust without deleting user skills', async t => {
+  const home = await tempHome(t);
+  for (const directory of ['.agents', '.claude']) {
+    // Model a pre-rename installation, including all other shipped skills.
+    const names = [...readdirSync(join(root, 'plugins/sawmill/skills')).filter(name => name !== 'sawdust'), 'learn', 'my-private-skill'];
+    for (const name of names) {
+      await mkdir(join(home, directory, 'skills', name), { recursive: true });
+      await writeFile(join(home, directory, 'skills', name, 'SKILL.md'), `user copy: ${name}`);
+    }
+  }
+  assert.deepEqual(missingSkills(root, home), ['sawdust']);
+  let installs = 0;
+  assert.equal(await offerSkills({
+    root, home, ask: async question => { assert.match(question, /\bsawdust\b/); return 'y'; },
+    install: () => { installs++; return true; }, stdout: () => {},
+  }), 'installed');
+  assert.equal(installs, 1);
+  for (const directory of ['.agents', '.claude']) {
+    for (const name of ['learn', 'my-private-skill']) {
+      assert.equal(await readFile(join(home, directory, 'skills', name, 'SKILL.md'), 'utf8'), `user copy: ${name}`);
+    }
+    await mkdir(join(home, directory, 'skills/sawdust'), { recursive: true });
+    await writeFile(join(home, directory, 'skills/sawdust/SKILL.md'), 'refreshed');
+  }
+  assert.deepEqual(missingSkills(root, home), [], 'the refreshed skill is recognized');
 });
 
 const skills = join(root, 'plugins/sawmill/skills');

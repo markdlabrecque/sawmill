@@ -11,8 +11,8 @@ const root = new URL('../../', import.meta.url);
 // sentences, section IDs, CSS classes, or a prescribed number of visual steps.
 function learningSection(html: string): string {
   const sections = html.match(/<section\b[^>]*>[\s\S]*?<\/section>/gi) ?? [];
-  const section = sections.find(section => section.includes('/sawmill:learn'));
-  assert.ok(section, 'a scannable section explains /sawmill:learn in the static page');
+  const section = sections.find(section => section.includes('/sawmill:sawdust'));
+  assert.ok(section, 'a scannable section explains /sawmill:sawdust in the static page');
   return section;
 }
 function text(html: string): string {
@@ -64,9 +64,9 @@ test('marketing learning tracks accepted improvements against later batches and 
     ], path);
     const links = [...html.matchAll(/href=["']([^"']+)["']/g)].map(match => match[1]!);
     // This is the operational learning workflow linked by the repository README.
-    const link = links.find(href => /^https:\/\/github\.com\/markdlabrecque\/sawmill\/blob\/[^/]+\/plugins\/sawmill\/skills\/learn\/SKILL\.md(?:#.*)?$/.test(href));
+    const link = links.find(href => /^https:\/\/github\.com\/markdlabrecque\/sawmill\/blob\/[^/]+\/plugins\/sawmill\/skills\/sawdust\/SKILL\.md(?:#.*)?$/.test(href));
     assert.ok(link, `${path}: link readers to the repository learning workflow`);
-    assert.match(await readFile(new URL('plugins/sawmill/skills/learn/SKILL.md', root), 'utf8'), /evidence-based retrospective/i);
+    assert.match(await readFile(new URL('plugins/sawmill/skills/sawdust/SKILL.md', root), 'utf8'), /evidence-based retrospective/i);
   }
   assert.equal(text(content[1]!.html), text(content[0]!.html), 'the standalone page contains the same learning explanation as the source');
 });
@@ -81,10 +81,10 @@ test('standalone learning content and docs remain readable at desktop and narrow
     try {
       const page = await context.newPage();
       await page.goto(new URL('website/index.html', root).href);
-      const section = page.locator('section').filter({ hasText: '/sawmill:learn' }).first();
+      const section = page.locator('section').filter({ hasText: '/sawmill:sawdust' }).first();
       assert.equal(await section.count(), 1, `${width}px: static learning content exists`);
       assert.ok(await section.isVisible(), `${width}px: learning explanation is visible without scripts`);
-      const link = section.getByRole('link').filter({ hasText: /learn|detail|workflow|documentation|operat/i }).first();
+      const link = section.getByRole('link').filter({ hasText: /sawdust|learn|detail|workflow|documentation|operat/i }).first();
       assert.ok(await link.isVisible(), `${width}px: operational documentation link is usable`);
       const bounds = await section.boundingBox();
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1, `${width}px: learning section fits the viewport`);

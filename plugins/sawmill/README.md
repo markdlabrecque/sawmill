@@ -2,7 +2,7 @@
 
 Requires the Sawmill `mill` CLI on PATH and a configured millyard. The plugin
 contains the user-invoked skills `/sawmill:draft`, `/sawmill:foreman`,
-`/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:learn`.
+`/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:sawdust`.
 
 From a repository checkout, register the repository root and install the plugin:
 
@@ -19,6 +19,15 @@ npm install -g @markdlabrecque/sawmill
 claude plugin marketplace add "$(npm root -g)/@markdlabrecque/sawmill"
 claude plugin install sawmill@sawmill --scope user
 ```
+
+After updating the source checkout or npm installation, refresh the marketplace and installed plugin:
+
+```sh
+claude plugin marketplace update sawmill
+claude plugin update sawmill@sawmill
+```
+
+Restart Claude Code to load the refreshed plugin and check that `/sawmill:sawdust` is available. For skills installed separately through `npx skills add`, rerun the [README's skills install](../../README.md#agent-skills) after `mill update`; there is no automatic skill-sync step. A stale copy of the old retrospective (previously named learn) is not the new skill. Inspect its contents and symlinks, then remove only the verified old Sawmill entry from the shared or agent-specific skill directory, leaving unrelated user skills alone. Do not hand-edit the plugin cache; refresh the plugin instead.
 
 For a session-only local load, start from the millyard:
 
@@ -61,8 +70,8 @@ Nightwatch's two signature calls are evaluated by hand against the cases in
 After a batch, ask for a retrospective:
 
 ```text
-/sawmill:learn the run that just finished
-/sawmill:learn tickets #12 #14 #15
+/sawmill:sawdust the run that just finished
+/sawmill:sawdust tickets #12 #14 #15
 ```
 
 The skill reads `mill record export --json` and, where a record leaves a
@@ -76,7 +85,7 @@ measurement, and checks those entries against a later batch. It never starts or
 changes a run, edits prompts, tests or gates, or uploads transcripts.
 
 Its judgment is evaluated by hand against seven representative cases in
-[skills/learn/evals](skills/learn/evals/README.md), each a saved record export
+[skills/sawdust/evals](skills/sawdust/evals/README.md), each a saved record export
 with the report it should produce. The test suite checks only their structure.
 
 Layout and installation follow the official [manifest reference](https://code.claude.com/docs/en/plugins-reference),
