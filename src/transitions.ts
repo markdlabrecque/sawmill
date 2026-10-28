@@ -252,7 +252,9 @@ export function claimWorker(cwd: string, number: number, worker: WorkerOwnership
       db.prepare('UPDATE run SET pending_pick = NULL').run();
       logPick(db, number, `Consumed pending pick #${number} on worker claim.`);
     }
-    update(db, number, { state: 'working', reason: null, stage: 'team-launch', worker });
+    // Resuming a worker does not restart the ticket's lifecycle stage or its clock.
+    const stage = requireTicket(db, number).stage === null ? 'team-launch' : undefined;
+    update(db, number, { state: 'working', reason: null, stage, worker });
     return true;
   });
 }
