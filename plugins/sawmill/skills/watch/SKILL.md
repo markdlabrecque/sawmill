@@ -22,7 +22,7 @@ Use `mill` on PATH. `mill <command> --help` is the source of truth for every com
 
 Repeat until the run is finished:
 
-1. **Look.** `mill run status --json`. Note the exact run identity (`run.id`), the millyard's absolute path, the run state (active, paused, stopped, completed), whether the scheduler is running, and each ticket's state. Keep the identity with the ledger and final run log; never substitute a later current run.
+1. **Look.** `mill run status --json`. Note the exact run identity (`run.id`), the millyard's absolute path, the run state (inactive, active, paused, stopped, completed), whether the scheduler is running, and each ticket's state. Keep the identity with the ledger and final run log; never substitute a later current run.
 2. **Act** on the first thing below that applies:
    - **Completed:** go to your skill's Finish.
    - **Inactive, or stopped with nothing in logjam:** `mill run`.
@@ -42,7 +42,7 @@ Before you act, read the evidence: `mill run log <n>` for the ticket's story, `m
 | `question` | An agent asked something. | Answer from the ticket, its thread, the codebase, and the project's docs: `mill run answer <n> "<answer>"`. Answer the way the ticket's author would. If the answer is a product or business decision nothing in the repo settles, it is an **unsettled call**. |
 | `environment` | Setup, a hook, a service, or the runtime failed. | Find the cause in stderr (a stopped DDEV project, a full disk, a dead service, a bad `.mill/setup.sh` run). Fix it, then `mill run answer <n>` with no text to retry. |
 | `tracker` | A write to GitHub or GitLab failed. | Check `gh auth status` / `glab auth status` and reachability, then `mill run answer <n>`. |
-| `review-bounce`, `retry-cap` | The reviewer kept sending the work back. | Read the bounces. Answer with the guidance that resolves the disagreement. When the reviewer demands something the ticket never asked for, `mill run waive <n> <item> --reason "<why>"`. When the branch has gone off the rails, `mill run reset <n>`. |
+| `review-bounce`, `retry-cap` | The reviewer kept sending the work back. | Read the bounces. Answer with the guidance that resolves the disagreement. When the reviewer demands something the ticket never asked for, answer with the ticket's scope. A waiver accepts a saved acceptance item without proof and requires a human decision; do not invent an item or waive it on your own. Escalate a needed waiver to the human user (nightwatch parks it). When the branch has gone off the rails, `mill run reset <n>`. |
 | `tests-not-red` | The new tests passed before any code was written. | When the tests are correct and the behaviour already exists, `mill run approve-tests <n>` then `mill run answer <n>`. When the tests are wrong, `mill run reset <n>`. |
 | `not-reproduced` | The implementer could not reproduce the failure. | When the failure is real, `mill run answer <n> --implementer`. When the work is already done on the integration branch, `mill run close <n>`. |
 | `stopped` | Someone stopped the ticket on purpose. | Leave it unless you stopped it. Report it at the finish. |
@@ -53,7 +53,7 @@ An unsettled call is where the two skills part ways. Follow your skill's own rul
 
 ## Destructive plays
 
-`reset`, `close`, `waive` and `approve-tests` change what counts as done, or throw away work. Use them only when the evidence calls for them, and only within your skill's limits. Write the decision entry before you run one, with the full reasoning, so a person can audit the call.
+`reset`, `close`, `waive` and `approve-tests` change what counts as done, or throw away work. Use them only when the evidence calls for them, and only within your skill's limits. `waive` additionally requires an explicit human decision for that saved acceptance item; watcher judgment is not a waiver. Write the decision entry before you run one, with the full reasoning, so a person can audit the call.
 
 ## Decision entries
 

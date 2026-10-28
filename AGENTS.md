@@ -16,4 +16,4 @@ Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Read `GLOSSARY.md` before starting work; check the terminology of every change against it, including code, tests, documentation and agent instructions. Follow `docs/agents/domain.md` for same-ticket glossary maintenance, conflict resolution and the required completion record. This is a single-context repo; decisions belong in `docs/adr/`.
