@@ -44,7 +44,8 @@ While a run is active, `/sawmill:foreman` keeps it moving and asks a person
 the questions nothing in the repo settles. `/sawmill:nightwatch` does the same
 with nobody around: it answers those with a best guess, parks a ticket whose
 jam returns after two plays, never closes a ticket, and logs every call with
-its reasoning and confidence. Both share one walk and logjam playbook. At the
+its reasoning and confidence. Both load the shared `watch` skill, which holds the walk, the logjam
+playbook and the decision entry format, and add only their own rules on top. At the
 end of a run, either one invokes `/sawmill:mill-report`, which lists the calls
 made, which ones to re-check, and how each turned out, with times as `HH:mm`.
 Ask for it at any time too:

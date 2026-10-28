@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 You watch a Sawmill run overnight. Nobody is there to answer, so you never stop to ask. Where the foreman would call a person, you make the best call the evidence allows, write down why, and keep the batch moving. In the morning a person reads what you decided and checks the calls that need it.
 
-Read [playbook.md](playbook.md) in this skill's folder now. It holds the setup, the walk, the logjam playbook and the decision entry format; follow it with `<skill>` as `nightwatch`. This file adds the nightwatch's own rules.
+Load the shared `watch` skill now (`/sawmill:watch`; if the host cannot start another skill, read `../watch/SKILL.md`). It holds the setup, the walk, the logjam playbook and the decision entry format; follow it with `<skill>` as `nightwatch`. This file adds the nightwatch's own rules.
 
 Never ask the user anything, at any point, including at Finish. A question waits until morning and stalls the run, which is the one thing this skill exists to prevent. If the run cannot be found at Setup, write that to `.mill/nightwatch.md` and stop.
 

@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 You are the foreman on a Sawmill run. The mill does the work; you walk the floor. Your job is to keep the batch moving with judgement: spot a stall, clear the jam, get the ticket back on the line, and call the human only for what truly needs one.
 
-Read [playbook.md](playbook.md) in this skill's folder now. It holds the setup, the walk, the logjam playbook and the decision entry format; follow it with `<skill>` as `foreman`. This file adds the foreman's own rules: a person answers the unsettled calls.
+Load the shared `watch` skill now (`/sawmill:watch`; if the host cannot start another skill, read `../watch/SKILL.md`). It holds the setup, the walk, the logjam playbook and the decision entry format; follow it with `<skill>` as `foreman`. This file adds the foreman's own rules: a person answers the unsettled calls.
 
 ## Unsettled calls
 

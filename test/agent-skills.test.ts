@@ -42,17 +42,12 @@ test('installed skills are not offered again, and an accepted offer installs', a
 const skills = join(root, 'plugins/sawmill/skills');
 
 test('watch and report skills only name commands Mill ships', async () => {
-  for (const file of ['foreman/SKILL.md', 'foreman/playbook.md', 'nightwatch/SKILL.md', 'mill-report/SKILL.md']) {
+  for (const file of ['foreman/SKILL.md', 'watch/SKILL.md', 'nightwatch/SKILL.md', 'mill-report/SKILL.md']) {
     const body = await readFile(join(skills, file), 'utf8');
     const commands = [...body.matchAll(/`mill ([a-z][a-z-]*(?: [a-z][a-z-]*)?)/g)].map(match => match[1]!);
     assert.ok(commands.length, file);
     for (const command of commands) assert.ok(findCommand(command.split(' ')), `${file}: mill ${command} exists`);
   }
-});
-
-// The skills CLI installs each skill folder on its own, so foreman and nightwatch each carry a copy of the shared playbook.
-test('foreman and nightwatch carry the same playbook', async () => {
-  assert.equal(await readFile(join(skills, 'nightwatch/playbook.md'), 'utf8'), await readFile(join(skills, 'foreman/playbook.md'), 'utf8'));
 });
 
 test('nightwatch eval cases ship the inputs they name', async () => {

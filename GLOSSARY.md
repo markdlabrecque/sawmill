@@ -78,6 +78,52 @@ _Avoid_: Phase, step
 **Stage boundary**:
 The point between two stages, the only place a working ticket can be stopped.
 
+### Watching a run
+
+**Watch**:
+The shared skill both watchers load: the walk, the logjam playbook and the decision entry format. It sets no rule for unsettled calls; each watcher adds its own.
+_Avoid_: Playbook file, common skill
+
+**Foreman**:
+The watcher for an attended run: it clears logjams it can settle and escalates the rest to the human user.
+_Avoid_: Supervisor, babysitter
+
+**Nightwatch**:
+The watcher for an unattended run: it never asks, makes a best-guess call on every unsettled call, and parks what it cannot clear.
+_Avoid_: Autopilot, unattended foreman
+
+**Walk**:
+One pass of a watcher over a run: read status, act on the first thing that needs it, record, wait.
+_Avoid_: Poll, tick
+
+**Play**:
+One action a watcher takes on a logjam or pause: answer, retry, restart, waive, approve-tests, reset, close, escalate or park.
+_Avoid_: Fix, move
+
+**Unsettled call**:
+A logjam the evidence does not settle: a product or business question nothing in the repo answers, or a reason whose fix is not clear. The foreman escalates it; nightwatch decides it.
+_Avoid_: Blocker, open question
+
+**Escalate**:
+The foreman's play of leaving a ticket in logjam for the human user, with what it tried and the decision it needs.
+_Avoid_: Hand off, punt
+
+**Park**:
+Nightwatch's play of leaving a ticket in logjam after its jam came back twice, so the rest of the run carries on; nobody waits on it.
+_Avoid_: Give up, skip, escalate
+
+**Ledger**:
+A watcher's running record in `.mill/foreman.md` or `.mill/nightwatch.md`: one decision entry per play, one line per quiet walk.
+_Avoid_: Journal, notes
+
+**Decision entry**:
+A ledger record of one play, written as it happens: the timestamp, run, trigger, options, choice, reasoning, confidence and the exact command sent.
+_Avoid_: Log line, note
+
+**Decision report**:
+The `mill-report` audit of one run's decision entries: the calls worth knowing about, with their times, impact and checked result, re-check items first.
+_Avoid_: Retrospective, morning report
+
 ### Machinery
 
 **Mill**:

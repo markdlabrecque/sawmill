@@ -1,6 +1,12 @@
-# Sawmill walk and logjam playbook
+---
+name: watch
+description: The shared walk, logjam playbook and decision entry format that foreman and nightwatch both follow while watching a Sawmill run. Loaded by those skills, not run on its own.
+user-invocable: false
+---
 
-Shared by `foreman` and `nightwatch`. The two skills walk the floor and clear logjams the same way. They differ only in what happens when the evidence does not settle a call, and in how many plays a jam gets. Each skill's own `SKILL.md` sets those rules; this file never decides them.
+# Watch
+
+The common ground of `foreman` and `nightwatch`. The two skills walk the floor and clear logjams the same way. They differ only in what happens on an unsettled call and in how many plays a jam gets. Each of them sets those rules on top of this skill; this skill never decides them. If you were loaded on your own, stop: start `/sawmill:foreman` or `/sawmill:nightwatch` instead.
 
 `<skill>` below is the name of the skill you are running: `foreman` or `nightwatch`.
 
