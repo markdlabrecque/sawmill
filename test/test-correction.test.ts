@@ -16,7 +16,7 @@ const correction = (files = ['answer.test.cjs']) => ({ outcome: 'test-correction
 const CORRECTED = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1 corrected');\n";
 const WEAKENED = "console.log('pass 1 weakened');\n";
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, extra = '') {
   const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.', labels: [], state: 'open', comments: [], blockedBy: [] };
   const requests: ChangeRequest[] = [];
   const tracker = {
@@ -52,7 +52,7 @@ async function fixture(t: TestContext) {
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
     .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: team/tool')
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', 'test_harness: none')
-    .replace('ci: wait', 'ci: none').replace('command: npm test', 'command: node answer.test.cjs'));
+    .replace('ci: wait', 'ci: none').replace('command: npm test', 'command: node answer.test.cjs') + extra);
   await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 0;\n');
   await writeFile(join(y.cwd, 'other.test.cjs'), "console.log('other');\n");
   y.git('add', '.'); y.git('commit', '-m', 'Seed answer'); y.git('push');
@@ -266,5 +266,49 @@ test('a correction survives a writer question and a restart, and still gets a fr
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(y.inputs.slice(before).map(r => r.role), ['test-writers', 'reviewer']);
   assert.ok(y.inputs[before]!.handoff.includes(MISTAKE), 'Resumed writer still sees the reviewer request');
+  assert.equal((await y.status()).tickets[0].state, 'done');
+});
+
+/** Lint fails on any TODO in the ticket's files and prints each finding as `file:line:text`. */
+const lint = "\nrequired_checks:\n  lint: '! grep -Hn TODO answer.cjs answer.test.cjs'\n";
+const UNTIDY = "const assert = require('node:assert/strict');\n// TODO tidy\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1');\n";
+
+test('a required check failing only in protected tests goes back to the test writers, not the implementer', async t => {
+  const y = await fixture(t, lint);
+  let writes = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role !== 'test-writers') return y.normal(request, sink);
+    await commitTest(y, request, ++writes === 1 ? UNTIDY : CORRECTED);
+    return { outcome: { outcome: 'done', summary: 'answer.test.cjs fails: expected 42, received 0.' } };
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'test-writers', 'reviewer']);
+  const writer = y.inputs[3]!;
+  assert.match(writer.handoff, /required check/);
+  assert.match(writer.handoff, /answer\.test\.cjs:2:\/\/ TODO tidy/);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.bounces, 0);
+});
+
+test('a required check failing in both tests and code tells the implementer which files are not theirs', async t => {
+  const y = await fixture(t, lint);
+  let writes = 0, fixes = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers') {
+      await commitTest(y, request, ++writes === 1 ? UNTIDY : CORRECTED);
+      return { outcome: { outcome: 'done', summary: 'answer.test.cjs fails: expected 42, received 0.' } };
+    }
+    if (request.role === 'implementer') {
+      await writeFile(join(request.cwd, 'answer.cjs'), ++fixes === 1 ? '// TODO tidy\nmodule.exports = () => 42;\n' : 'module.exports = () => 42;\n');
+      y.git('-C', request.cwd, 'commit', '-am', '#12: Return answer');
+      return { outcome: { outcome: 'done', summary: 'Implemented answer.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'reviewer', 'implementer', 'reviewer', 'test-writers', 'reviewer']);
+  assert.match(y.inputs[3]!.handoff, /protected test files you must not change: answer\.test\.cjs/);
   assert.equal((await y.status()).tickets[0].state, 'done');
 });

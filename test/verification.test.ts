@@ -92,6 +92,17 @@ test('role prompts advertise only the declared checks and never replace the full
   assert.doesNotMatch(verificationInstructions(noTestsFocused, 'implementer'), /focused/i);
 });
 
+test('test writers see and may run literal required checks; a shell script stays Mill\'s alone', () => {
+  const verification = verificationFrom({ tests: { command: 'npm test', timeout: '30m' },
+    required_checks: { lint: 'vendor/bin/phpcs web/modules/custom', build: 'npm run build && npm run bundle', timeout: '30m' } });
+  const text = verificationInstructions(verification, 'test-writers');
+  assert.match(text, /vendor\/bin\/phpcs web\/modules\/custom/);
+  assert.match(text, /before you commit/);
+  assert.doesNotMatch(text, /npm run bundle/);
+  assert.deepEqual(authorizeVerification(verification, 'vendor/bin/phpcs web/modules/custom'), ['vendor/bin/phpcs', 'web/modules/custom']);
+  assert.equal(authorizeVerification(verification, 'npm run build && npm run bundle'), undefined);
+});
+
 const focusedAccepted = [
   'node --test dist/test/a.test.js',
   'node --test dist/test/a.test.js dist/test/b.test.js',
