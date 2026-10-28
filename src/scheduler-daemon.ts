@@ -41,6 +41,7 @@ interface Candidate { cwd: string; project: ProjectConfig; machine: MachineConfi
 const turns = new Map<string, number>();
 let turn = 0;
 const problems = new Map<string, { message: string; retry: number; stage: 'inspect' | 'admit' }>();
+const waitingForMillyard = new Set<string>();
 let stopping = false;
 let wakeNow = () => {};
 process.on('SIGTERM', () => { stopping = true; wakeNow(); });
@@ -113,8 +114,15 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
     await sendNotifications(cwd, config.project.role_timeout);
     const snapshot = readRun(cwd);
     resolved(cwd, 'inspect');
-    // A foreground coordinator owns its run while attached; an integrating ticket holds preflight.
-    if (snapshot.run.lifecycle !== 'active' || !readyTickets(snapshot).length || lockHeld(cwd, 'loop') || lockHeld(cwd, 'integration')) return undefined;
+    // A foreground coordinator owns its run while attached. Integration holds
+    // preflight only while accessing the millyard, never during tests or CI.
+    if (snapshot.run.lifecycle !== 'active' || !readyTickets(snapshot).length || lockHeld(cwd, 'loop')) return undefined;
+    if (lockHeld(cwd, 'integration')) {
+      if (!waitingForMillyard.has(cwd)) say(`${cwd}: ready tickets waiting: millyard preflight is busy (integration lock held).`);
+      waitingForMillyard.add(cwd);
+      return undefined;
+    }
+    if (waitingForMillyard.delete(cwd)) say(`${cwd}: millyard preflight available again.`);
     return { cwd, project: config.project, machine: config.machine };
   } catch (error) { report(cwd, 'inspect', error); return undefined; }
 }
