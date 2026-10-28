@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 
 // These are instruction contracts, like learn-skill.test.ts: the shipped
 // skills are the user-facing workflow. No host/model evaluation is required.
 async function skill(name: string): Promise<string> {
   const path = new URL(`../../plugins/sawmill/skills/${name}/SKILL.md`, import.meta.url);
+  assert.ok(existsSync(path), `${name}/SKILL.md ships with the plugin`);
   return (await readFile(path, 'utf8')).replace(/\s+/g, ' ');
 }
 
