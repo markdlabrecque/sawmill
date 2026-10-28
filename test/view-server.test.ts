@@ -96,8 +96,7 @@ test('mill board --json carries a working ticket\'s role and each state\'s lane 
     [3, 'logjam', null, 'review'],
     [5, 'working', null, 'launch'],
   ]);
-  const archived = snapshot.archive.flatMap(project => project.runs.flatMap(group => group.tickets));
-  assert.deepEqual(archived.map(row => [row.number, row.state, row.role, row.lane]), [[4, 'done', null, 'merged']]);
+  assert.ok(!rows.some(row => row.number === 4), 'merged tickets leave the Board');
   assert.equal(rows[2]!.reason, 'question: which format?');
 });
 

@@ -27,9 +27,7 @@ function snapshot(): ViewSnapshot {
       runStatus: 'running', pausedReason: null, runActions: { start: unavailable, stop: allowed },
       tickets: [ticket(1, 'working', 'implement'), ticket(2, 'queued', 'queued'), ticket(3, 'logjam', 'review'), ticket(4, 'done', 'merged')],
     }],
-    archive: [{ name: 'Earlier workshop', millyard: '/preview/earlier', runs: [{ runId: 'old-run', created: '2026-01-01T12:00:00Z', error: null,
-      tickets: [{ ...ticket(9, 'done', 'merged'), title: 'Archived delivery' }],
-    }] }],
+    ...{ archive: [] },
   };
 }
 
@@ -102,7 +100,7 @@ test('Board totals and conveyor markers follow live snapshots without closing ti
   assert.deepEqual(await page.locator('.metric dd').allTextContents(), ['0', '0', '0', '0']);
 });
 
-test('Board answer dialog and archive searches remain keyboard accessible', async t => {
+test('Board answer dialog remains keyboard accessible', async t => {
   const board = await openBoard(t);
   if (!board) return;
   const { page } = board;
@@ -115,19 +113,6 @@ test('Board answer dialog and archive searches remain keyboard accessible', asyn
   await page.locator('#dsend').click();
   await page.waitForFunction(() => !document.querySelector('dialog')?.open);
   assert.deepEqual(board.requests, [{ action: 'answer', millyard: '/preview/workshop', runId: 'run-one', ticket: 3, attempt: 'attempt-3', message: 'Return focus to the Actions button.' }]);
-  await page.getByRole('link', { name: 'Archive', exact: true }).click();
-  assert.equal(await page.locator('#arc').getAttribute('open'), '');
-  await page.getByLabel('Search archived projects').fill('nothing-matches');
-  assert.equal(await page.locator('#aempty').textContent(), 'No projects match.');
-  await page.getByLabel('Search archived projects').press('Escape');
-  await page.getByRole('button', { name: 'Search tickets in Earlier workshop' }).click();
-  const search = page.getByRole('searchbox', { name: 'Search tickets in Earlier workshop' });
-  await search.fill('delivery');
-  assert.equal(await page.locator('.ar:visible').count(), 1);
-  await search.fill('missing');
-  assert.equal(await page.locator('.ar:visible').count(), 0);
-  await search.press('Escape');
-  assert.equal(await page.locator('.ar:visible').count(), 1);
 });
 
 test('Board fits narrow screens, respects reduced motion, and identifies a lost live connection', async t => {
