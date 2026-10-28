@@ -406,7 +406,11 @@ export function readRunFile(file: string): RunSnapshot {
       ...(row.wait ? { wait: elapsed(JSON.parse(String(row.wait)) as PhaseWait) } : {}),
       ...(row.phases ? { phases: JSON.parse(String(row.phases)) as PhaseRecord[] } : {}),
     }));
-    const states = new Map(tickets.map(ticket => [ticket.number, ticket.completion ? 'done' : ticket.state]));
+    // Merge acceptance is irreversible, but dependents need the merged code locally.
+    // Legacy completions have no mergedHead cleanup checkpoint, even during tracker recovery.
+    const states = new Map(tickets.map(ticket => [ticket.number,
+      ticket.state === 'done' || ticket.completion === 'manual' ||
+        (ticket.completion === 'merged' && (!ticket.integration.mergedHead || ticket.integration.fastForwarded)) ? 'done' : ticket.state]));
     for (const ticket of tickets) {
       ticket.blockers = edges.filter(edge => edge.blocked === ticket.number && !edge.outsideClosed && states.get(edge.blocker) !== 'done').map(edge => edge.blocker);
       if (ticket.state === 'queued' || ticket.state === 'blocked') ticket.state = ticket.blockers.length ? 'blocked' : 'queued';
