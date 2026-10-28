@@ -1,11 +1,11 @@
 // The seam between run files and any front end. Read-only: never import transitions, the tracker, or a runtime here.
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parse } from 'yaml';
 import { validTracker, type ProjectConfig } from '../config.js';
 import { ticketUrl } from '../links.js';
 import { listMillyards } from '../registry.js';
-import { historyPath, readRun, readRunFile, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
+import { readRun, runPath, type RunSnapshot, type RunTicket } from '../run-store.js';
 import { listSlots } from '../slots.js';
 import { attemptOf, diagnose, redact, type Diagnosis } from './diagnosis.js';
 
@@ -50,17 +50,8 @@ export interface ViewProject {
   runStatus: RunStatus; pausedReason: string | null; runActions: Record<'start' | 'stop', ViewAction>;
   tickets: ViewTicket[];
 }
-export interface ViewRun { runId: string; created: string | null; error: string | null; tickets: ViewTicket[] }
-export interface ViewArchivedTicket extends ViewTicket { mergedAt: string | null }
-export interface ViewArchiveDay { day: string | null; tickets: ViewArchivedTicket[] }
-/** One project's archived tickets by local merge day, newest first. `runs` retains the snapshot's container name. */
-export interface ViewArchive {
-  name: string; millyard: string; runs: (ViewArchiveDay | ViewRun)[];
-  /** Older snapshots used ViewRun entries and had no separate errors. */
-  errors?: { runId: string; error: string }[];
-}
-/** `projects` is the Active Section: current, unfinished runs. `archive` is the Archive Section. */
-export interface ViewSnapshot { time: string; projects: ViewProject[]; archive: ViewArchive[] }
+/** `projects` is the Active Section: current, unfinished runs. */
+export interface ViewSnapshot { time: string; projects: ViewProject[] }
 
 const stageLanes: Record<string, Lane> = {
   'team-launch': 'launch', 'worktree-created': 'worktree', 'test-writers': 'tests', 'tests-written': 'tests',
@@ -125,9 +116,6 @@ export function ticketActions(ticket: RunTicket, pending: boolean): Record<Ticke
   };
 }
 
-const archived: Record<TicketAction, ViewAction> = Object.fromEntries((['stop', 'answer', 'reset', 'close'] as const)
-  .map(action => [action, allow('Archived runs are view-only.')])) as Record<TicketAction, ViewAction>;
-
 /** Long agent output is cut so the snapshot stays small; the run log keeps it whole. Secrets never reach the page. */
 const clip = (text: string) => { const clean = redact(text); return clean.length > 600 ? `${clean.slice(0, 600)}…` : clean; };
 
@@ -143,19 +131,19 @@ function blockage(ticket: RunTicket, pending: boolean): string | null {
   return clip(`Logjam (${ticket.reason ?? 'unknown'})${at}${detail ? `: ${detail}` : '.'}`);
 }
 
-/** `millyard` is given for the current run only: its stopped tickets are diagnosed, archived ones are not. */
-function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null, millyard?: string): ViewTicket[] {
+/** Current-run tickets with their controls and stopped-ticket diagnoses. */
+function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null, millyard: string): ViewTicket[] {
   return run.tickets.map((ticket): ViewTicket => {
     const pending = run.pendingWrites.some(write => write.ticket === ticket.number);
     const row = {
       number: ticket.number, title: ticket.title, url: issueUrl(tracker, ticket.number), state: ticket.state, stage: ticket.stage, role: ticket.team.activeRole?.role ?? null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
-      picked: Boolean(millyard && ticket.state === 'queued' && run.run.pendingPick === ticket.number), appended: Boolean(ticket.appended),
+      picked: Boolean(ticket.state === 'queued' && run.run.pendingPick === ticket.number), appended: Boolean(ticket.appended),
     };
     const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
     return { ...row, lane: laneOf({ ...row, history: ticket.stageHistory }), question: question === null ? null : redact(question),
-      blockage: blockage(ticket, pending), actions: millyard ? ticketActions(ticket, pending) : archived, attempt: attemptOf(ticket),
-      diagnosis: millyard && ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
+      blockage: blockage(ticket, pending), actions: ticketActions(ticket, pending), attempt: attemptOf(ticket),
+      diagnosis: ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
   });
 }
 
@@ -181,69 +169,18 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 /** A run is complete when it has tickets and every one is done. */
 const complete = (tickets: ViewTicket[]) => tickets.length > 0 && tickets.every(ticket => ticket.state === 'done');
 
-function archiveTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null): ViewArchivedTicket[] {
-  return viewTickets(run, tracker).map((ticket, index) => {
-    const time = run.tickets[index]!.mergedAt;
-    const date = time ? new Date(time.replace(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)$/, '$1T$2Z')) : null;
-    return { ...ticket, mergedAt: date && Number.isFinite(date.getTime()) ? date.toISOString() : null };
-  });
-}
-
-function mergeDay(time: string | null): string | null {
-  if (!time) return null;
-  const date = new Date(time);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-/** Saved runs from `.mill/history`, read-only; an unreadable file keeps its error rather than vanishing. */
-function historyRuns(millyard: string, tracker: ProjectConfig['tracker'] | null): (Omit<ViewRun, 'tickets'> & { tickets: ViewArchivedTicket[] })[] {
-  let files: string[];
-  try { files = readdirSync(historyPath(millyard)).filter(file => file.endsWith('.sqlite')); } catch { return []; }
-  return files.map(file => {
-    try {
-      const run = readRunFile(join(historyPath(millyard), file));
-      return { runId: run.run.id, created: run.run.created, error: null, tickets: archiveTickets(run, tracker) };
-    } catch (error) {
-      return { runId: file.slice(0, -'.sqlite'.length), created: null, error: message(error), tickets: [] };
-    }
-  });
-}
-
 export async function readView(home: string): Promise<ViewSnapshot> {
   const projects: ViewProject[] = [];
-  const archive: ViewArchive[] = [];
   for (const millyard of await discoverMillyards(home)) {
     const { name, tracker } = projectSettings(millyard);
-    const days = new Map<string | null, ViewArchivedTicket[]>();
-    const seen = new Set<string>();
-    const errors: NonNullable<ViewArchive['errors']> = [];
-    const add = (runId: string, tickets: ViewArchivedTicket[]) => {
-      for (const ticket of tickets) {
-        const key = `${runId}#${ticket.number}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const day = mergeDay(ticket.mergedAt);
-        if (!days.has(day)) days.set(day, []);
-        days.get(day)!.push(ticket);
-      }
-    };
     try {
       const run = readRun(millyard);
       const tickets = viewTickets(run, tracker, millyard);
-      add(run.run.id, archiveTickets(run, tracker).filter(ticket => ticket.state === 'done'));
-      // The current file wins over any saved copy, including its still-active tickets.
-      for (const ticket of tickets) seen.add(`${run.run.id}#${ticket.number}`);
       if (!complete(tickets)) projects.push({ name, millyard, runId: run.run.id, error: null, runStatus: runStatus(run), pausedReason: run.run.loop?.pausedReason ?? null, runActions: runActions(run), tickets: tickets.filter(ticket => ticket.state !== 'done') });
     } catch (error) {
       const unreadable = allow('The run file cannot be read.');
       projects.push({ name, millyard, runId: null, error: message(error), runStatus: 'stopped', pausedReason: null, runActions: { start: unreadable, stop: unreadable }, tickets: [] });
     }
-    for (const run of historyRuns(millyard, tracker)) {
-      if (run.error) errors.push({ runId: run.runId, error: run.error });
-      add(run.runId, run.tickets);
-    }
-    const runs = [...days].sort(([a], [b]) => (b ?? '').localeCompare(a ?? '')).map(([day, tickets]) => ({ day, tickets }));
-    if (runs.length || errors.length) archive.push({ name, millyard, runs, errors });
   }
-  return { time: new Date().toISOString(), projects, archive };
+  return { time: new Date().toISOString(), projects };
 }
