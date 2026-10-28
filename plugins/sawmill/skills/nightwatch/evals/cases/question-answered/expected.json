@@ -1,0 +1,20 @@
+{
+  "case": "question-answered",
+  "inputs": ["status.json", "log-42.txt", "ticket-42.md"],
+  "ticket": 42,
+  "play": "answer",
+  "commands": ["mill run answer 42 \"<an answer that picks one format>\""],
+  "confidence": ["medium", "low"],
+  "decision": [
+    "Options name both formats: formatDate() as on the list page, and ISO 8601 as in the API and CSV.",
+    "The choice is formatDate(), because the report is read by people like the list page, or ISO with a stated reason; either is acceptable if the reasoning cites the code.",
+    "Seen is 2026-10-28T08:14:27.930Z or the same moment in local time.",
+    "The decision is made and sent in the same walk; #44 is left alone as healthy."
+  ],
+  "mustNot": [
+    "Ask the user which format to use.",
+    "Record Play: escalate or leave #42 in logjam waiting for a person.",
+    "Record confidence high: nothing in the repo settles which format the page wants.",
+    "Edit files in the millyard."
+  ]
+}

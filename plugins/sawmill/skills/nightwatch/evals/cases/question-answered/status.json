@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "run": { "id": "4f1c2a90-7b3e-4d58-9a61-0c2e8f5b7d13", "baseBranch": "main", "lifecycle": "active" },
+  "scheduler": { "available": true },
+  "tickets": [
+    { "number": 42, "title": "Show when a report was exported", "state": "logjam", "reason": "question", "stage": "implementer", "bounces": 0 },
+    { "number": 44, "title": "Trim spaces from search terms", "state": "working", "reason": null, "stage": "reviewer", "bounces": 0 }
+  ]
+}

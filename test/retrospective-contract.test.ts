@@ -117,3 +117,14 @@ test('accepted learning records ownership and measurement without automatically 
     [/(?:Jev|screening)[\s\S]{0,300}(?:cannot|never|does not|do not)[\s\S]{0,150}(?:authorize|action|change|edit)/i, 'screening findings confer no action authority'],
   ]);
 });
+
+test('nightwatch decides instead of asking, within its destructive and loop limits', async () => {
+  const body = await skill('nightwatch');
+  requires(body, [
+    [/[Nn]ever ask the user anything/, 'never ask'],
+    [/[Nn]ever\*\* run `mill run close`/, 'never close'],
+    [/`mill run reset` at most \*\*once per ticket\*\*/, 'reset at most once per ticket'],
+    [/at most \*\*two\*\* plays per logjam reason[\s\S]{0,300}\*\*park\*\*/, 'two plays, then park'],
+    [/\/sawmill:mill-report/, 'report at finish'],
+  ]);
+});

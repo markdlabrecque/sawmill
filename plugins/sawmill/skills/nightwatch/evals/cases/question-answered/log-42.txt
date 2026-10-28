@@ -1,0 +1,10 @@
+2026-10-28T08:02:11.402Z [team-launch] -> working worker starting
+2026-10-28T08:02:13.118Z [test-writers] -> working
+2026-10-28T08:09:40.551Z [tests-written]
+  Round: 1
+  Stage reached: test-writers
+2026-10-28T08:09:41.007Z [implementer] -> working
+2026-10-28T08:14:27.930Z [implementer] -> logjam (question)
+  The ticket says to show the export date under the report title, but not in which format. The app shows dates two ways today: `formatDate()` in src/format.ts gives "28 Oct 2026" and is used on the list page; the API and CSV export use ISO 8601 ("2026-10-28"). Which format should the report page use?
+  Reason: question
+  Stage reached: implementer

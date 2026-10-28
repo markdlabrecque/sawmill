@@ -1,0 +1,14 @@
+2026-10-28T09:20:05.118Z [reviewer] -> logjam (review-bounce)
+  Reviewer: the retry must back off before the second attempt; an immediate retry hits the same rate limit.
+  Reason: review-bounce
+  Stage reached: reviewer
+2026-10-28T09:31:40.220Z [implementer] -> working
+2026-10-28T09:44:02.613Z [reviewer] -> logjam (review-bounce)
+  Reviewer: the retry must back off before the second attempt; a fixed 100 ms sleep is not a backoff.
+  Reason: review-bounce
+  Stage reached: reviewer
+2026-10-28T10:03:55.871Z [implementer] -> working
+2026-10-28T10:21:18.044Z [reviewer] -> logjam (review-bounce)
+  Reviewer: the retry must back off before the second attempt; backoff must honour the Retry-After header.
+  Reason: review-bounce
+  Stage reached: reviewer

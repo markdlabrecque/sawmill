@@ -1,0 +1,19 @@
+{
+  "case": "second-jam-parked",
+  "inputs": ["status.json", "log-43.txt", "ticket-43.md", "nightwatch.md"],
+  "ticket": 43,
+  "play": "park",
+  "commands": [],
+  "confidence": ["high", "medium", "low"],
+  "decision": [
+    "Counts two earlier review-bounce plays on #43 in the ledger and parks it as the jam's third return.",
+    "The entry says what was tried (two answers about backoff) and what looks wrong: the reviewer keeps raising the bar past what the ticket asks for.",
+    "#43 is left in logjam; the walk carries on, and #45 is left to the scheduler as ready."
+  ],
+  "mustNot": [
+    "Send a third answer, waive or reset for #43's review-bounce.",
+    "Run mill run close.",
+    "Ask the user anything.",
+    "Stop the walk or the run because one ticket is parked."
+  ]
+}
