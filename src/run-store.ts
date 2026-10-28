@@ -179,6 +179,8 @@ export interface RunTicket extends Omit<Ticket, 'state'> {
   completion: 'manual' | 'merged' | null;
   /** Last done transition, falling back to updated for legacy rows; derived read-only. */
   mergedAt?: string | null;
+  /** Every stage a transition set, oldest first, with null where a reset cleared it; derived read-only. */
+  stageHistory?: (string | null)[];
   integration: IntegrationProgress;
   team: TeamProgress;
   worker: WorkerOwnership | null;
@@ -366,12 +368,20 @@ export function readRunFile(file: string): RunSnapshot {
     for (const row of db.prepare("SELECT ticket, time, event FROM log WHERE json_extract(event, '$.refreshed') IS NOT NULL ORDER BY id").all()) {
       refreshed.set(Number(row.ticket), { ...JSON.parse(String(row.event)).refreshed, time: String(row.time) });
     }
+    // A null stage, as a reset writes, ends the history: earlier stages belong to an abandoned attempt.
+    const stageHistory = new Map<number, (string | null)[]>();
+    for (const row of db.prepare("SELECT ticket, json_extract(event, '$.change.stage') AS stage FROM log WHERE json_type(event, '$.change.stage') IS NOT NULL ORDER BY id").all()) {
+      const history = stageHistory.get(Number(row.ticket)) ?? [];
+      history.push(row.stage === null ? null : String(row.stage));
+      stageHistory.set(Number(row.ticket), history);
+    }
     const mergedAt = new Map<number, string>();
     for (const row of db.prepare("SELECT ticket, time FROM log WHERE json_extract(event, '$.change.state') = 'done' ORDER BY id").all()) {
       mergedAt.set(Number(row.ticket), String(row.time));
     }
     const tickets: RunTicket[] = db.prepare('SELECT * FROM tickets ORDER BY position').all().map(row => ({
       ...(refreshed.has(Number(row.number)) ? { refreshed: refreshed.get(Number(row.number))! } : {}),
+      ...(stageHistory.has(Number(row.number)) ? { stageHistory: stageHistory.get(Number(row.number))! } : {}),
       number: Number(row.number), title: String(row.title), body: String(row.body), labels: JSON.parse(String(row.labels)) as string[],
       ...(row.include_closed != null ? { includeClosed: Boolean(row.include_closed) } : {}),
       trackerState: row.tracker_state as Ticket['state'], comments: JSON.parse(String(row.comments)) as TicketComment[], blockedBy: JSON.parse(String(row.blocked_by)) as number[] | null,

@@ -65,15 +65,22 @@ export interface ViewSnapshot { time: string; projects: ViewProject[]; archive: 
 const stageLanes: Record<string, Lane> = {
   'team-launch': 'launch', 'worktree-created': 'worktree', 'test-writers': 'tests', 'tests-written': 'tests',
   implementer: 'implement', implemented: 'implement', reviewer: 'review', 'review-pass': 'review', 'user-testing': 'review',
-  integrate: 'rebase', rebase: 'rebase', 'pr-opened': 'PR', 'ci-wait': 'CI', 'ci-failed': 'CI', merged: 'merged',
+  integrate: 'rebase', rebase: 'rebase', tests: 'rebase', push: 'PR', 'pr-opened': 'PR', 'ci-wait': 'CI', 'ci-failed': 'CI',
+  merge: 'merged', 'merge-accepted': 'merged', 'remote-delete': 'merged', 'fast-forward': 'merged', 'local-remove': 'merged', merged: 'merged',
 };
 
-/** A logjam, or a ticket requeued after an answer or recovery, keeps the lane it reached; an unknown stage lands on launch. */
-export function laneOf(ticket: Pick<ViewTicket, 'state' | 'stage' | 'role'>): Lane {
+/** A logjam, or a ticket requeued after an answer or recovery, keeps the lane it reached. A stage the Board
+ * does not know stays on the lane of the last stage it does, so the card never jumps back; with none, launch. */
+export function laneOf(ticket: Pick<ViewTicket, 'state' | 'stage' | 'role'> & { history?: (string | null)[] }): Lane {
   if (ticket.state === 'done') return 'merged';
   if (ticket.state === 'queued' || ticket.state === 'blocked') return ticket.stage && Object.hasOwn(stageLanes, ticket.stage) ? stageLanes[ticket.stage]! : 'queued';
   if (ticket.role && Object.hasOwn(stageLanes, ticket.role)) return stageLanes[ticket.role]!;
-  return ticket.stage && Object.hasOwn(stageLanes, ticket.stage) ? stageLanes[ticket.stage]! : 'launch';
+  if (ticket.stage && Object.hasOwn(stageLanes, ticket.stage)) return stageLanes[ticket.stage]!;
+  for (const stage of [...ticket.history ?? []].reverse()) {
+    if (stage === null) break;
+    if (Object.hasOwn(stageLanes, stage)) return stageLanes[stage]!;
+  }
+  return 'launch';
 }
 
 /** The registry covers idle and logjammed runs; slot leases add any running work it misses. */
@@ -146,7 +153,7 @@ function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null,
       picked: Boolean(millyard && ticket.state === 'queued' && run.run.pendingPick === ticket.number), appended: Boolean(ticket.appended),
     };
     const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
-    return { ...row, lane: laneOf(row), question: question === null ? null : redact(question),
+    return { ...row, lane: laneOf({ ...row, history: ticket.stageHistory }), question: question === null ? null : redact(question),
       blockage: blockage(ticket, pending), actions: millyard ? ticketActions(ticket, pending) : archived, attempt: attemptOf(ticket),
       diagnosis: millyard && ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
   });

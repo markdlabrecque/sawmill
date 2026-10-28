@@ -53,7 +53,7 @@ async function until<T>(read: () => T | undefined, what: string, ms = 5000): Pro
   }
 }
 
-test('laneOf puts each state and stage on its lane', () => {
+test('laneOf puts each state and stage on its lane, and an unknown stage stays where the ticket was', () => {
   const cases: [Parameters<typeof laneOf>[0], string][] = [
     [{ state: 'queued', stage: null, role: null }, 'queued'],
     [{ state: 'blocked', stage: null, role: null }, 'queued'],
@@ -68,6 +68,10 @@ test('laneOf puts each state and stage on its lane', () => {
     [{ state: 'logjam', stage: 'reviewer', role: null }, 'review'],
     [{ state: 'logjam', stage: 'ci-failed', role: null }, 'CI'],
     [{ state: 'done', stage: 'pr-opened', role: null }, 'merged'],
+    [{ state: 'working', stage: 'tests', role: null }, 'rebase'],
+    [{ state: 'working', stage: 'merge', role: null }, 'merged'],
+    [{ state: 'working', stage: 'mystery', role: null, history: ['team-launch', 'reviewer', 'review-pass', 'mystery'] }, 'review'],
+    [{ state: 'working', stage: 'mystery', role: null, history: ['ci-wait', null, 'mystery'] }, 'launch'],
     [{ state: 'working', stage: 'mystery', role: null }, 'launch'],
     [{ state: 'working', stage: null, role: null }, 'launch'],
   ];
