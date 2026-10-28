@@ -134,7 +134,9 @@ type IntegrateOptions = MirrorOptions & { home?: string; ciPollInterval?: string
 export async function integrate(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: IntegrateOptions = {}): Promise<IntegrationResult> {
   requireTypeSafeKey(project, cwd);
   if (existsSync(join(cwd, '.mill/integrate.lock'))) throw new CliError('Legacy integration lock needs verified manual recovery.');
-  return withRunLock(cwd, 'integration', () => integrateLocked(cwd, project, number, tracker, options), true);
+  // Serialize the whole delivery, including CI, without holding dispatch preflight.
+  // The integration lock below protects only access to the shared millyard.
+  return withRunLock(cwd, 'merge-queue', () => integrateLocked(cwd, project, number, tracker, options), true);
 }
 
 async function integrateLocked(cwd: string, project: ProjectConfig, number: number, tracker: IntegrationTracker, options: IntegrateOptions): Promise<IntegrationResult> {
@@ -150,7 +152,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
   if (ticket.completion === 'merged' && ticket.integration.reported) return { outcome: 'merged', ticket: number, mergeCommit: ticket.mergeCommit!, changeRequestUrl: ticket.integration.changeRequest?.url };
   if (!ticket.completion && (ticket.state !== 'working' || ticket.blockers.length || !['review-pass', 'rebase', 'tests', 'push', 'pr-opened', 'ci-wait', 'merge'].includes(ticket.stage ?? ''))) throw new CliError('Integrate requires working, unblocked, review-approved work.');
   if (!ticket.mergeCommit && (branch === project.integration || ticket.branch !== branch || !ticket.worktree)) throw new CliError('Ticket must have its own saved mill/<n> worktree and branch.');
-  await checkMillyard(cwd, project.integration);
+  await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
   if (!ticket.mergeCommit && (await git(ticket.worktree!, 'rev-parse', '--show-toplevel') !== ticket.worktree || await git(ticket.worktree!, 'symbolic-ref', '--short', 'HEAD') !== branch || await git(ticket.worktree!, 'rev-parse', '--git-common-dir') !== await git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'))) throw new CliError('Saved worktree does not belong to the ticket and millyard.');
   if (!ticket.mergeCommit && await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all')) throw new CliError('Ticket worktree is dirty.');
   // The policy fixed at draft, so a check that appears later or a changed config cannot loosen the gate mid-run.
@@ -215,10 +217,13 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     }
     if (!mergeCommit) {
       await requireApproval();
-      await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
-      await fastForward(cwd, project.integration, number, false);
+      const baseCommit = await withRunLock(cwd, 'integration', async () => {
+        await checkMillyard(cwd, project.integration);
+        await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
+        await fastForward(cwd, project.integration, number, false);
+        return git(cwd, 'rev-parse', 'HEAD');
+      }, true);
       await requireApproval();
-      const baseCommit = await git(cwd, 'rev-parse', 'HEAD');
       let head = await git(ticket.worktree!, 'rev-parse', 'HEAD');
       const required = project.required_checks;
       const declared = required ? requiredCheckNames.flatMap(name => required[name] === undefined ? [] : [[name, required[name]!] as const]) : [];
@@ -481,16 +486,18 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     }
     if (!progress.fastForwarded) {
       await advance('fast-forward');
-      await checkMillyard(cwd, project.integration);
-      await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
-      await git(cwd, 'merge-base', '--is-ancestor', mergeCommit, `refs/remotes/origin/${project.integration}`);
-      await fastForward(cwd, project.integration, number, true);
+      await withRunLock(cwd, 'integration', async () => {
+        await checkMillyard(cwd, project.integration);
+        await git(cwd, 'fetch', '--no-tags', 'origin', `+refs/heads/${project.integration}:refs/remotes/origin/${project.integration}`);
+        await git(cwd, 'merge-base', '--is-ancestor', mergeCommit!, `refs/remotes/origin/${project.integration}`);
+        await fastForward(cwd, project.integration, number, true);
+      }, true);
       progress.fastForwarded = true; await save();
     }
     if (!progress.localRemoved) {
       await advance('local-remove');
       if (!progress.mergedHead) throw new Error('Missing accepted ticket head; cannot remove sandbox safely.');
-      await removeWorktree(cwd, project, number, { ...options, writer: () => tracker, mergedHead: progress.mergedHead });
+      await withRunLock(cwd, 'integration', () => removeWorktree(cwd, project, number, { ...options, writer: () => tracker, mergedHead: progress.mergedHead }), true);
       progress.localRemoved = true;
       await save();
     }
