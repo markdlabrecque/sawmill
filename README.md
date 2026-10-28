@@ -227,7 +227,7 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill run draft 12 14 15` | Select explicit issue numbers. |
 | `mill run draft --label ready-for-agent` | Select issues with one label. |
 | `mill run draft --spec 40` | Select direct children of a spec issue. |
-| `mill run status` | Show the run's state, pending pick, whether the scheduler is running, and queued, blocked, working, done, and logjam tickets. |
+| `mill run status` | Show the run's state, pending pick, whether the scheduler is running, and only queued, working, and logjam tickets (also with `--json`). Done and blocked tickets remain stored but are not listed. |
 | `mill pick <n>` | Prefer one ready ticket for this run's next available slot, replacing any pending pick. |
 | `mill pick --clear` | Cancel the pending pick, or report that none was pending. |
 | `mill run` | Activate the run, make sure the shared scheduler is running, print its log path, and return. |
