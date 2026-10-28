@@ -29,7 +29,8 @@ async function invoke(cwd: string, env: NodeJS.ProcessEnv, screen: 'draft' | 'le
 
 for (const screen of ['draft', 'learn'] as const) {
   test(`${screen} skill invokes its helper for either effective opt-in and surfaces migration warnings`, async () => {
-    const text = await readFile(new URL(`../../plugins/sawmill/skills/${screen}/SKILL.md`, import.meta.url), 'utf8');
+    const skill = screen === 'learn' ? 'sawdust' : screen;
+    const text = await readFile(new URL(`../../plugins/sawmill/skills/${skill}/SKILL.md`, import.meta.url), 'utf8');
     // Check the invocation instructions, not the preceding migration note: that
     // note alone once promised fallback while the actual instructions skipped it.
     const paragraph = text.slice(text.indexOf('Resolve the effective opt-in')).split('\n\n')[0]!.replace(/\s+/g, ' ');
