@@ -8,6 +8,7 @@ const dataUrl = (name: string, type: string) => `data:${type};base64,${asset(nam
 
 export const boardWordmark = dataUrl('sawmill-wordmark.svg', 'image/svg+xml');
 export const boardIcon = dataUrl('sawmill-mark.svg', 'image/svg+xml');
+export const boardTouchIcon = dataUrl('sawmill-touch-icon.png', 'image/png');
 export const boardStyles = [
   ...[
     ['display', 'Mill Display', '900'],
