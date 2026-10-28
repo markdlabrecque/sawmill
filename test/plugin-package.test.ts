@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { parse } from 'yaml';
 import type { runCli as Cli } from '../src/cli.js';
-import type { RunSnapshot } from '../src/run-store.js';
+import { readRun, type RunSnapshot } from '../src/run-store.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 
@@ -112,7 +112,8 @@ test('packed package ships a discoverable draft plugin and its CLI selections wo
     offline = true;
     const status = await cli('run', 'status', '--json');
     assert.equal(status.code, 0, status.stdout);
-    assert.deepEqual(JSON.parse(status.stdout), snapshot);
+    assert.deepEqual(readRun(yard.cwd).tickets, snapshot.tickets);
+    assert.deepEqual(JSON.parse(status.stdout), { ...snapshot, tickets: snapshot.tickets.filter(row => row.state === 'queued') });
     offline = false;
   }
   const before = await cli('run', 'status', '--json');
@@ -126,6 +127,7 @@ test('packed package ships a discoverable draft plugin and its CLI selections wo
     cwd: yard.cwd, env: { ...env, ...yard.env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   });
   assert.match(text, /#12\s+Ticket 12\s+queued/);
-  assert.match(text, /#14\s+Ticket 14\s+blocked\s+#12/);
+  assert.doesNotMatch(text, /#14\s+Ticket 14/);
+  assert.deepEqual(readRun(yard.cwd).tickets.find(row => row.number === 14)!.blockers, [12]);
   assert.equal(yard.git('status', '--porcelain'), '');
 });

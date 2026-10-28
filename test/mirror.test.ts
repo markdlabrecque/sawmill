@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { runCli } from '../src/cli.js';
+import { readRun } from '../src/run-store.js';
 import { millyard } from './helpers.js';
 
 class WriteTracker implements TicketReader {
@@ -66,10 +67,10 @@ test('hand close commits local completion before the mirror and releases depende
   const tracker = new WriteTracker([ticket(1), ticket(2, { blockedBy: [1] })]);
   const yard = await configured(t, tracker);
   tracker.beforeWrite = async () => {
-    const status = JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
-    assert.equal(status.tickets[0].state, 'done');
-    assert.equal(status.tickets[0].mergeCommit, null);
-    assert.equal(status.tickets[1].state, 'queued');
+    const status = readRun(yard.cwd);
+    assert.equal(status.tickets[0]!.state, 'done');
+    assert.equal(status.tickets[0]!.mergeCommit, null);
+    assert.equal(status.tickets[1]!.state, 'queued');
   };
   const result = await yard.cli('run', 'close', '1', '--json');
   assert.equal(result.code, 0, result.stdout);

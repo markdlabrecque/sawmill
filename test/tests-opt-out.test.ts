@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -103,8 +104,8 @@ test('with tests opted out a ticket goes from draft to merge with no test run an
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   assert.equal(JSON.parse(result.stdout).outcome, 'passed');
-  const status = JSON.parse((await y.cli('run', 'status', '--json')).stdout);
-  assert.equal(status.tickets[0].state, 'done'); assert.equal(status.tickets[0].completion, 'merged');
+  const status = readRun(y.cwd);
+  assert.equal(status.tickets[0]!.state, 'done'); assert.equal(status.tickets[0]!.completion, 'merged');
   assert.equal(y.ticket.state, 'closed');
   assert.ok(!y.ticket.labels.includes('logjam'));
   assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));

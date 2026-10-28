@@ -168,7 +168,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       }
       const ref = (number: number) => ticketRef(config.project.tracker, number, links);
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
-      // Status and draft output agree: the run as stored plus whether a scheduler is serving this home.
+      // Include scheduler and capacity metadata alongside the run snapshot.
       const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home), unresolvedReservations: unresolvedSlots(home) });
       if (positional[0] === 'pick') {
         const clear = positional[1] === '--clear';
@@ -296,7 +296,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           emit({ status: 'usage-error', message }, message);
           return 2;
         }
-        const snapshot = view(readRun(cwd));
+        const stored = readRun(cwd);
+        const snapshot = view({ ...stored, tickets: stored.tickets.filter(ticket => ['queued', 'working', 'logjam'].includes(ticket.state)) });
+        // Keep run metadata in JSON, but omit the historical skipped-closed listing from text.
+        const statusTable = table({ ...snapshot, run: { ...snapshot.run, skippedClosed: [] } });
         const { scheduler, unresolvedReservations: unresolved } = snapshot;
         const capacity = unresolved.length ? [`Machine slots: ${listSlots(home).length - unresolved.length} held by workers, ${unresolved.length} unresolved reservation(s), concurrency ${config.machine.concurrency}.`, ...describeUnresolved(unresolved)] : [];
         // Each stop names its supported next command; mill board --json carries the full diagnosis.
@@ -304,7 +307,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           const { phase, command, next } = diagnose(ticket, cwd);
           return `${ref(ticket.number)} stopped at ${phase}${command ? ` running ${command}` : ''}. Next: ${next.command}. ${next.explanation}`;
         });
-        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), table(snapshot), ...capacity,
+        emit(snapshot, [`Run ${snapshot.run.lifecycle}; scheduler ${scheduler.available ? `running (pid ${scheduler.pid}${scheduler.build ? `, build ${scheduler.build}` : ''})` : 'not running'}.`, ...mismatch(scheduler), statusTable, ...capacity,
           ...stops, ...(stops.length ? ['Evidence, identities and log for each stop: mill board, or mill board --json.'] : [])].join('\n'));
         return 0;
       }

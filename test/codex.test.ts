@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -54,7 +55,7 @@ async function fixture(t: TestContext) {
     return { code, stdout };
   }
   return { ...y, worktree, ticket, tracker, script, events, invoke,
-    status: async () => JSON.parse((await y.cli('run', 'status', '--json')).stdout).tickets[0] };
+    status: async (): Promise<any> => readRun(y.cwd).tickets[0]! };
 }
 
 test('configured Codex review starts a direct child and persists its completed outcome and session', async t => {

@@ -86,7 +86,7 @@ async function fixture(t: TestContext, sleep: (ms: number) => Promise<void> = as
     return { mergeCommit };
   };
   tracker.delete = async branch => { yard.git('push', '--no-follow-tags', 'origin', '--delete', branch); };
-  const status = async () => JSON.parse((await yard.cli('run', 'status', '--json')).stdout);
+  const status = async (): Promise<any> => readRun(yard.cwd);
   return { ...yard, tracker, path, seed, status, approve };
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,7 +30,7 @@ async function fixture(t: TestContext) {
   const state = { host: 'git.example.invalid', pageSize: 2, availableLabels: ['logjam', 'batch / ready', 'human / ready'], issues: [issue(7, 'Blocked by: #2\n\nBuild it.'), issue(2, '', 'closed')], notes: { 7: [note(1, 'First'), note(2, 'Second'), note(3, 'Last page')], 2: [] } };
   const save = async (value: object = state) => writeFile(statePath, JSON.stringify(value));
   await save();
-  const status = async () => JSON.parse((await y.cli('run', 'status', '--json')).stdout);
+  const status = async (): Promise<any> => readRun(y.cwd);
   const requests = async () => (await readFile(logPath, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   return { ...y, state, statePath, save, status, requests };
 }
@@ -121,7 +122,9 @@ test('GitLab draft assigns the glab user, leaves a held ticket with its holder, 
   assert.deepEqual(snapshot.tickets.map((row: { number: number; assignment: unknown }) => [row.number, row.assignment]),
     [[11, { status: 'assigned' }], [12, { status: 'held', by: 'alice' }]]);
   assert.deepEqual(snapshot.pendingWrites, []);
-  assert.deepEqual(await y.status(), snapshot);
+  const { scheduler, unresolvedReservations, ...stored } = snapshot;
+  assert.deepEqual(await y.status(), stored);
+  assert.deepEqual(JSON.parse((await y.cli('run', 'status', '--json')).stdout), { ...stored, scheduler, unresolvedReservations });
   assert.match((await y.cli('run', 'status')).stdout, /#12: already assigned to alice; left with them\./);
   const replaced = await y.cli('run', 'draft', '11', '12', '--replace');
   assert.equal(replaced.code, 0, replaced.stdout);

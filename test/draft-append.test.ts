@@ -78,7 +78,8 @@ test('repeated drafts append ordered additions, keep run identity, and report du
   assert.deepEqual(tracker.assigned, [10, 20, 8, 3]);
   const status = await yard.cli('run', 'status');
   assert.match(status.stdout, /#8\s+Ticket 8\s+queued/);
-  assert.match(status.stdout, /#3\s+Ticket 3\s+blocked/);
+  assert.doesNotMatch(status.stdout, /#3\s+Ticket 3/);
+  assert.equal(readRun(yard.cwd).tickets.find(row => row.number === 3)!.state, 'blocked');
 });
 
 test('new dependencies may point to existing queued work without reordering it', async t => {

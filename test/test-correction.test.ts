@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -84,7 +85,7 @@ async function fixture(t: TestContext, extra = '') {
   }
   return { ...y, cli, ticket, requests, inputs, normal,
     setScript(value: Runtime['run']) { script = value; },
-    status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout), path: join(y.root, '12') };
+    status: async (): Promise<any> => readRun(y.cwd), path: join(y.root, '12') };
 }
 
 /** Reviewer asks for `corrections` test corrections in a row, then passes; the writer's correction pass is `fix`. */

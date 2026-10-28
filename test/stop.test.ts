@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
-import type { RunSnapshot } from '../src/run-store.js';
+import { readRun } from '../src/run-store.js';
 import { millyard } from './helpers.js';
 
 async function fixture(t: TestContext) {
@@ -61,7 +61,7 @@ async function fixture(t: TestContext) {
     const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker, runtime, sleep: async () => {}, stdout: text => { stdout += text; } });
     return { code, stdout };
   };
-  const status = async () => JSON.parse((await cli('run', 'status', '--json')).stdout) as RunSnapshot;
+  const status = async () => readRun(y.cwd);
   return { ...y, cli, tracker, comments, labels, roles, normal, status, path: join(y.root, '19'),
     merges: () => merges,
     script(value: Runtime['run']) { script = value; }, mirror(value: typeof mirror) { mirror = value; } };

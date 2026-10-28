@@ -3,7 +3,7 @@ import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
-import type { RunSnapshot } from '../src/run-store.js';
+import { formatRun, readRun, type RunSnapshot } from '../src/run-store.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { fixture, until } from './dispatch-fixture.js';
 import { millyard } from './helpers.js';
@@ -67,8 +67,11 @@ test('label draft reports the closed tickets it skipped', async (t) => {
 });
 
 const skipped = (yard: Awaited<ReturnType<typeof fixture>>) => async () => {
-  const snapshot = await yard.status();
-  return { snapshot, text: JSON.stringify(snapshot.tickets[0]) + (await yard.cli('run', 'status')).stdout };
+  const snapshot = readRun(yard.cwd);
+  const status = await yard.cli('run', 'status');
+  assert.equal(status.code, 0, status.stdout);
+  assert.doesNotMatch(status.stdout, /already closed/i);
+  return { snapshot, text: JSON.stringify(snapshot.tickets[0]) + formatRun(snapshot) };
 };
 const trackerLog = async (yard: Awaited<ReturnType<typeof fixture>>) => (await readFile(join(yard.root, 'tracker.jsonl'), 'utf8').catch(() => '')).split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]);
 const closeRemotely = (yard: Awaited<ReturnType<typeof fixture>>, number: number) => writeFile(join(yard.root, `closed-${number}`), 'yes');

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { execFile, execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -95,7 +96,7 @@ async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
   return { ...y, cli, tracker, ticket, requests, inputs, redOutputs, greenOutputs, normal, delays,
     setScript(value: Runtime['run']) { script = value; },
     setBeforeWrite(value: typeof beforeWrite) { beforeWrite = value; },
-    status: async () => JSON.parse((await cli('run', 'status', '--json')).stdout), path: join(y.root, '12') };
+    status: async (): Promise<any> => readRun(y.cwd), path: join(y.root, '12') };
 }
 
 /** Docker browser cases, on a site whose prepare.sh reports the ticket that owns it: a URL alone proves nothing. */

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readRun } from '../src/run-store.js';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -139,7 +140,7 @@ async function fixture(t: TestContext, options: { required?: string; release?: s
     assert.equal(result.code, 0, result.stdout);
     return JSON.parse(result.stdout) as Handoff;
   };
-  const status = async () => JSON.parse((await y.cli('run', 'status', '--json')).stdout).tickets[0];
+  const status = async (): Promise<any> => readRun(y.cwd).tickets[0]!;
   return { ...y, ticket, requests, head, integrate, handoff, status, path };
 }
 
