@@ -44,6 +44,8 @@ for name, mark_body, color in [("wordmark", body, "#214538"), ("wordmark-reverse
     variants[name] = svg_document(mark_body + f'<g fill="{color}">{lettering_body}</g>', wordmark_width)
 for name, svg in variants.items():
     (assets / f"sawmill-{name}.svg").write_text(svg)
+# iOS home screens need an opaque PNG; it rounds the corners itself.
+touch_icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#f5f0df"/><g transform="translate(10 10) scale(0.8)">' + body + '</g></svg>'
 
 if args.logo_kit:
     pngs = []
@@ -56,6 +58,7 @@ if args.logo_kit:
         target = assets / f"sawmill-mark-{width}.png"
         subprocess.run(["rsvg-convert", "-w", str(width), "-o", str(target), str(assets / "sawmill-mark.svg")], check=True)
         pngs.append(target)
+    subprocess.run(["rsvg-convert", "-w", "180", "-o", str(assets / "sawmill-touch-icon.png")], input=touch_icon.encode(), check=True)
     files = {f"svg/sawmill-{name}.svg": assets / f"sawmill-{name}.svg" for name in variants}
     files.update({f"png/{path.name}": path for path in pngs})
     files["README.txt"] = source / "logo-kit-README.txt"
@@ -77,7 +80,7 @@ for name, family, weight in [("display", "Mill Display", "700 900"), ("body-regu
     fonts += f"@font-face{{font-family:'{family}';src:url(data:font/woff2;base64,{data}) format('woff2');font-weight:{weight};font-style:normal;font-display:swap;}}\n"
 html = html.replace("/* FONT_FACES */", fonts)
 favicon = base64.b64encode(mark.encode()).decode()
-html = html.replace('<meta name="theme-color"', '<link rel="icon" href="data:image/svg+xml;base64,' + favicon + '">\n  <meta name="theme-color"')
+html = html.replace('<meta name="theme-color"', '<link rel="icon" href="data:image/svg+xml;base64,' + favicon + '">\n  <link rel="apple-touch-icon" href="data:image/png;base64,' + base64.b64encode((assets / "sawmill-touch-icon.png").read_bytes()).decode() + '">\n  <meta name="theme-color"')
 html = html.replace("MASCOT_SOURCE", "data:image/png;base64," + base64.b64encode((assets / "timber-mascot.png").read_bytes()).decode())
 for size in ("desktop", "mobile"):
     png = (assets / f"board-{size}.png").read_bytes()
