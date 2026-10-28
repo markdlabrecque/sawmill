@@ -15,7 +15,7 @@ export interface FocusedTests { command: string; scope: string; name_flag?: stri
  * The one representation of a project's declared verification commands. Prompts, the Claude
  * rules and the Pi policy are all derived from it, so the advertised and granted checks agree.
  */
-export interface Verification { checks: Checks; focused?: FocusedTests }
+export interface Verification { checks: Checks; required?: Checks; focused?: FocusedTests }
 
 /** Literal argv with no shell syntax and nothing a Claude permission rule treats specially. */
 export const simpleCommand = /^[A-Za-z0-9_./=-]+(?: [A-Za-z0-9_./=-]+)*$/;
@@ -23,31 +23,45 @@ export const simpleCommand = /^[A-Za-z0-9_./=-]+(?: [A-Za-z0-9_./=-]+)*$/;
 export const testScope = (value: string) => /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(value) && value.split('/').every(part => part !== '.' && part !== '..');
 export const nameFlag = /^--?[A-Za-z0-9][A-Za-z0-9-]*$/;
 
-export function verificationFrom(project: { tests: ProjectConfig['tests']; checks?: Checks }): Verification {
-  const checks: Checks = {};
+export function verificationFrom(project: { tests: ProjectConfig['tests']; checks?: Checks; required_checks?: RequiredChecks }): Verification {
+  const checks: Checks = {}, required: Checks = {};
   for (const name of checkNames) if (project.checks?.[name] !== undefined) checks[name] = project.checks[name];
+  // Only literal required checks can become role permissions; a shell script stays Mill's alone.
+  for (const name of checkNames) {
+    const command = project.required_checks?.[name];
+    if (command !== undefined && simpleCommand.test(command)) required[name] = command;
+  }
   const focused = project.tests !== 'none' ? project.tests.focused : undefined;
-  return { checks, ...(focused ? { focused: { ...focused } } : {}) };
+  return { checks, ...(Object.keys(required).length ? { required } : {}), ...(focused ? { focused: { ...focused } } : {}) };
 }
 
-const declared = (verification: Verification | undefined) => checkNames.flatMap(name => {
-  const command = verification?.checks?.[name];
+const listed = (checks: Checks | undefined) => checkNames.flatMap(name => {
+  const command = checks?.[name];
   return command === undefined ? [] : [[name, command] as const];
 });
+const declared = (verification: Verification | undefined) => [...listed(verification?.checks), ...listed(verification?.required)];
 
 export function verificationInstructions(verification: Verification | undefined, role: Role): string {
-  const checks = declared(verification);
+  const checks = listed(verification?.checks), required = listed(verification?.required);
   const focused = verification?.focused;
-  if (!checks.length && !focused) return '';
+  if (!checks.length && !required.length && !focused) return '';
   const purpose = { 'test-writers': 'Use them to confirm your new tests fail for the right reason.',
     implementer: 'Use them while you work and before you finish.', reviewer: 'Use them to judge the change.' }[role];
-  const lines = ['', '## Declared checks', '', `This project declares these commands. Bash allows each exactly as written below, for this role too. ${purpose}`, ''];
+  const lines = [''];
+  if (checks.length || focused) lines.push('## Declared checks', '', `This project declares these commands. Bash allows each exactly as written below, for this role too. ${purpose}`, '');
   for (const [name, command] of checks) lines.push(`- ${name}: \`${command}\``);
   if (focused) {
     const named = focused.name_flag ? ` Add \`${focused.name_flag} '<test name>'\` once to select tests by name.` : '';
     lines.push(`- Focused tests: \`${focused.command} <path>...\` with one or more paths that are \`${focused.scope}\` or inside it.${named} Literal arguments only: no other flags, quoting tricks, pipes or extra commands.`);
   }
-  lines.push('', 'These supplement the test command; they do not replace the full suite. Mill still runs the full test command for its red, green and final gates.', '');
+  if (checks.length || focused) lines.push('', 'These supplement the test command; they do not replace the full suite. Mill still runs the full test command for its red, green and final gates.', '');
+  if (required.length) {
+    const own = { 'test-writers': 'Run them on your files before you commit: a failure in your test files comes back to you as a correction.',
+      implementer: 'Run them before you finish.', reviewer: 'A failure blocks delivery.' }[role];
+    lines.push('## Required checks', '', `Mill runs these on the final head before delivery, and Bash allows each exactly as written below. ${own}`, '');
+    for (const [name, command] of required) lines.push(`- ${name}: \`${command}\``);
+    lines.push('');
+  }
   return lines.join('\n');
 }
 

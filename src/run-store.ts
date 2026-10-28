@@ -98,6 +98,8 @@ export interface PreparedSite {
 export interface TestCorrection {
   /** The reviewer's request: the only paths the test-writers may change. */
   files: string[];
+  /** The required check whose failure in protected tests asked for this correction, when no reviewer did. */
+  check?: string;
   mistake: string;
   preserves: string;
   /** Protected baseline and reviewed HEAD when the first request was made. */
@@ -133,6 +135,8 @@ export interface RepairContext {
   baseCommit: string;
   /** The local test command or required check that failed integration, with its exit code. */
   command?: string;
+  /** Protected test files a failed required check also named; a second such failure goes to a person. */
+  protectedFiles?: string[];
   failedCases?: import('./runtime.js').UserCase[];
 }
 export interface WorkerOwnership {
