@@ -8,6 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runCli } from '../src/cli.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { laneOf, type ViewSnapshot } from '../src/view/model.js';
+import { readRun, type WorkerOwnership } from '../src/run-store.js';
+import { claimWorker, recordWorker } from '../src/transitions.js';
 import { millyard } from './helpers.js';
 
 const tickets: Ticket[] = [1, 2, 3, 4, 5].map(number => ({
@@ -99,6 +101,40 @@ test('mill board --json carries a working ticket\'s role and each state\'s lane 
   assert.ok(!rows.some(row => row.number === 4), 'merged tickets leave the Board');
   assert.equal(rows[2]!.reason, 'question: which format?');
 });
+
+for (const [stage, lane] of [['implementer', 'implement'], ['reviewer', 'review'], ['ci-wait', 'CI']] as const) {
+  test(`Board keeps a resumed ticket at ${lane} instead of returning it to Launch when a worker starts`, async t => {
+    const yard = await drafted(t, '1');
+    const runId = readRun(yard.cwd).run.id;
+    const worker: WorkerOwnership = {
+      token: 'first-attempt', runId, slot: '/fixture/slot', launcherPid: 1,
+      pid: null, status: 'starting', started: new Date().toISOString(), log: '/fixture/worker.log',
+    };
+    assert.ok(claimWorker(yard.cwd, 1, worker));
+    // A completed worker leaves a checkpoint ready for recovery/resumption.
+    // No active role remains to mask the checkpoint's lane in the Board.
+    assert.ok(recordWorker(yard.cwd, 1, { ...worker, status: 'finished' }, {
+      state: 'queued', stage, team: { outputs: {}, next: stage === 'ci-wait' ? 'integrate' : stage },
+    }));
+    async function boardTicket() {
+      let stdout = '';
+      assert.equal(await runCli(['board', '--json'], {
+        tracker, cwd: yard.root, home: yard.home, stdout: text => { stdout += text; },
+      }), 0);
+      const snapshot = JSON.parse(stdout) as ViewSnapshot;
+      return snapshot.projects[0]!.tickets[0]!;
+    }
+    assert.equal((await boardTicket()).lane, lane, 'queued checkpoint is displayed at the stage it reached');
+    for (const token of ['resumed-once', 'resumed-twice']) {
+      const resumed = { ...worker, token };
+      assert.ok(claimWorker(yard.cwd, 1, resumed), 'checkpoint can be claimed by a new worker');
+      const shown = await boardTicket();
+      assert.equal(shown.state, 'working');
+      assert.equal(shown.lane, lane, `starting ${token} must not move ${stage} back to Launch`);
+      assert.ok(recordWorker(yard.cwd, 1, { ...resumed, status: 'finished' }, { state: 'queued' }));
+    }
+  });
+}
 
 test('mill board serves the page, /view.json and /events read-only, pushes a change, and exits 0 on abort', async (t) => {
   const yard = await drafted(t, '1', '2');
