@@ -252,7 +252,7 @@ A reviewer's scoped request for the test writers to fix incorrect tests, separat
 A human decision to accept one acceptance item without proof, with a recorded reason. It does not waive tests, review or CI.
 
 **Re-review**:
-A review that looks only at the fix for a bounce and the reviewer's own earlier feedback.
+A review after a bounce, normally scoped to the fix and the reviewer's own earlier feedback; broader-impact review and assigned user test cases remain required under the [reviewer instructions](roles/reviewer.md).
 
 **WIP commit**:
 The commit that saves a team's unfinished changes on the ticket branch when it stops.
