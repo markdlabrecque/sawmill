@@ -1,5 +1,6 @@
 ## 1.1.1 - 2026-10-27
 
+- #226: Start other ready tickets while one ticket waits for CI
 - Show the Sawmill mark as the iPhone home screen icon
 
 ## 1.1.0 - 2026-10-26
