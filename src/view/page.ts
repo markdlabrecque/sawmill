@@ -9,7 +9,6 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <a class="skip" href="#main">Skip to runs</a>
 <header class="topbar"><div class="topbar-inner wrap">
 <a class="brand" href="#main" aria-label="Sawmill Board home"><img src="${boardWordmark}" width="174" height="53" alt="Sawmill"></a>
-<nav class="nav" aria-label="Board sections"><a href="#active-section">Active runs</a><a href="#arc" id="archive-link">Archive</a></nav>
 <div class="connection" role="status"><span class="live" id="live" aria-hidden="true"></span><span id="connection">Connecting</span></div>
 </div></header>
 <div class="connection-note" id="connection-note" role="status" hidden><div class="wrap" id="connection-message"></div></div>
@@ -25,9 +24,6 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 </dl>
 <section id="active-section" aria-labelledby="act"><div class="section-heading"><h2 class="sec" id="act">Active runs</h2></div>
 <div id="root"><div class="empty">Connecting to your workshop…</div></div></section>
-<details class="arc" id="arc"><summary class="sec">Archive <span id="acount"></span></summary>
-<input type="search" class="q" id="aq" placeholder="Search projects" aria-label="Search archived projects" autocomplete="off" spellcheck="false">
-<div id="alist"></div><div class="empty" id="aempty">No archived tickets yet.</div></details>
 <footer class="board-footer"><span>Sawmill · Good work needs good machinery.</span><span>Updates automatically from this machine.</span></footer>
 </main>
 <dialog id="dlg" aria-labelledby="dt"><form id="dform"><h3 id="dt"></h3><div class="dq" id="dq"></div>
@@ -105,51 +101,12 @@ function render(){if(!view)return;const seen=new Set();let working=0,jam=0,queue
   for(const [key,el] of rows)if(!seen.has(key)){el.remove();rows.delete(key);opened.delete(key)}
   const empty=root.querySelector('.empty');if(view.projects.length)empty?.remove();else if(!empty)root.innerHTML='<div class="empty">No active runs. Your workshop is clear.</div>';else empty.textContent='No active runs. Your workshop is clear.';
   document.getElementById('metric-projects').textContent=view.projects.length;document.getElementById('metric-working').textContent=working;document.getElementById('metric-queued').textContent=queued;document.getElementById('metric-jam').textContent=jam;document.getElementById('jam-count').classList.toggle('has-jams',jam>0);
-  sum.textContent=view.projects.length+' project'+(view.projects.length===1?'':'s')+' · '+working+' working'+(jam?' · '+jam+' logjam':'');renderArchive();tick()}
-const arc=document.getElementById('arc'),aq=document.getElementById('aq'),alist=document.getElementById('alist'),aempty=document.getElementById('aempty'),acount=document.getElementById('acount');
-document.getElementById('archive-link').onclick=()=>{arc.open=true};
-const acards=new Map(),glass=new Map();
-const fold=s=>String(s).toLocaleLowerCase();
-function el(tag,cls,text){const e=document.createElement(tag);e.className=cls;if(text!=null)e.textContent=text;return e}
+  sum.textContent=view.projects.length+' project'+(view.projects.length===1?'':'s')+' · '+working+' working'+(jam?' · '+jam+' logjam':'');tick()}
 /** Only an absolute http(s) URL becomes an href; anything else leaves a plain, unfocusable anchor. */
 function safeUrl(u){if(typeof u!=='string')return null;try{const url=new URL(u);return url.protocol==='https:'||url.protocol==='http:'?url.href:null}catch{return null}}
 function link(a,t){const url=safeUrl(t.url);
   if(url){a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.setAttribute('aria-label','#'+t.number+' '+t.title+' (opens tracker issue in a new tab)')}
   else{a.removeAttribute('href');a.removeAttribute('target');a.removeAttribute('rel');a.removeAttribute('aria-label')}}
-/** Loose project match: the query's letters appear in order in the name, so missing letters still match. */
-function loose(q,name){const want=[...fold(q).trim()];let i=0;for(const ch of fold(name))if(i<want.length&&want[i]===ch)i++;return i===want.length}
-function ticketMatch(q,t){q=fold(q).trim();if(!q)return true;return String(t.number)===(q.charAt(0)==='#'?q.slice(1):q)||fold(t.title).includes(q)}
-function renderArchive(){const seen=new Set(),archive=view.archive||[];
-  archive.forEach((a,index)=>{let card=acards.get(a.millyard);const key=a.millyard;
-    if(!card){card=el('div','p');card.innerHTML='<h2><button type="button" class="expand" aria-expanded="false"><span class="nm"></span><small></small></button><button type="button" class="glass" aria-expanded="false"><svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="8" r="5.5"/><path d="m12 12 5 5"/></svg></button></h2><div class="contents" hidden><div class="path"></div><input type="search" class="q" hidden placeholder="Ticket number or name" autocomplete="off" spellcheck="false"><div class="runs"></div><div class="none" hidden>No tickets match.</div></div>';
-      const box=card.querySelector('.q');card.querySelector('.glass').onclick=()=>setGlass(card,key,!glass.has(key),true);
-      card.querySelector('.expand').onclick=()=>setExpanded(card,card.querySelector('.contents').hidden);
-      box.oninput=()=>{glass.set(key,box.value);setExpanded(card,true);filterTickets(card,key)};
-      box.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();setGlass(card,key,false,true)}};acards.set(key,card)}
-    if(alist.children[index]!==card)alist.insertBefore(card,alist.children[index]||null);
-    seen.add(key);card.data=a;card.querySelector('.nm').textContent=a.name;card.querySelector('.nm').title=a.name;
-    const count=a.runs.reduce((n,r)=>n+r.tickets.length,0);card.querySelector('small').textContent=count+' ticket'+(count===1?'':'s');card.querySelector('.path').textContent=a.millyard;
-    card.querySelector('.glass').setAttribute('aria-label','Search tickets in '+a.name);card.querySelector('.q').setAttribute('aria-label','Search tickets in '+a.name);
-    card.querySelector('.runs').replaceChildren(...a.runs.map(r=>{const run=el('div','run');
-      run.append(el('div','rh',(r.day?new Date(r.day+'T12:00:00').toLocaleDateString():r.created?new Date(r.created).toLocaleDateString():'No merge date')+' · '+r.tickets.length+' ticket'+(r.tickets.length===1?'':'s')));
-      if(r.error)run.append(el('div','err',r.error));
-      for(const t of r.tickets){const row=el('div','ar'),a=el('a','tl'),ti=el('span','ti',t.title);ti.title=t.title;row.ticket=t;a.append(el('span','n','#'+t.number),ti);link(a,t);row.append(a,el('span','st',t.state));run.append(row)}
-      return run}),...(a.errors||[]).map(r=>el('div','err',r.runId+': '+r.error)));
-    filterTickets(card,key)});
-  for(const [key,card] of acards)if(!seen.has(key)){card.remove();acards.delete(key);glass.delete(key)}
-  acount.textContent=archive.length?'('+archive.length+')':'';filterProjects()}
-function filterProjects(){let shown=0;for(const card of acards.values()){const ok=loose(aq.value,card.data.name);card.hidden=!ok;if(ok)shown++}
-  aq.hidden=!acards.size;aempty.hidden=shown>0;aempty.textContent=acards.size?'No projects match.':'No archived tickets yet.'}
-function filterTickets(card,key){const q=glass.get(key)||'';let total=0;
-  for(const run of card.querySelectorAll('.run')){let shown=0;for(const row of run.querySelectorAll('.ar')){const ok=ticketMatch(q,row.ticket);row.hidden=!ok;if(ok)shown++}run.hidden=Boolean(q.trim())&&!shown;total+=shown}
-  card.querySelector('.none').hidden=!q.trim()||total>0}
-/** Cards are retained across snapshots, so their expanded state survives every refresh. */
-function setExpanded(card,open){card.querySelector('.contents').hidden=!open;card.querySelector('.expand').setAttribute('aria-expanded',String(open))}
-/** Closing a ticket box clears it, so every ticket shows again. Searching opens the project. */
-function setGlass(card,key,open,focus){const box=card.querySelector('.q'),btn=card.querySelector('.glass');
-  if(open){glass.set(key,'');setExpanded(card,true)}else glass.delete(key);box.value='';box.hidden=!open;btn.setAttribute('aria-expanded',String(open));filterTickets(card,key);if(focus)(open?box:btn).focus()}
-aq.oninput=filterProjects;
-aq.onkeydown=e=>{if(e.key!=='Escape')return;e.preventDefault();if(aq.value){aq.value='';filterProjects()}else{arc.open=false;arc.querySelector('summary').focus()}};
 function tick(){if(!view)return;const extra=Math.floor((Date.now()-got)/1000);at.textContent=new Date(view.time).toLocaleTimeString();
   for(const p of view.projects)for(const t of p.tickets){const row=rows.get(p.millyard+'#'+t.number);if(row)row.querySelector('.d').textContent=detail(t,t.timeInStageSeconds==null?0:t.timeInStageSeconds+extra)}}
 setInterval(tick,1000);

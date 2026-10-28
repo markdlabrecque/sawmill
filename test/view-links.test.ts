@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import { DatabaseSync } from 'node:sqlite';
-import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import { page } from '../src/view/page.js';
@@ -20,7 +18,7 @@ const tracker: TicketReader = {
 };
 
 interface Row { number: number; url: string | null }
-interface Snapshot { projects: { name: string; tickets: Row[] }[]; archive: { name: string; runs: { tickets: Row[] }[] }[] }
+interface Snapshot { projects: { name: string; tickets: Row[] }[] }
 type Yard = Awaited<ReturnType<typeof millyard>>;
 
 /** `trackerLines` replace the default `backend: github` line and the commented repo/host lines. */
@@ -55,17 +53,6 @@ test('each active ticket carries its tracker issue URL, per project, for GitHub 
   assert.deepEqual(urls(byName.alpha!.tickets), ['https://github.com/team/tool/issues/1', 'https://github.com/team/tool/issues/2']);
   assert.deepEqual(urls(byName.beta!.tickets), ['https://git.example.com/group/sub/tool/-/issues/1']);
   assert.equal(/"tracker"|"backend"|"repo"|"host"/.test(raw), false, 'tracker configuration must not cross the view seam');
-});
-
-test('archived tickets carry the same issue URL', async (t) => {
-  const yard = await project(t, 'alpha', '  backend: gitlab\n  repo: g/p\n');
-  assert.equal((await yard.cli('run', 'draft', '1', '2', '--json')).code, 0);
-  const db = new DatabaseSync(join(yard.cwd, '.mill/run.sqlite'));
-  try { db.exec("UPDATE tickets SET state = 'done'"); } finally { db.close(); }
-
-  const { snapshot } = await board(yard.home, yard.root);
-  assert.deepEqual(snapshot.projects, []);
-  assert.deepEqual(urls(snapshot.archive[0]!.runs[0]!.tickets), ['https://gitlab.com/g/p/-/issues/1', 'https://gitlab.com/g/p/-/issues/2']);
 });
 
 test('a missing or invalid tracker configuration leaves the ticket listed with a null URL', async (t) => {

@@ -6,7 +6,7 @@ import { readView, type ViewSnapshot } from './model.js';
 import { page } from './page.js';
 
 /** Time in stage is counted by the browser, so it alone never triggers a push. */
-const fingerprint = (snapshot: ViewSnapshot) => JSON.stringify([snapshot.projects, snapshot.archive], (key, value) => key === 'timeInStageSeconds' ? undefined : value);
+const fingerprint = (snapshot: ViewSnapshot) => JSON.stringify(snapshot.projects, (key, value) => key === 'timeInStageSeconds' ? undefined : value);
 
 /** A command is a small JSON object; anything bigger is refused rather than buffered. */
 const limit = 64 * 1024;

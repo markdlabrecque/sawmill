@@ -25,7 +25,7 @@ async function openBoard(t: TestContext) {
   const tickets = [ticket(1, 'working', 'implement'), ticket(2, 'queued', 'queued'),
     ticket(3, 'blocked', 'queued'), ticket(4, 'logjam', 'review'), ticket(5, 'done', 'merged')];
   const view: ViewSnapshot = {
-    time: new Date().toISOString(), archive: [],
+    time: new Date().toISOString(), ...{ archive: [] },
     projects: [{ name: 'Blade preview', millyard: '/preview/blade', runId: 'preview',
       error: null, runStatus: 'running', pausedReason: null,
       runActions: { start: unavailable, stop: unavailable }, tickets }],

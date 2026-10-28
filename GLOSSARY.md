@@ -174,16 +174,12 @@ _Avoid_: Sync
 The machine-wide list of millyards that have had a run, used by the board and the scheduler to find them. Being registered does not activate a run.
 
 **Board**:
-The page showing every run on the machine at once, each ticket placed on its lane, with controls to stop, answer, reset and close tickets and to start or stop a run.
+The page showing every current, unfinished run on the machine at once, each unfinished ticket placed on its lane, with controls to stop, answer, reset and close tickets and to start or stop a run.
 _Avoid_: Dashboard, Live view, UI
 
 **Active Section**:
-The part of the board showing each project's current, unfinished run.
+The part of the board showing each project's current, unfinished run, with done tickets omitted. A run leaves the board when every ticket is done.
 _Avoid_: Main board, Live
-
-**Archive Section**:
-The collapsed part at the bottom of the board holding every finished or replaced run, grouped by project and searchable.
-_Avoid_: History, Past runs
 
 **Lane**:
 The board's ordered track of lifecycle stops, from queued to merged, along which a ticket's marker moves.

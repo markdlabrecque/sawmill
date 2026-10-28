@@ -258,20 +258,20 @@ Add `--json` for machine-readable output; tail streams JSON events. Exit codes a
 
 Commands other than `mill build` work from any worktree of the project: the millyard, a ticket worktree, the main checkout, or any other linked worktree. They find the one worktree that holds `.mill/config.yaml` and use its settings and run state. If no worktree holds it, or more than one does, Mill lists the worktrees and stops. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
-One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite`, where the board's Archive Section finds it. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
+One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite` for safekeeping. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
 
 ### Watching every run
 
-`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has a run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. Watching only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
+`mill board` runs from any directory and serves one page at `http://127.0.0.1:4444` showing every project on this machine that has an unfinished run: each ticket's state, its stage, and a marker that moves along the lanes as work progresses. It finds projects through `~/.local/state/sawmill/millyards`, which `mill build` and `mill run draft` keep up to date, and through the machine slots. Watching only reads run files. `--port <n>` picks another port; `--json` prints one snapshot and exits.
 
 The board can also act on a project's current run, through the same operations and rules as the CLI:
 
 - **Start Run** and **Stop Run** sit on each project, next to its status: running, stopping, or stopped. Stop Run stops new tickets from starting at once and asks every working ticket to stop at its next stage boundary, keeping its work; the run shows stopping until they have all stopped. Start Run starts the run as `mill run` does and resumes only the tickets Stop Run stopped. Tickets with their own question, failure, or stop stay as they were.
 - **Stop**, **Answer and resume**, **Reset**, and **Close** sit on each ticket. They match `mill run stop`, `answer`, `reset`, and `close`. Answer opens a dialog with the agent's question or what blocks the ticket, and a field for your answer and any guidance for the agent; it re-queues the ticket and starts the run if it was stopped. Reset and Close ask first.
 
-A blocked or logjammed ticket says what holds it up, and a paused run says why. A button that does not apply to the ticket's state is dimmed; tapping it says why. Each request shows pending, then the result, and a second tap while it is pending does nothing. A request made from a page that is out of date, for a run that has since been replaced, is refused. Archived runs are view-only.
+A blocked or logjammed ticket says what holds it up, and a paused run says why. A button that does not apply to the ticket's state is dimmed; tapping it says why. Each request shows pending, then the result, and a second tap while it is pending does nothing. A request made from a page that is out of date, for a run that has since been replaced, is refused.
 
-The Active Section at the top shows each project's current, unfinished run. When every ticket in a run is done, the run moves to the Archive Section at the bottom, which is collapsed until you open it. It groups every finished or replaced run by project, newest first. The search box at its top narrows projects by name, and missing letters still match. The magnifying glass on each archived project opens a box that narrows its tickets by number (`12` or `#12`) or by part of a title.
+The Active Section shows each project's current, unfinished run. A ticket leaves the board once it is done, and a run leaves once every ticket is done. Saved run history stays on disk in `.mill/history/`; the board does not read or display it.
 
 #### Watch every run from your phone
 

@@ -130,12 +130,6 @@ test('the snapshot explains what blocks a ticket and which actions its state all
   assert.equal(working.actions.answer.available, false);
   assert.ok(working.actions.answer.reason);
   assert.ok(!project.tickets.some(ticket => ticket.number === 4), 'a done ticket is no longer active');
-  const done = (await b.snapshot()).archive.flatMap(project => project.runs.flatMap(group => group.tickets)).find(ticket => ticket.number === 4)!;
-  assert.equal(done.state, 'done');
-  for (const action of Object.values(done.actions)) {
-    assert.equal(action.available, false);
-    assert.ok(action.reason);
-  }
 });
 
 test('Stop asks one working ticket to stop and refuses a ticket that is not working', async (t) => {
@@ -200,11 +194,8 @@ test('Close and Reset need a confirmation; a confirmed Close marks the ticket do
   const closed = await b.post({ action: 'close', ticket: 1, confirmed: true });
   assert.equal(closed.code, 200);
   assert.ok(calls.includes('close 1'));
-  const project = await b.until((p, snapshot) => !p.tickets.some(ticket => ticket.number === 1)
-    && snapshot.archive.some(project => project.runs.some(group => group.tickets.some(ticket => ticket.number === 1 && ticket.state === 'done'))));
+  const project = await b.until(p => !p.tickets.some(ticket => ticket.number === 1));
   assert.ok(!project.tickets.some(ticket => ticket.number === 1), 'the closed ticket leaves Active');
-  const done = (await b.snapshot()).archive.flatMap(project => project.runs.flatMap(group => group.tickets)).find(ticket => ticket.number === 1)!;
-  assert.equal(done.state, 'done');
 });
 
 test('Stop Run stops dispatch and asks every working ticket to stop; Start Run resumes only those', async (t) => {
