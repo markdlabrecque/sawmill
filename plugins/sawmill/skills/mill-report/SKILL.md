@@ -6,7 +6,7 @@ argument-hint: "[run identity or run log path]"
 
 # Mill report
 
-Turn one run's ledger into a short decision audit. A person reads it to learn which calls were made on their behalf, which ones to re-check, and how each turned out. It is not a retrospective: `/sawmill:learn` looks for friction across runs; this lists one run's decisions.
+Turn one run's ledger into a short decision audit. A person reads it to learn which calls were made on their behalf, which ones to re-check, and how each turned out. It is not a retrospective: `/sawmill:sawdust` looks for friction across runs; this lists one run's decisions.
 
 Use `mill` on PATH. `mill <command> --help` is the source of truth. This skill only reads, and writes only its own report file. It never runs a command that changes a run or a ticket.
 

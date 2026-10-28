@@ -52,4 +52,4 @@ Close it with the tickets that got done and the tickets parked.
 
 Then, without asking, invoke `/sawmill:mill-report` for this run identity in this millyard. If the host cannot start another skill, follow `../mill-report/SKILL.md` yourself. It writes the decision report next to the run log.
 
-End with a short message for the morning: the exact run identity and millyard, the paths of the run log and the decision report, and counts of calls made, calls to re-check and tickets parked. Do not call a run with parked tickets completed. Do not offer a retrospective or ask a follow-up; `/sawmill:learn` stays available to the person who reads the report.
+End with a short message for the morning: the exact run identity and millyard, the paths of the run log and the decision report, and counts of calls made, calls to re-check and tickets parked. Do not call a run with parked tickets completed. Do not offer a retrospective or ask a follow-up; `/sawmill:sawdust` stays available to the person who reads the report.
