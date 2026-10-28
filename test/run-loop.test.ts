@@ -16,6 +16,35 @@ test('run waits for a live team and automatically dispatches a newly ready depen
   assert.deepEqual((await y.starts()).map(row => row.number), [1, 1, 1, 2, 2, 2]);
 });
 
+test('a dependent waits for the accepted merge to reach the millyard, then runs without a logjam', async t => {
+  const y = await fixture(t, [1, 2], true);
+  await writeFile(join(y.userConfig, 'config.yaml'), 'concurrency: 2\ninfrastructure_retries: 0\n');
+  await writeFile(join(y.root, 'hold-delete'), 'hold cleanup after merge acceptance');
+  await y.release();
+  const running = y.command(['run', '--foreground', '--json']).catch((error: any) => error);
+  try {
+    const accepted = await until(y.status, state => state.tickets[0]!.stage === 'remote-delete');
+    assert.equal(accepted.tickets[0]!.completion, 'merged');
+    assert.notEqual(y.git('rev-parse', 'HEAD'), accepted.tickets[0]!.mergeCommit);
+    assert.equal(accepted.tickets[1]!.state, 'blocked');
+    assert.deepEqual(accepted.tickets[1]!.blockers, [1]);
+    // Keep the gap open through another dispatch pass with a free machine slot.
+    await y.once();
+    const waiting = (await y.status()).tickets[1]!;
+    assert.equal(waiting.state, 'blocked');
+    assert.equal(waiting.worker, null);
+  } finally {
+    await rm(join(y.root, 'hold-delete'), { force: true });
+    await running;
+  }
+  const terminal = await running;
+  assert.equal(JSON.parse(terminal.stdout).status, 'ok', terminal.stdout);
+  const finished = await y.status();
+  assert.deepEqual(finished.tickets.map(row => row.state), ['done', 'done']);
+  assert.ok(finished.tickets.every(row => !row.team.infrastructureAttempts?.length));
+  assert.deepEqual((await y.starts()).map(row => row.number), [1, 1, 1, 2, 2, 2]);
+});
+
 test('answering a stuck ticket with no run active starts the run again without a second command', async t => {
   const y = await fixture(t, [1]);
   await y.release();

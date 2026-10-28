@@ -191,7 +191,10 @@ function readyToClaim(db: DatabaseSync, number: number): boolean {
     (!owner || owner.status === 'finished') &&
     !db.prepare('SELECT id FROM pending_writes WHERE ticket = ? LIMIT 1').get(number) &&
     !db.prepare(`SELECT e.blocker FROM edges e LEFT JOIN tickets t ON t.number = e.blocker
-      WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR (t.state != 'done' AND t.completion IS NULL)) LIMIT 1`).get(number);
+      WHERE e.blocked = ? AND e.outside_closed = 0 AND (t.number IS NULL OR
+        (t.state != 'done' AND ((t.completion IS NULL AND t.merge_commit IS NULL) OR
+          (t.completion = 'merged' AND json_extract(t.integration, '$.mergedHead') IS NOT NULL AND
+            COALESCE(json_extract(t.integration, '$.fastForwarded'), 0) != 1)))) LIMIT 1`).get(number);
 }
 
 function pendingPick(db: DatabaseSync): number | undefined {
