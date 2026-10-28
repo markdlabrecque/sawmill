@@ -23,20 +23,29 @@ A link from one ticket to another it depends on.
 _Avoid_: Dependency, prerequisite, parent
 
 **Ready ticket**:
-A queued ticket whose blocked-by tickets are all done.
+A queued ticket with no unresolved blocked-by links. A merged blocked-by ticket releases its dependents only once the millyard contains its merged work.
 
 **User test cases**:
 A section of a ticket listing things a person should be able to do on the running site, one case per item.
-_Avoid_: Acceptance criteria, QA steps
+_Avoid_: QA steps
+
+**Acceptance checklist**:
+The required outcomes listed under a ticket's "Done when", separate from its user test cases. Each item needs evidence or a human waiver before review can pass.
+
+**Acceptance item**:
+One required outcome in the acceptance checklist, identified as AC1, AC2 and so on.
+
+**Proof plan**:
+A ticket's chosen way to prove its change, either new failing tests first or existing checks, with a reason why that proof is sufficient.
 
 ### Runs
 
 **Run**:
-A batch of tickets, in blocked-by order, worked through until every ticket is done or in logjam; at most one per millyard.
+A batch of tickets worked in blocked-by order, with at most one current run per millyard. A run completes when every ticket is done, while logjams leave it unfinished.
 _Avoid_: Batch, job, session
 
 **Draft**:
-Choosing the tickets for a run and fixing their order from the blocked-by graph.
+The selection of tickets for a run and their order from the blocked-by graph. A draft can create an inactive run or append tickets to an unfinished run.
 _Avoid_: Plan, queue up
 
 **Project**:
@@ -44,7 +53,7 @@ The repository and all of its linked worktrees; Mill runs from any of them.
 _Avoid_: Repo, checkout
 
 **Millyard**:
-The one worktree of a project that holds `.mill/` and is kept on the integration branch; a run lives there, ticket worktrees are cut from it and merges land in it.
+The designated worktree on a project's integration branch, where the run lives and ticket worktrees begin. It is the local copy that must receive merged work before dependent tickets start.
 _Avoid_: Main checkout, repo, base
 
 **Run file**:
@@ -56,7 +65,7 @@ Where a run stands as a whole: inactive, active, paused, stopped, or completed.
 _Avoid_: Run status
 
 **Activation**:
-The explicit start of a run with `mill run`, recorded in the run file. Only an activated run is dispatched by the scheduler. Drafting, replacing a draft, `mill run once` and `mill run answer` never activate a run.
+The explicit start of a run for scheduler dispatch, recorded in the run file. Drafting, one-shot execution and answering a logjam do not activate an inactive run.
 _Avoid_: Subscribe, enable
 
 **Waiting**:
@@ -72,7 +81,7 @@ The one ticket state meaning a person must act, with a reason: an agent question
 _Avoid_: Stuck, failed, escalated, needs-human
 
 **Stage**:
-The step of the feature lifecycle a ticket has reached, from worktree creation to merge.
+The step of the ticket lifecycle it has reached, from worktree creation through merge and cleanup.
 _Avoid_: Phase, step
 
 **Stage boundary**:
@@ -113,7 +122,7 @@ Nightwatch's play of leaving a ticket in logjam after its jam came back twice, s
 _Avoid_: Give up, skip, escalate
 
 **Ledger**:
-A watcher's running record in `.mill/foreman.md` or `.mill/nightwatch.md`: one decision entry per play, one line per quiet walk.
+A watcher's running record of the run, with one decision entry per play and one line per quiet walk.
 _Avoid_: Journal, notes
 
 **Decision entry**:
@@ -121,7 +130,7 @@ A ledger record of one play, written as it happens: the timestamp, run, trigger,
 _Avoid_: Log line, note
 
 **Decision report**:
-The `mill-report` audit of one run's decision entries: the calls worth knowing about, with their times, impact and checked result, re-check items first.
+An audit of one run's decision entries, recording the calls worth knowing about, their impact and their checked results. Calls needing re-checking come first.
 _Avoid_: Retrospective, morning report
 
 ### Machinery
@@ -131,7 +140,7 @@ The command-line tool that holds every deterministic step and is the only thing 
 _Avoid_: Sawmill CLI, the tool
 
 **Orchestrator**:
-The deterministic logic inside Mill that dispatches ready tickets and handles team results; not an agent. The scheduler runs it for every active run; `mill run --foreground` runs it for one run in a terminal.
+The deterministic logic inside Mill that dispatches ready tickets and handles team results, not an agent. It serves active runs through the scheduler or one run in an attached terminal.
 _Avoid_: Coordinator, manager agent
 
 **Scheduler**:
@@ -151,10 +160,10 @@ A per-project script run after a worktree is created or before one is removed.
 _Avoid_: Callback, lifecycle script
 
 **Test harness**:
-How the reviewer reaches a running site to perform user test cases: DDEV, Docker, or none.
+The project's environment for preparing a running site where the reviewer performs user test cases. A project can opt out when no running site is needed.
 
 **Reporter**:
-The deterministic step that records a report in the run log at every stage change, read with `mill run log <n>`, and posts the final summary on the ticket.
+The deterministic part of Mill that records stage reports in the run log and posts the final summary on the ticket.
 _Avoid_: Notifier, logger
 
 **Tracker mirror**:
@@ -177,13 +186,13 @@ The collapsed part at the bottom of the board holding every finished or replaced
 _Avoid_: History, Past runs
 
 **Lane**:
-The board's track of ten stops (queued to merged) along which a ticket's marker moves.
+The board's ordered track of lifecycle stops, from queued to merged, along which a ticket's marker moves.
 _Avoid_: Column, swimlane
 
 ### Teams and agents
 
 **Team**:
-The three roles that work one ticket, run one at a time inside its worktree.
+The roles that work one ticket, one at a time inside its worktree. The usual sequence is test writers, implementer and reviewer, with test writers omitted when the proof plan or project configuration requires no new tests.
 _Avoid_: Crew, squad, swarm
 
 **Role**:
@@ -191,10 +200,10 @@ One agent's job within a team: test writers, implementer, or reviewer.
 _Avoid_: Agent type, persona
 
 **Test writers**:
-The role that turns a ticket into failing tests before any code is written.
+The role that proves a ticket's missing behaviour with failing tests before implementation, and corrects those tests when review finds them wrong.
 
 **Implementer**:
-The role that writes code until the tests pass.
+The role that makes the ticket's change and addresses review or gate feedback, with passing tests and checks as required by the project.
 _Avoid_: Coder, developer
 
 **Reviewer**:
@@ -229,8 +238,14 @@ _Avoid_: Rejection, fail
 One pass of the implementer at the work, whether first try or after a bounce.
 
 **Retry cap**:
-The number of bounces a ticket may take (three) before it goes to logjam.
+The limit on repair bounces before a ticket goes to logjam. An answer at the cap grants one further repair round.
 _Avoid_: Retry limit, max attempts
+
+**Test correction**:
+A reviewer's scoped request for the test writers to fix incorrect tests, separate from an implementation bounce.
+
+**Waiver**:
+A human decision to accept one acceptance item without proof, with a recorded reason. It does not waive tests, review or CI.
 
 **Re-review**:
 A review that looks only at the fix for a bounce and the reviewer's own earlier feedback.
@@ -244,6 +259,15 @@ _Avoid_: Pre-merge check
 
 **CI gate**:
 Waiting, when the project has CI, for the pipeline to pass on the exact commit about to merge.
+
+**Merge acceptance**:
+The tracker's confirmation that a ticket's change has merged into the integration branch. It is irreversible completion of the merge, not proof that the millyard has caught up or cleanup has finished.
+
+**Millyard fast-forward**:
+The local update that brings the millyard's integration branch up to the merged work. For a merged ticket, this is the point that releases its dependents, without waiting for the remaining cleanup and tracker reporting.
+
+**Release handoff**:
+The saved account of a merged ticket's delivered revision, acceptance evidence and release steps, including what remains unverified or needs separate recovery. It is not a deployment or promotion to main.
 
 **Integration branch**:
 The branch approved tickets merge into, through a pull or merge request; sits in front of main.
