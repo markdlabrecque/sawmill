@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { checkMillyard } from './millyard.js';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
@@ -8,6 +10,8 @@ import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
 
+const execute = promisify(execFile);
+
 /** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch.
  * `checkPolicy` settles the merge policy once the selection is valid; it throws to refuse the draft. */
 export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false,
@@ -17,6 +21,14 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   const existing = previous && previous.run.lifecycle !== 'completed' && !replace ? previous : undefined;
   if (existing && (existing.run.baseBranch !== project.integration || JSON.stringify(existing.run.tracker) !== JSON.stringify(project.tracker))) {
     throw new CliError('Configured tracker or integration branch does not match the drafted run; restore its configuration.', 2);
+  }
+  try {
+    await execute('git', ['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${project.integration}`], { cwd, timeout: 60000 });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 2) {
+      throw new CliError(`Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.`);
+    }
+    throw new CliError(`Cannot check integration branch ${project.integration} on remote origin; verify remote access and retry drafting.\n${error instanceof Error ? error.message : String(error)}`);
   }
   let tickets: Ticket[];
   if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
