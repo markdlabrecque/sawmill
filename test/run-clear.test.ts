@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -48,6 +50,32 @@ async function registry(home: string) {
   const root = millyardsPath(home);
   const names = (await readdir(root)).sort();
   return Promise.all(names.map(async name => [name, await readFile(join(root, name), 'utf8')]));
+}
+
+// Run a real second Mill process and synchronize at an explicit execution boundary,
+// not a sleep. Every child is reaped even when an assertion fails.
+async function gatedProcess(t: TestContext, y: Awaited<ReturnType<typeof fixture>>, body: string) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { runCli } from ${JSON.stringify(new URL('../src/cli.js', import.meta.url).href)};
+    import { openRun } from ${JSON.stringify(new URL('../src/run-store.js', import.meta.url).href)};
+    import { activateRun } from ${JSON.stringify(new URL('../src/transitions.js', import.meta.url).href)};
+    const cwd = ${JSON.stringify(y.cwd)}, home = ${JSON.stringify(y.home)};
+    const gate = async () => {
+      const released = new Promise(resolve => process.once('message', resolve));
+      process.send('ready');
+      await released;
+    };
+    try { ${body} } catch (error) { console.error(error); process.exitCode = 1; }
+    process.disconnect();
+  `], { cwd: y.cwd, env: y.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let stdout = '', stderr = '';
+  child.stdout!.on('data', chunk => { stdout += chunk; });
+  child.stderr!.on('data', chunk => { stderr += chunk; });
+  const finished = once(child, 'close').then(([code]) => ({ code, stdout, stderr }));
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); await finished; });
+  const [message] = await once(child, 'message', { signal: AbortSignal.timeout(15_000) });
+  assert.equal(message, 'ready');
+  return { release: () => child.send('continue'), finished };
 }
 
 for (const state of ['inactive', 'stopped', 'completed', 'logjam'] as const) {
@@ -194,6 +222,109 @@ for (const mode of ['delete', 'wal'] as const) {
     assert.equal(readRun(y.cwd).tickets[0]!.title, 'Uncommitted writer');
     assert.equal((await y.cli('run', 'clear')).code, 0);
     for (const suffix of ['', '-journal', '-wal', '-shm']) assert.equal(existsSync(runPath(y.cwd) + suffix), false);
+  });
+}
+
+test('a CLI draft validated before clear cannot recreate the removed run when its tracker read resumes', async t => {
+  const y = await fixture(t);
+  const previous = readRun(y.cwd).run.id;
+  const draft = await gatedProcess(t, y, `
+    let first = true;
+    const tracker = {
+      async getTicket(number) {
+        if (first) { first = false; await gate(); }
+        return { number, title: 'Ticket ' + number, body: 'Implement a feature.', labels: [], state: 'open', comments: [], blockedBy: [] };
+      },
+      async addComment() {}, async addLabel() {}, async removeLabel() {}, async closeTicket() {}
+    };
+    process.exitCode = await runCli(['run', 'draft', '2', '--json'], { cwd, home, tracker });
+  `);
+  const cleared = await y.cli('run', 'clear', '--json');
+  assert.equal(cleared.code, 0, cleared.stdout);
+  assert.equal(existsSync(runPath(y.cwd)), false);
+  draft.release();
+  const rejected = await draft.finished;
+  assert.equal(rejected.code, 1, rejected.stdout + rejected.stderr);
+  assert.match(rejected.stdout, /changed|retry.*draft/i);
+  // Before c7dd2fa rejection still left an empty SQLite file here.
+  assert.equal(existsSync(runPath(y.cwd)), false, 'a stale draft must not recreate even an empty run file');
+  const fresh = await y.cli('run', 'draft', '3');
+  assert.equal(fresh.code, 0, fresh.stdout);
+  const snapshot = readRun(y.cwd);
+  assert.notEqual(snapshot.run.id, previous);
+  assert.equal(snapshot.run.lifecycle, 'inactive');
+  assert.deepEqual(snapshot.tickets.map(ticket => ticket.number), [3]);
+});
+
+for (const mode of ['delete', 'wal'] as const) {
+  test(`clear excludes an independent ${mode} SQLite transaction without relying on the Mill fence`, async t => {
+    const y = await fixture(t);
+    // Deliberately bypass openRun: only SQLite's run-file locks protect this writer.
+    const db = new DatabaseSync(runPath(y.cwd));
+    try {
+      db.exec(`PRAGMA journal_mode = ${mode}; BEGIN IMMEDIATE; UPDATE tickets SET title = 'Independent committed writer'`);
+      const sidecars = (mode === 'delete' ? ['-journal'] : ['-wal', '-shm']);
+      const bytes = await Promise.all(sidecars.map(suffix => readFile(runPath(y.cwd) + suffix)));
+      const result = await y.cli('run', 'clear', '--json');
+      assert.equal(result.code, 1, result.stdout);
+      assert.equal(JSON.parse(result.stdout).status, 'refused');
+      assert.match(result.stdout, /SQLite|lock|connection/i);
+      assert.equal(existsSync(runPath(y.cwd)), true);
+      assert.deepEqual(await Promise.all(sidecars.map(suffix => readFile(runPath(y.cwd) + suffix))), bytes,
+        'refusal must leave the independent transaction and its sidecars untouched');
+      db.exec('COMMIT');
+      assert.equal(db.prepare('SELECT title FROM tickets WHERE number = 1').get()!.title, 'Independent committed writer');
+      // A reader permits BEGIN IMMEDIATE: this reaches the later exclusive
+      // transaction (DELETE) or journal-mode conversion (WAL) instead.
+      db.exec('BEGIN; SELECT * FROM tickets');
+      const remaining = sidecars.filter(suffix => existsSync(runPath(y.cwd) + suffix));
+      const reading = await y.cli('run', 'clear', '--json');
+      assert.equal(reading.code, 1, reading.stdout);
+      assert.equal(JSON.parse(reading.stdout).status, 'refused');
+      assert.equal(existsSync(runPath(y.cwd)), true);
+      for (const suffix of remaining) assert.equal(existsSync(runPath(y.cwd) + suffix), true);
+      assert.equal(db.prepare('SELECT title FROM tickets WHERE number = 1').get()!.title, 'Independent committed writer');
+      db.exec('COMMIT');
+    } finally { db.close(); }
+    assert.equal(readRun(y.cwd).tickets[0]!.title, 'Independent committed writer');
+    const removed = await y.cli('run', 'clear', '--json');
+    assert.equal(removed.code, 0, removed.stdout);
+    assert.equal(JSON.parse(removed.stdout).status, 'removed');
+    for (const suffix of ['', '-journal', '-wal', '-shm']) assert.equal(existsSync(runPath(y.cwd) + suffix), false);
+  });
+}
+
+for (const action of ['write', 'activate'] as const) {
+  test(`clear fences an already-open Mill connection in another process before ${action}`, async t => {
+    const y = await fixture(t);
+    const before = saved(y.cwd);
+    const writer = await gatedProcess(t, y, `
+      const db = openRun(cwd);
+      try {
+        await gate();
+        ${action === 'write' ? `db.exec("UPDATE tickets SET title = 'Cross-process checkpoint'");` : 'activateRun(cwd);'}
+      } finally { db.close(); }
+    `);
+    // The child has opened the connection but has no run-file transaction yet.
+    // A lock stored inside run.sqlite cannot fence this interleaving.
+    const refused = await y.cli('run', 'clear', '--json');
+    assert.equal(refused.code, 1, refused.stdout);
+    assert.equal(JSON.parse(refused.stdout).status, 'refused');
+    assert.deepEqual(saved(y.cwd), before);
+    writer.release();
+    const result = await writer.finished;
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    if (action === 'activate') {
+      assert.equal(readRun(y.cwd).run.lifecycle, 'active');
+      const active = await y.cli('run', 'clear', '--json');
+      assert.equal(active.code, 1, active.stdout);
+      assert.match(active.stdout, /mill run stop/);
+      assert.equal((await y.cli('run', 'stop')).code, 0);
+    } else {
+      assert.equal(readRun(y.cwd).tickets[0]!.title, 'Cross-process checkpoint');
+    }
+    assert.equal((await y.cli('run', 'clear')).code, 0);
+    assert.equal(existsSync(runPath(y.cwd)), false);
   });
 }
 
