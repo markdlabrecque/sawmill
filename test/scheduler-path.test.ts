@@ -31,9 +31,16 @@ process.exit(result.status ?? 1);
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
     .replace('command: node --test', 'command: mill-fixture-test')
     + `\nenv:\n  path:\n    - ${JSON.stringify(tools)}\n`);
-  const launch = (path: string) => execute(process.execPath, [bin, 'run'], {
-    cwd: y.cwd, env: { ...y.env, PATH: path }, timeout: 20000,
-  });
+  const launch = async (path: string) => {
+    const result = await execute(process.execPath, [bin, 'run'], {
+      cwd: y.cwd, env: { ...y.env, PATH: path }, timeout: 20000,
+    }).then(
+      result => ({ code: 0, stdout: result.stdout, stderr: result.stderr }),
+      (error: { code?: number | string; stdout?: string; stderr?: string }) => error,
+    );
+    assert.equal(result.code, 0,
+      `The scheduler must accept the project's env.path and start the run:\n${result.stdout ?? ''}${result.stderr ?? ''}`);
+  };
 
   // The first scheduler has the tool in its inherited environment. Its replacement does not.
   await launch(`${tools}:${y.env.PATH}`);
