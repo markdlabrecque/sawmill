@@ -106,10 +106,13 @@ const commitTest = (y: Awaited<ReturnType<typeof fixture>>, request: RuntimeRequ
     y.git('-C', request.cwd, 'add', 'answer.test.cjs'); y.git('-C', request.cwd, 'commit', '-m', '#12: Correct test');
   });
 
-test('a reviewer test-correction outcome needs a reviewer, the files, the mistake and how requirements are preserved', () => {
+test('a test-correction outcome accepts an implementer or reviewer and requires named files, a mistake and preserved requirements', () => {
   const ok = validateOutcome(correction(), 'reviewer');
   assert.equal(ok.outcome, 'test-correction');
-  assert.equal(validateOutcome(correction(), 'implementer').outcome, 'infrastructure');
+  assert.equal(validateOutcome(correction(), 'implementer').outcome, 'test-correction');
+  for (const invalid of [{ files: [] }, { mistake: ' ' }, { preserves: undefined }]) {
+    assert.equal(validateOutcome({ ...correction(), ...invalid }, 'implementer').outcome, 'infrastructure');
+  }
   assert.equal(validateOutcome(correction(), 'test-writers').outcome, 'infrastructure');
   assert.equal(validateOutcome({ ...correction(), files: [] }, 'reviewer').outcome, 'infrastructure');
   assert.equal(validateOutcome({ ...correction(), mistake: ' ' }, 'reviewer').outcome, 'infrastructure');
@@ -140,6 +143,102 @@ test('a reviewer-requested correction reaches the test writers, gets a fresh rev
   assert.ok(events.some(e => /correction/i.test(e) && e.includes(MISTAKE.slice(0, 20))), 'The request is logged');
   assert.ok(events.some(e => /correction/i.test(e) && e.includes(corrected)), 'The correction commit is logged');
   assert.ok(events.some(e => /correction/i.test(e) && /approv|accept/i.test(e)), 'The review decision is logged');
+});
+
+test('an implementer can send named protected tests to the writers and only fresh review accepts their correction', async t => {
+  const y = await fixture(t);
+  let baseline = '', corrected = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer') {
+      if (!baseline) await y.normal(request, sink);
+      baseline = (await y.status()).tickets[0].team.testCommit;
+      return { outcome: correction() } as never;
+    }
+    if (request.role === 'test-writers' && y.inputs.filter(r => r.role === 'test-writers').length > 1) {
+      for (const text of [MISTAKE, PRESERVES, 'answer.test.cjs', 'diff --git a/answer.cjs']) {
+        assert.ok(request.handoff.includes(text), `Correction handoff lacks ${text}`);
+      }
+      assert.equal((await y.status()).tickets[0].team.testCommit, baseline);
+      await commitTest(y, request, CORRECTED);
+      corrected = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+      return { outcome: { outcome: 'done', summary: 'Corrected the named test while preserving the answer assertion.' } };
+    }
+    if (request.role === 'reviewer') {
+      assert.ok(corrected, 'The correction must reach the test writers before review');
+      assert.equal((await y.status()).tickets[0].team.testCommit, baseline, 'Writer output is not an approved baseline');
+      assert.match(request.handoff, /Test correction to verify/);
+      assert.match(request.handoff, /Correction diff against the protected tests:[\s\S]*pass 1 corrected/);
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'test-writers', 'reviewer']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done');
+  assert.equal(row.bounces, 0, 'A test-change request is not an implementation bounce');
+  assert.equal(row.team.testCommit, corrected, 'Only the fresh review promotes the corrected baseline');
+  assert.ok(row.team.testCommits.includes(baseline), 'Original protected history is retained');
+  assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), CORRECTED.trimEnd());
+  assert.equal(y.requests.length, 1);
+});
+
+test('implementer-requested corrections keep the normal file scope and clean-commit protections', async t => {
+  for (const mode of ['production', 'unrelated-test', 'uncommitted']) {
+    await t.test(mode, async t => {
+      const y = await fixture(t);
+      let baseline = '';
+      y.setScript(async (request, sink) => {
+        if (request.role === 'implementer') {
+          if (!baseline) await y.normal(request, sink);
+          baseline = (await y.status()).tickets[0].team.testCommit;
+          return { outcome: correction() } as never;
+        }
+        if (request.role === 'test-writers' && y.inputs.filter(r => r.role === 'test-writers').length > 1) {
+          await writeFile(join(request.cwd, 'answer.test.cjs'), CORRECTED);
+          if (mode === 'production') await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42; // changed by writer\n');
+          if (mode === 'unrelated-test') await writeFile(join(request.cwd, 'other.test.cjs'), "console.log('changed');\n");
+          y.git('-C', request.cwd, 'add', '.');
+          if (mode !== 'uncommitted') y.git('-C', request.cwd, 'commit', '-m', '#12: Invalid correction');
+          return { outcome: { outcome: 'done', summary: 'Correction attempted.' } };
+        }
+        return y.normal(request, sink);
+      });
+      const result = await y.cli('team', 'run', '12', '--json');
+      assert.equal(result.code, 1, result.stdout);
+      assert.equal(y.inputs.filter(r => r.role === 'test-writers').length, 2, 'The implementer request reaches the writers');
+      assert.equal(y.inputs.filter(r => r.role === 'reviewer').length, 0, 'Out-of-scope or dirty corrections cannot reach review');
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.state, 'logjam');
+      assert.equal(row.team.testCommit, baseline);
+      assert.equal(y.requests.length, 0);
+    });
+  }
+});
+
+test('implementer-requested corrections must still prove missing behaviour even when a reviewer passes them', async t => {
+  const y = await fixture(t);
+  let baseline = '';
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer') {
+      if (!baseline) await y.normal(request, sink);
+      baseline = (await y.status()).tickets[0].team.testCommit;
+      return { outcome: correction() } as never;
+    }
+    if (request.role === 'test-writers' && y.inputs.filter(r => r.role === 'test-writers').length > 1) {
+      await commitTest(y, request, WEAKENED);
+      return { outcome: { outcome: 'done', summary: 'Removed the assertion.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 1, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'test-writers', 'reviewer']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'logjam');
+  assert.match(row.team.question.question, /red proof|missing behaviour/i);
+  assert.equal(row.team.testCommit, baseline, 'Passing review cannot promote tests that no longer fail on unfixed code');
+  assert.equal(y.requests.length, 0);
 });
 
 test('a correction that touches production code, unapproved tests, or uncommitted files is never reviewed', async t => {
