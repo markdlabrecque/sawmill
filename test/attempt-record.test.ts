@@ -109,7 +109,7 @@ async function fixture(t: TestContext) {
     assert.equal(result.code, 0, result.stdout);
     return JSON.parse(result.stdout) as Exported;
   };
-  return { ...y, cli, inputs, normal, exported, setScript(value: Runtime['run']) { script = value; },
+  return { ...y, cli, tracker, inputs, normal, exported, setScript(value: Runtime['run']) { script = value; },
     status: async (): Promise<any> => readRun(y.cwd) };
 }
 
@@ -151,6 +151,48 @@ test('a merged ticket yields one record naming its delivered code, policy, envir
   for (const field of ['cost', 'humanMinutes', 'escapedDefects', 'phaseDurations'] as const) {
     assert.notEqual(attempt[field], 0, field);
     assert.equal(JSON.stringify(attempt[field]).includes('unknown'), true, `${field} is marked unknown`);
+  }
+});
+
+test('merge acceptance reaches the attempt record before cleanup, with or without a human answer', async t => {
+  for (const answered of [false, true]) {
+    await t.test(answered ? 'resumed after a question' : 'no human actions', async t => {
+      const y = await fixture(t);
+      if (answered) {
+        y.setScript(asking);
+        await y.cli('team', 'run', '12', '--json');
+        assert.equal((await y.status()).tickets[0].state, 'logjam');
+        assert.equal((await y.cli('run', 'answer', '12', 'Return 42.')).code, 0);
+        y.setScript(y.normal);
+      }
+      const before = await y.exported();
+      const deleteRemoteBranch = y.tracker.deleteRemoteBranch;
+      let atMerge: Exported | undefined;
+      y.tracker.deleteRemoteBranch = async branch => {
+        // The tracker has accepted the merge, but no cleanup or final done transition has run.
+        const row = (await y.status()).tickets[0];
+        assert.equal(row.completion, 'merged');
+        assert.ok(row.mergeCommit);
+        atMerge = await y.exported();
+        return deleteRemoteBranch(branch);
+      };
+
+      assert.equal((await y.cli('team', 'run', '12', '--json')).code, 0);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.state, 'done');
+      assert.equal(row.completion, 'merged');
+      const final = await y.exported();
+      assert.equal(final.attempts.length, 1, 'Answering resumes the same attempt');
+      assert.equal(final.attempts[0]!.completion.kind, 'merged');
+      assert.ok(final.attempts[0]!.ended);
+      assert.equal(final.attempts[0]!.heads.delivered, row.integration.mergedHead);
+      if (answered) assert.equal(final.attempts[0]!.id, before.attempts[0]!.id);
+      assert.ok(atMerge, 'The automatic integration path reached cleanup');
+      assert.equal(atMerge.attempts.length, 1);
+      assert.equal(atMerge.attempts[0]!.completion.kind, 'merged',
+        'A confirmed merge must not remain in progress until an unrelated state change');
+      assert.equal(atMerge.attempts[0]!.heads.delivered, row.integration.mergedHead);
+    });
   }
 });
 
