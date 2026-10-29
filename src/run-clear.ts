@@ -56,7 +56,11 @@ export function clearRun(cwd: string, home: string): ClearResult {
       if ((error as NodeJS.ErrnoException).code !== 'ERR_INVALID_ARG_TYPE') throw error;
       db = new DatabaseSync(path);
     }
-    db.exec('PRAGMA busy_timeout = 0');
+    db.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
+    // Refuse unsafe execution without even changing its journal configuration.
+    const initialRefusal = safety(readRunDatabase(db), db, cwd, home);
+    if (initialRefusal) return { status: 'refused', message: `Refused to clear: ${initialRefusal}` };
+    db.exec('ROLLBACK');
     // Mill normally uses SQLite's default DELETE rollback journal, not WAL.
     // Converting an externally WAL-configured file checkpoints it and refuses
     // other WAL users. SQLite, not manual unlinking, retires its WAL/SHM files.

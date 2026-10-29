@@ -92,6 +92,21 @@ The same line says whether the scheduler is running. `mill scheduler status` lis
 - **Unresolved slot reservations.** Each worker holds a directory under `~/.local/state/sawmill/slots`. A directory left without ownership metadata by a crash or a manual lease cleanup is reclaimed by the next `mill run once` or scheduler pass, so don't delete it by hand. A directory whose metadata is malformed or unreadable stays reserved, because a live worker may own it. `mill run once`, `mill run status` and the scheduler log name it as an unresolved reservation and say why. To free it, first make sure no worker uses it: `mill run status` in every millyard listed by `mill scheduler status` shows no working ticket with that slot. Then run `mill scheduler stop`, remove only that directory, and run `mill run`. Mill has no command for this step; it is done by hand.
 - **`mill run --foreground`** coordinates one run in your terminal, as before. It activates the run, and while it is attached the scheduler leaves that run to it.
 
+## Removing the current run
+
+Use `mill run clear [--json]`, not manual deletion of `.mill/run.sqlite` or its SQLite sidecars. It resolves the millyard from any linked worktree and removes only the current run, without an archive, interactive confirmation or force option. **Current membership, checkpoints and the run log are lost.** Save any needed evidence first. Existing history, attempt records in `.mill/records.sqlite`, role/worker logs, configuration, hooks, environment files, worktrees, branches, tracker content and the registry entry stay unchanged. Clear is not worktree cleanup or tracker cleanup.
+
+1. For an active or paused run, `mill run stop` first. This prevents new dispatch, but working tickets carry on. An inactive draft needs no whole-run stop.
+2. For each working ticket, `mill run stop <n>`. Wait for its stopped logjam in `mill run status`, at the next safe stage boundary, and then for its worker to exit. Do not kill workers or stop the shared scheduler for other projects.
+3. Resolve any pending tracker writes with `mill run answer <n>` for the affected tickets. A CLI answer leaves a stopped run stopped; do not reactivate it. Inspect status and logs again.
+4. Run `mill run clear`. It refuses active/paused runs, working tickets, live run connections or locks, live or uncertain execution ownership, retained worker slots and pending tracker writes. A logjam alone is not live execution. On a connection refusal, wait for the holder to finish, then retry; do not bypass the checks by removing files.
+
+An inactive, stopped or completed run can be cleared once these checks prove execution quiescent. Missing runs, including a repeat clear, succeed explicitly without creating a run file. A later `mill run draft` creates a fresh inactive run. Clear exits 0 for removal or absence, 1 for a safety refusal or operational failure, and 2 for usage/configuration errors; JSON distinguishes `removed`, `absent`, `refused` and `failed`.
+
+Unlike clear, **stop** retains the run for resumption; **reset** starts one ticket over and removes its worktree, branches and agent comments; **draft replacement** archives the previous run and creates a new inactive one, and is limited to an eligible inactive draft. Ordinary drafting appends to unfinished runs; after completion it archives and starts a new run. Clear neither archives nor drafts. Discovery skips a missing run, so Board and scheduler observation do not recreate it, and other projects keep running.
+
+Mill retains `.mill/run-access.sqlite` as a permanent deletion fence, not a run file or archive. Never remove it by hand: every Mill connection holds a shared lock there, while clear takes an exclusive lock through validation, run connection close and removal. SQLite releases those locks after a crash. The run normally uses SQLite's default DELETE rollback journal, not WAL. If it was externally switched to WAL, clear requires SQLite to checkpoint and return to DELETE mode with no other users before removal. An exclusive run-file transaction also excludes external SQLite transactions; no journal/WAL/SHM sidecar is manually removed while another transaction may use it.
+
 ## While a run is live, don't
 
 Mill owns the millyard, the integration branch, and every working ticket's worktree and branch. If you change them under a running run, the next merge fails, or your commit leaks into other tickets.
@@ -160,6 +175,7 @@ For anything else, answer once and move on. If the same stop comes back, file a 
 | Correct a protected test, then edit `testCommit` and `repair` in `run.sqlite` | Commit the fix in the worktree, then `mill run approve-tests <n>` and `mill run answer <n>` (#87). Automatic reviewer-requested corrections (#97) need neither. |
 | Edit `acceptance` in `run.sqlite` to let an unproved "Done when" item pass | `mill run waive <n> <item> --reason <text>`, then `mill run answer <n>` (#134). |
 | Edit a drafted ticket's body or acceptance in `run.sqlite` after changing it in the tracker | `mill run refresh <n>`; stop a working ticket first and wait for its logjam. |
+| Delete `.mill/run.sqlite` or its SQLite sidecars to remove the current run | `mill run clear [--json]`, after the safe stopping sequence above. It discards membership, checkpoints and the run log without archiving; it retains worktrees, branches and tracker content. |
 | Delete a ticket's worktree, branches, and comments to start over | `mill run stop <n>`, then `mill run reset <n>` (#77). |
 | `mv .mill`, `sed` over logs, and a sqlite `UPDATE` to move the millyard | `mill build --move` in the target worktree (#72). |
 | Add or remove a tracker label | `mill tickets label <n> <label> [--remove]`. |
