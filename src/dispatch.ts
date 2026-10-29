@@ -17,6 +17,7 @@ import type { TicketWriter } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { checkFirstStart } from './first-start.js';
 import { preflightPiModels } from './pi-runtime.js';
+import { projectEnvironment } from './project-environment.js';
 
 export interface DispatchResult {
   status: 'ok' | 'partial';
@@ -79,7 +80,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
       claimed = claimWorker(cwd, ticket, worker);
       if (!claimed) { releaseSlot(lease); continue; }
       mkdirSync(directory, { recursive: true });
-      const owned = await launchWorker(cwd, home, ticket, worker, lease);
+      const owned = await launchWorker(cwd, project, home, ticket, worker, lease);
       result.started.push({ ticket, worker: owned });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -111,12 +112,12 @@ export async function dispatchPreflight(cwd: string, project: ProjectConfig, wai
 
 class UncertainWorkerLaunch extends Error {}
 
-function launchWorker(cwd: string, home: string, ticket: number, owner: WorkerOwnership, lease: SlotLease): Promise<WorkerOwnership> {
+function launchWorker(cwd: string, project: ProjectConfig, home: string, ticket: number, owner: WorkerOwnership, lease: SlotLease): Promise<WorkerOwnership> {
   const fd = openSync(owner.log, 'ax');
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [fileURLToPath(new URL('./team-worker.js', import.meta.url)), String(ticket), owner.runId, owner.token, home], {
-      cwd, detached: true, env: { ...process.env, MILL_WORKER_TOKEN: owner.token, HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
+      cwd, detached: true, env: { ...projectEnvironment(project), MILL_WORKER_TOKEN: owner.token, HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || join(home, '.config') }, stdio: ['ignore', fd, fd, 'ipc'],
     });
   } finally { closeSync(fd); }
   return new Promise((resolve, reject) => {

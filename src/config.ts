@@ -23,6 +23,8 @@ export interface ProjectConfig {
   jev?: Partial<Record<JevScreen, JevScreenConfig>> & { routing?: { enabled: boolean } };
   /** Legacy alias; jev.routing takes precedence. */
   model_routing?: { enabled: boolean };
+  /** Directories prepended to the inherited PATH for this project's execution. */
+  env?: { path?: string[] };
   role_timeout: string;
   /** none: the project has no tests, on purpose. No red check, no test run before merge. */
   tests: { command: string; timeout: string; preflight?: string; focused?: FocusedTests } | 'none';
@@ -131,6 +133,7 @@ const projectSchema = object({
     routing: { ...object({ enabled: { type: 'boolean', default: false } }), optional: true },
   }), optional: true },
   model_routing: { ...object({ enabled: { type: 'boolean' } }), optional: true },
+  env: { ...object({ path: { type: 'list', optional: true, hint: 'expected a non-empty list of distinct PATH directories' } }), optional: true },
   role_timeout: { ...duration, default: '60m' },
   tests: { ...object({ command: string, timeout: { ...duration, default: '30m' }, preflight: { ...string, optional: true }, focused: { ...object({
     command: literal,
@@ -301,6 +304,7 @@ export async function loadConfig(cwd: string, home: string): Promise<Configurati
     });
   }
   if (issues.length || !project || !machine) return { valid: false, issues };
+  if (project.env?.path) project.env.path = project.env.path.map(path => resolve(cwd, path === '~' ? home : path.startsWith('~/') ? join(home, path.slice(2)) : path));
   return { valid: true, project, machine, issues };
 }
 
