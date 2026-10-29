@@ -261,7 +261,14 @@ export function checkDraftable(cwd: string, replace: boolean): RunSnapshot | und
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
   closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy, validated?: RunSnapshot): number | undefined {
-  const db = fencedRun(cwd, () => new DatabaseSync(runPath(cwd)));
+  const db = fencedRun(cwd, () => {
+    // A draft validated before clear must not recreate even an empty run file.
+    // Check under the deletion fence before opening SQLite with creation enabled.
+    if (validated && !existsSync(runPath(cwd))) {
+      throw new CliError('Run membership changed while drafting; retry mill run draft. Existing work is unchanged.');
+    }
+    return new DatabaseSync(runPath(cwd));
+  });
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
