@@ -4,6 +4,7 @@ import { checkMillyard } from './millyard.js';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { registerMillyard } from './registry.js';
+import { literalCommand, requiredCheckNames } from './verification.js';
 import { proofPlan } from './proof-plan.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
 import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
@@ -29,6 +30,18 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
       throw new CliError(`Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.`);
     }
     throw new CliError(`Cannot check integration branch ${project.integration} on remote origin; verify remote access and retry drafting.\n${error instanceof Error ? error.message : String(error)}`);
+  }
+  const warnings: string[] = [];
+  const commands: [string, string][] = project.tests === 'none' ? [] : [['tests.command', project.tests.command]];
+  for (const name of requiredCheckNames) {
+    const command = project.required_checks?.[name];
+    if (command !== undefined) commands.push([`required_checks.${name}`, command]);
+  }
+  for (const [setting, command] of commands) {
+    const program = (literalCommand(command) ?? command.trim().split(/\s+/)).find(word => !/^[A-Za-z_]\w*=/.test(word));
+    if (!program) continue;
+    try { await execute('bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd, timeout: 5000 }); }
+    catch { warnings.push(`${setting}: ${program} was not found on PATH in the millyard; install it or set it up in .mill/setup.sh before starting tickets.`); }
   }
   let tickets: Ticket[];
   if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
@@ -105,7 +118,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   }
   const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, tickets.length ? await checkPolicy() : undefined, previous);
   await registerMillyard(home, cwd);
-  return { snapshot: readRun(cwd), added: ordered.map(ticket => ticket.number), alreadyPresent, ...(clearedPick === undefined ? {} : { clearedPick }) };
+  return { snapshot: readRun(cwd), added: ordered.map(ticket => ticket.number), alreadyPresent, warnings, ...(clearedPick === undefined ? {} : { clearedPick }) };
 }
 
 function bodyBlockers(body: string): number[] {
