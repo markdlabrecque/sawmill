@@ -160,12 +160,12 @@ function enqueue(db: DatabaseSync, number: number, write: MirrorWrite) {
   }
 }
 
-/** Tickets whose state a transaction changed; their attempt records follow once it commits. */
+/** Tickets whose state or completion a transaction changed; their attempt records follow once it commits. */
 const stateChanges = new WeakMap<DatabaseSync, Set<number>>();
 
 function update(db: DatabaseSync, number: number, change: Transition, writes: MirrorWrite[] = []) {
   requireTicket(db, number);
-  if (change.state !== undefined) {
+  if (change.state !== undefined || change.completion !== undefined) {
     if (!stateChanges.has(db)) stateChanges.set(db, new Set());
     stateChanges.get(db)!.add(number);
   }
