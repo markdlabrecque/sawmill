@@ -51,6 +51,14 @@ Any reason not in this table: read the evidence and act if the fix is clear. Oth
 
 An unsettled call is where the two skills part ways. Follow your skill's own rule for it.
 
+## Safety when repairing a ticket's environment
+
+Before changing a working ticket's files or branch, run `mill run stop <n>` and wait for its stopped logjam in `mill run status`. Leave existing work intact.
+
+- **Preserve ticket history.** To bring a ticket branch up to date, use `git merge <integration-branch>` in its worktree, substituting the configured integration branch. Never use `git rebase` or `git reset` on a ticket branch: Mill protects the test-writer checkpoints. Do not use `git stash` in ticket worktrees. If uncommitted work prevents the merge, leave it in place and follow your skill's unsettled-call rule. This Git prohibition does not change the separate `mill run reset <n>` play and its destructive-play limits.
+- **Isolate build output.** Give every side copy or temporary worktree used for a red check or diagnosis its own build folder. For Rust, set `CARGO_TARGET_DIR` to a directory unique to that copy. Never share or point build output at the ticket's build folder or `target/`; shared artifacts can produce false test failures.
+- **Keep secrets out of output.** Never print or dump shell startup files (`.zshenv`, `.zshrc`, `.bashrc`, `.profile`) or env files (`.env`), even when diagnosing PATH. Inspect only PATH with `printenv PATH`; do not dump the whole environment, since unrelated values and file contents can contain API keys.
+
 ## Destructive plays
 
 `reset`, `close`, `waive` and `approve-tests` change what counts as done, or throw away work. Use them only when the evidence calls for them, and only within your skill's limits. `waive` additionally requires an explicit human decision for that saved acceptance item; watcher judgment is not a waiver. Write the decision entry before you run one, with the full reasoning, so a person can audit the call.
