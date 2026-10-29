@@ -3,6 +3,7 @@ import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
@@ -194,6 +195,47 @@ test('merge acceptance reaches the attempt record before cleanup, with or withou
       assert.equal(atMerge.attempts[0]!.heads.delivered, row.integration.mergedHead);
     });
   }
+});
+
+test('export agrees with merged -> done after attempt recording fails during delivery', async t => {
+  const y = await fixture(t);
+  let interrupted = false;
+  y.setScript(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'reviewer') {
+      // Exercise the real best-effort recording seam without changing the run file.
+      // This models a records-only write failure, not evidence of the historical run's cause.
+      const records = new DatabaseSync(join(y.cwd, '.mill/records.sqlite'));
+      try {
+        records.exec(`CREATE TRIGGER interrupt_merge_record BEFORE UPDATE OF summary ON attempts
+          WHEN json_extract(NEW.summary, '$.completion.kind') = 'merged'
+          BEGIN SELECT RAISE(FAIL, 'injected records-only write failure'); END`);
+        interrupted = true;
+      } finally { records.close(); }
+    }
+    return result;
+  });
+
+  const delivered = await y.cli('team', 'run', '12', '--json');
+  assert.equal(delivered.code, 0, delivered.stdout);
+  assert.ok(interrupted, 'The recording failure was installed before integration');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done');
+  assert.equal(row.completion, 'merged');
+  const log = await y.cli('run', 'log', '12');
+  assert.equal(log.code, 0, log.stdout);
+  assert.match(log.stdout, /\[merged\] -> done/);
+
+  // Storage is available again, but there is no later state change to rebuild the record.
+  const records = new DatabaseSync(join(y.cwd, '.mill/records.sqlite'));
+  try { records.exec('DROP TRIGGER interrupt_merge_record'); } finally { records.close(); }
+  const history = await y.exported();
+  assert.equal(history.attempts.length, 1, 'Recovery must not invent another attempt');
+  assert.equal(history.attempts[0]!.completion.kind, 'merged',
+    'A completed merge must not export the last pre-merge snapshot after recording recovers');
+  assert.ok(history.attempts[0]!.ended);
+  assert.equal(history.attempts[0]!.heads.delivered, row.integration.mergedHead);
+  assert.deepEqual(await y.exported(), history, 'Recovered export is repeatable');
 });
 
 test('a routine reset keeps the earlier attempt, and the next attempt points back to it exactly once', async t => {
