@@ -114,6 +114,7 @@ const projectOf = (tracker: RunSnapshot['run']['tracker']) => {
 export function syncAttempts(cwd: string, numbers: Iterable<number>): void {
   const snapshot = readRun(cwd);
   const project = projectOf(snapshot.run.tracker);
+  // Current-run log reads must hold the deletion fence until the connection closes.
   const log = openRun(cwd, true);
   try {
     write(cwd, db => {
