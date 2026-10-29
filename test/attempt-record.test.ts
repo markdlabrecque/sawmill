@@ -3,6 +3,7 @@ import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { runCli } from '../src/cli.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
@@ -109,7 +110,7 @@ async function fixture(t: TestContext) {
     assert.equal(result.code, 0, result.stdout);
     return JSON.parse(result.stdout) as Exported;
   };
-  return { ...y, cli, inputs, normal, exported, setScript(value: Runtime['run']) { script = value; },
+  return { ...y, cli, tracker, inputs, normal, exported, setScript(value: Runtime['run']) { script = value; },
     status: async (): Promise<any> => readRun(y.cwd) };
 }
 
@@ -152,6 +153,89 @@ test('a merged ticket yields one record naming its delivered code, policy, envir
     assert.notEqual(attempt[field], 0, field);
     assert.equal(JSON.stringify(attempt[field]).includes('unknown'), true, `${field} is marked unknown`);
   }
+});
+
+test('merge acceptance reaches the attempt record before cleanup, with or without a human answer', async t => {
+  for (const answered of [false, true]) {
+    await t.test(answered ? 'resumed after a question' : 'no human actions', async t => {
+      const y = await fixture(t);
+      if (answered) {
+        y.setScript(asking);
+        await y.cli('team', 'run', '12', '--json');
+        assert.equal((await y.status()).tickets[0].state, 'logjam');
+        assert.equal((await y.cli('run', 'answer', '12', 'Return 42.')).code, 0);
+        y.setScript(y.normal);
+      }
+      const before = await y.exported();
+      const deleteRemoteBranch = y.tracker.deleteRemoteBranch;
+      let atMerge: Exported | undefined;
+      y.tracker.deleteRemoteBranch = async branch => {
+        // The tracker has accepted the merge, but no cleanup or final done transition has run.
+        const row = (await y.status()).tickets[0];
+        assert.equal(row.completion, 'merged');
+        assert.ok(row.mergeCommit);
+        atMerge = await y.exported();
+        return deleteRemoteBranch(branch);
+      };
+
+      assert.equal((await y.cli('team', 'run', '12', '--json')).code, 0);
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.state, 'done');
+      assert.equal(row.completion, 'merged');
+      const final = await y.exported();
+      assert.equal(final.attempts.length, 1, 'Answering resumes the same attempt');
+      assert.equal(final.attempts[0]!.completion.kind, 'merged');
+      assert.ok(final.attempts[0]!.ended);
+      assert.equal(final.attempts[0]!.heads.delivered, row.integration.mergedHead);
+      if (answered) assert.equal(final.attempts[0]!.id, before.attempts[0]!.id);
+      assert.ok(atMerge, 'The automatic integration path reached cleanup');
+      assert.equal(atMerge.attempts.length, 1);
+      assert.equal(atMerge.attempts[0]!.completion.kind, 'merged',
+        'A confirmed merge must not remain in progress until an unrelated state change');
+      assert.equal(atMerge.attempts[0]!.heads.delivered, row.integration.mergedHead);
+    });
+  }
+});
+
+test('export agrees with merged -> done after attempt recording fails during delivery', async t => {
+  const y = await fixture(t);
+  let interrupted = false;
+  y.setScript(async (request, sink) => {
+    const result = await y.normal(request, sink);
+    if (request.role === 'reviewer') {
+      // Exercise the real best-effort recording seam without changing the run file.
+      // This models a records-only write failure, not evidence of the historical run's cause.
+      const records = new DatabaseSync(join(y.cwd, '.mill/records.sqlite'));
+      try {
+        records.exec(`CREATE TRIGGER interrupt_merge_record BEFORE UPDATE OF summary ON attempts
+          WHEN json_extract(NEW.summary, '$.completion.kind') = 'merged'
+          BEGIN SELECT RAISE(FAIL, 'injected records-only write failure'); END`);
+        interrupted = true;
+      } finally { records.close(); }
+    }
+    return result;
+  });
+
+  const delivered = await y.cli('team', 'run', '12', '--json');
+  assert.equal(delivered.code, 0, delivered.stdout);
+  assert.ok(interrupted, 'The recording failure was installed before integration');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done');
+  assert.equal(row.completion, 'merged');
+  const log = await y.cli('run', 'log', '12');
+  assert.equal(log.code, 0, log.stdout);
+  assert.match(log.stdout, /\[merged\] -> done/);
+
+  // Storage is available again, but there is no later state change to rebuild the record.
+  const records = new DatabaseSync(join(y.cwd, '.mill/records.sqlite'));
+  try { records.exec('DROP TRIGGER interrupt_merge_record'); } finally { records.close(); }
+  const history = await y.exported();
+  assert.equal(history.attempts.length, 1, 'Recovery must not invent another attempt');
+  assert.equal(history.attempts[0]!.completion.kind, 'merged',
+    'A completed merge must not export the last pre-merge snapshot after recording recovers');
+  assert.ok(history.attempts[0]!.ended);
+  assert.equal(history.attempts[0]!.heads.delivered, row.integration.mergedHead);
+  assert.deepEqual(await y.exported(), history, 'Recovered export is repeatable');
 });
 
 test('a routine reset keeps the earlier attempt, and the next attempt points back to it exactly once', async t => {
