@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { parse } from 'yaml';
 import { packageRoot, readBuildIdentity } from './build-identity.js';
 import { CliError } from './errors.js';
-import { alreadyClosed, readRun, runPath, type RunSnapshot, type RunTicket } from './run-store.js';
+import { alreadyClosed, historyPath, readRun, runPath, type RunSnapshot, type RunTicket } from './run-store.js';
 
 /** One compact summary per delivery attempt, kept in `.mill/records.sqlite` beside the run, so a reset or a
  * redraft never loses it. It is derived from the run as each state change commits; no transcript is copied.
@@ -104,8 +104,8 @@ function write<T>(cwd: string, work: (db: DatabaseSync) => T): T {
   } finally { db.close(); }
 }
 
-const projectOf = (snapshot: RunSnapshot) => {
-  const { backend, host, repo } = snapshot.run.tracker;
+const projectOf = (tracker: RunSnapshot['run']['tracker']) => {
+  const { backend, host, repo } = tracker;
   return `${backend}:${host ? `${host}/` : ''}${repo}`;
 };
 
@@ -113,7 +113,7 @@ const projectOf = (snapshot: RunSnapshot) => {
  * queue, as reset does, seals its attempt untouched; the ticket's next start opens a new one that points back. */
 export function syncAttempts(cwd: string, numbers: Iterable<number>): void {
   const snapshot = readRun(cwd);
-  const project = projectOf(snapshot);
+  const project = projectOf(snapshot.run.tracker);
   const log = new DatabaseSync(runPath(cwd), { readOnly: true });
   try {
     write(cwd, db => {
@@ -149,17 +149,18 @@ export function recordHumanAction(cwd: string, number: number): void {
   const snapshot = readRun(cwd);
   write(cwd, db => {
     db.prepare('UPDATE attempts SET human = human + 1 WHERE seq = (SELECT MAX(seq) FROM attempts WHERE project = ? AND ticket = ? AND run = ? AND sealed IS NULL)')
-      .run(projectOf(snapshot), number, snapshot.run.id);
+      .run(projectOf(snapshot.run.tracker), number, snapshot.run.id);
   });
 }
 
-/** The record is derived from the run and rebuilt at the next state change, so a failure to write it never stops delivery. */
+/** Recording never stops delivery. Later state changes rebuild summaries; exports recover missed merge evidence read-only. */
 export function recordSafely(work: () => void): void {
   try { work(); } catch { /* The next state change rebuilds the summary from the run. */ }
 }
 
 interface LogEvent {
-  change?: { state?: string; reason?: string | null; bounces?: number; team?: { repair?: { source?: string }; correction?: { from?: string } };
+  change?: { state?: string; reason?: string | null; stage?: string | null; completion?: RunTicket['completion']; mergeCommit?: string | null;
+    integration?: RunTicket['integration']; bounces?: number; team?: { repair?: { source?: string }; correction?: { from?: string } };
     report?: { stage?: string; error?: string; retries?: number } };
   flaky?: unknown;
   mirrorError?: unknown;
@@ -260,10 +261,50 @@ function rows(cwd: string) {
   } finally { db.close(); }
 }
 
+/** Recover only delivery fields from this attempt's committed log, not today's policy or environment.
+ * A reset ends the evidence range even if recording that reset also failed. Archived runs remain usable,
+ * and forgotten records are never recreated. Neither the run nor the retained summary is written. */
+function recoverMerge(cwd: string, row: ReturnType<typeof rows>[number], summary: Partial<Summary>): Partial<Summary> {
+  for (const file of [runPath(cwd), join(historyPath(cwd), `${String(row.run)}.sqlite`)]) {
+    if (!existsSync(file)) continue;
+    let log: DatabaseSync | undefined;
+    try {
+      log = new DatabaseSync(file, { readOnly: true });
+      log.exec('PRAGMA busy_timeout = 5000; BEGIN');
+      const run = log.prepare('SELECT id, tracker FROM run').get();
+      if (!run || run.id !== row.run || projectOf(JSON.parse(String(run.tracker))) !== row.project) continue;
+      const events = log.prepare('SELECT time, event FROM log WHERE ticket = ? AND id > ? AND (? IS NULL OR id <= ?) ORDER BY id')
+        .all(Number(row.ticket), Number(row.log_from), row.log_to == null ? null : Number(row.log_to), row.log_to == null ? null : Number(row.log_to));
+      let completion: RunTicket['completion'] = null;
+      let stage = summary.completion?.stage ?? null;
+      let reason = summary.completion?.reason ?? null;
+      let ended = summary.ended ?? null;
+      let delivered = summary.heads?.delivered ?? null;
+      let mergeCommit = summary.heads?.mergeCommit ?? null;
+      for (const entry of events) {
+        const change = (JSON.parse(String(entry.event)) as LogEvent).change;
+        if (!change) continue;
+        if (change.stage === null && (change.state === 'queued' || change.state === 'blocked')) break;
+        if (change.completion !== undefined) completion = change.completion;
+        if (change.stage !== undefined) stage = change.stage;
+        if (change.reason !== undefined) reason = change.reason === null ? null : redact(change.reason, 80);
+        if (change.integration?.mergedHead) delivered = change.integration.mergedHead;
+        if (change.mergeCommit) mergeCommit = change.mergeCommit;
+        if (change.state !== undefined) ended = change.state === 'done' || change.state === 'logjam' ? String(entry.time) : null;
+      }
+      if (completion !== 'merged' || !mergeCommit) return summary;
+      return { ...summary, ended, completion: { kind: 'merged', reason, stage },
+        heads: { source: summary.heads?.source ?? null, base: summary.heads?.base ?? null, delivered, mergeCommit } };
+    } catch { /* Unavailable run evidence must not make retained history unreadable. */ }
+    finally { log?.close(); }
+  }
+  return summary;
+}
+
 /** Every retained attempt, oldest first. Reading never writes the records. Fields an older record lacks read as unknown. */
 export function exportRecords(cwd: string): RecordExport {
   const attempts = rows(cwd).map(row => {
-    const summary = JSON.parse(String(row.summary)) as Partial<Summary>;
+    const summary = recoverMerge(cwd, row, JSON.parse(String(row.summary)) as Partial<Summary>);
     const findings = { reviewBounces: 0, testCorrections: 0, flakes: 0, environmentFailures: 0, infrastructureRetries: 0, testsNotRed: 0, repairBounces: {}, ...summary.findings, humanActions: Number(row.human) };
     return {
       id: String(row.id), project: String(row.project), run: String(row.run), ticket: Number(row.ticket), previous: row.previous === null ? null : String(row.previous),
