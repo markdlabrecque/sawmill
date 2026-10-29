@@ -80,7 +80,7 @@ for (const source of ['tests.command', 'required_checks.build'] as const) {
     assert.match(lines[0]!, /not found|cannot find|could not find|unavailable|missing/i);
     const state = await y.status();
     assert.deepEqual(state.tickets.map(row => ({ state: row.state, worker: row.worker })), [
-      { state: 'queued', worker: undefined }, { state: 'queued', worker: undefined },
+      { state: 'queued', worker: null }, { state: 'queued', worker: null },
     ], 'Unavailable verification commands must leave all tickets unclaimed, without environment logjams');
     assert.deepEqual(await y.starts(), []);
     assert.equal(await readFile(join(y.root, 'hooks'), 'utf8').catch(() => ''), '', 'No ticket setup hook may run before admission succeeds');
