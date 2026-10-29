@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { parse } from 'yaml';
 import { packageRoot, readBuildIdentity } from './build-identity.js';
 import { CliError } from './errors.js';
-import { alreadyClosed, historyPath, readRun, runPath, type RunSnapshot, type RunTicket } from './run-store.js';
+import { alreadyClosed, historyPath, openRun, readRun, runPath, type RunSnapshot, type RunTicket } from './run-store.js';
 
 /** One compact summary per delivery attempt, kept in `.mill/records.sqlite` beside the run, so a reset or a
  * redraft never loses it. It is derived from the run as each state change commits; no transcript is copied.
@@ -114,7 +114,7 @@ const projectOf = (tracker: RunSnapshot['run']['tracker']) => {
 export function syncAttempts(cwd: string, numbers: Iterable<number>): void {
   const snapshot = readRun(cwd);
   const project = projectOf(snapshot.run.tracker);
-  const log = new DatabaseSync(runPath(cwd), { readOnly: true });
+  const log = openRun(cwd, true);
   try {
     write(cwd, db => {
       for (const number of numbers) {

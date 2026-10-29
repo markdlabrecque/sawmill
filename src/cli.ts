@@ -2,6 +2,7 @@ import { runTeam } from './team-runner.js';
 import { dispatchOnce, dispatchPreflight } from './dispatch.js';
 import { resumeRun, runLoop } from './run-loop.js';
 import { lockHeld } from './run-lock.js';
+import { clearRun } from './run-clear.js';
 import { ensureExecutionScheduler, requireSchedulerConfiguration, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
@@ -289,6 +290,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         const result = await createWorktree(cwd, config.project, config.machine, Number(positional[2]), { home, root, sleep: options.sleep, writer: () => ticketWriter(options, config.project, cwd) });
         emit(result, [result.status === 'ok' ? result.path : `Ticket in logjam: ${result.path}`, ...('warnings' in result ? result.warnings ?? [] : []).map(warning => `Warning: ${warning}`)].join('\n'));
         return result.status === 'ok' ? 0 : 1;
+      }
+      if (positional[0] === 'run' && positional[1] === 'clear') {
+        if (positional.length !== 2) throw new CliError(usage('run clear'), 2);
+        const result = clearRun(cwd, home);
+        if (result.status === 'removed') notifyScheduler(home);
+        emit(result, result.message);
+        return result.status === 'removed' || result.status === 'absent' ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'status') {
         if (positional.length !== 2) {
