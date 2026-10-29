@@ -469,7 +469,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);
         const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
         const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick ${ref(drafted.clearedPick)} because the run was replaced.`];
-        emit({ ...view(snapshot), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...cleared, ...policy,
+        emit({ ...view(snapshot), ...(drafted.warnings.length ? { warnings: drafted.warnings } : {}), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...drafted.warnings.map(warning => `Warning: ${warning}`), ...cleared, ...policy,
           ...drafted.alreadyPresent.map(number => `${ref(number)} is already present; left unchanged.`),
           snapshot.run.lifecycle === 'inactive' ? 'The run is inactive; inspect it with mill run status, then start it with mill run.' : `The run remains ${snapshot.run.lifecycle}.`].join('\n'));
         return 0;
