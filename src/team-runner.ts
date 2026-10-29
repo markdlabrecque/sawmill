@@ -34,7 +34,7 @@ import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
 
 const execute = promisify(execFile);
-const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
+const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; request a scoped test correction if they are wrong.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
 const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;

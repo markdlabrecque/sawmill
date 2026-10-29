@@ -29,7 +29,7 @@ Bash is narrow here. Allowed: `git add`, `git rm`, `git mv` and `git commit` wit
 
 ## The test files are not yours
 
-The team runner diffs the test writers' files against the tree after you finish. Any change to them is a bounce. If a test is wrong, say so in your summary with the reason and leave it failing. The reviewer can send a scoped correction to the test writers; otherwise a human will decide.
+The team runner diffs the test writers' files against the tree after you finish. Any change to them is a bounce. If a protected test is wrong or pins behaviour the ticket legitimately changes, leave it untouched and request a scoped test correction. Name the exact protected files, explain the mistake, and state how the corrected tests must still cover the ticket. Commit any implementation work and leave the worktree clean before returning the request. Mill sends it to the test writers, then to a fresh review; only a passing review with renewed red proof promotes the corrected tests. Requests do not spend implementation bounces, but after two correction attempts another request stops for a person. Files outside the protected baseline cannot be corrected this way.
 
 ## Fix rounds
 
@@ -57,4 +57,10 @@ End with exactly one fenced block tagged `mill-outcome`. Nothing after it.
 
 ```mill-outcome
 {"outcome": "question", "question": "Making this pass requires a new column on `nodes`. Is a migration in scope for this ticket?"}
+```
+
+A scoped request to the test writers, without editing their tests:
+
+```mill-outcome
+{"outcome": "test-correction", "files": ["tests/feature_test.ts"], "mistake": "The assertion pins the old contract marker, which the ticket explicitly replaces.", "preserves": "Assert the new marker while retaining the existing behavioural coverage."}
 ```
