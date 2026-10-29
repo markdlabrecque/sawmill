@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import type { Phase, Role, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
+import { fencedRun } from './run-access.js';
 import { ticketRef } from './links.js';
 import { defaultProofPlan, proofPlan, type ProofPlan, type ProofPlanRevision } from './proof-plan.js';
 import type { AssignResult, CheckPolicy, Ticket, TicketComment, Pipeline } from './tracker.js';
@@ -260,7 +261,14 @@ export function checkDraftable(cwd: string, replace: boolean): RunSnapshot | und
 /** `assign` queues one assignment per ticket with the run; the caller mirrors it after saving. */
 export function saveDraft(cwd: string, project: ProjectConfig, numbers: number[], tickets: Ticket[], edges: RunEdge[], replace = false, source: RunSelection = { kind: 'numbers', numbers }, assign = false,
   closed: { includeClosed?: boolean; skippedClosed?: number[] } = {}, checkPolicy?: CheckPolicy, validated?: RunSnapshot): number | undefined {
-  const db = new DatabaseSync(runPath(cwd));
+  const db = fencedRun(cwd, () => {
+    // A draft validated before clear must not recreate even an empty run file.
+    // Check under the deletion fence before opening SQLite with creation enabled.
+    if (validated && !existsSync(runPath(cwd))) {
+      throw new CliError('Run membership changed while drafting; retry mill run draft. Existing work is unchanged.');
+    }
+    return new DatabaseSync(runPath(cwd));
+  });
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
       PRAGMA foreign_keys = ON;
@@ -349,24 +357,33 @@ const elapsed = (wait: PhaseWait): PhaseWait => ({ ...wait, elapsedMs: Math.max(
 /** Opens the run for writing without ever creating it. SQLite's `mode=rw` refuses a missing
  * file, so a run deleted after it was read, such as a millyard removed under the scheduler,
  * is reported instead of recreated empty. Only drafting creates a run. */
-export function openRun(cwd: string): DatabaseSync {
-  const url = pathToFileURL(runPath(cwd));
-  url.searchParams.set('mode', 'rw');
-  try { return new DatabaseSync(url); }
-  catch (error) {
-    // Node before 22.15 takes only string paths; it keeps the earlier check-then-open.
-    if ((error as NodeJS.ErrnoException).code === 'ERR_INVALID_ARG_TYPE') return new DatabaseSync(runPath(cwd));
+export function openRun(cwd: string, readOnly = false): DatabaseSync {
+  if (!existsSync(runPath(cwd))) throw new CliError(noRunMessage);
+  return fencedRun(cwd, () => {
+    // Check under the deletion fence, including on Node versions without URL support.
     if (!existsSync(runPath(cwd))) throw new CliError(noRunMessage);
-    throw error;
-  }
+    const url = pathToFileURL(runPath(cwd));
+    url.searchParams.set('mode', readOnly ? 'ro' : 'rw');
+    try { return new DatabaseSync(url, { readOnly }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_INVALID_ARG_TYPE') return new DatabaseSync(runPath(cwd), { readOnly });
+      throw error;
+    }
+  });
 }
 
 /** Reads any run file, current or archived, without writing it. */
 export function readRunFile(file: string): RunSnapshot {
   if (!existsSync(file)) throw new CliError(noRunMessage);
-  const db = new DatabaseSync(file, { readOnly: true });
+  const db = basename(file) === 'run.sqlite' ? openRun(dirname(dirname(file)), true) : new DatabaseSync(file, { readOnly: true });
   try {
     db.exec('PRAGMA busy_timeout = 5000; BEGIN');
+    return readRunDatabase(db);
+  } finally { db.close(); }
+}
+
+/** Read a snapshot under the caller's transaction, including clear's exclusive lock. */
+export function readRunDatabase(db: DatabaseSync): RunSnapshot {
     const run = db.prepare('SELECT * FROM run').get();
     if (!run) throw new CliError(noRunMessage);
     const edges: RunEdge[] = db.prepare('SELECT * FROM edges ORDER BY blocked, blocker').all().map(row => ({ blocked: Number(row.blocked), blocker: Number(row.blocker), outsideClosed: Boolean(row.outside_closed) }));
@@ -428,7 +445,6 @@ export function readRunFile(file: string): RunSnapshot {
       ...(run.include_closed ? { includeClosed: true as const } : {}), ...(run.skipped_closed ? { skippedClosed: JSON.parse(String(run.skipped_closed)) as number[] } : {}),
       ...(run.check_policy ? { checkPolicy: JSON.parse(String(run.check_policy)) as CheckPolicy } : {}),
       ...(run.pending_pick ? { pendingPick: Number(run.pending_pick) } : {}) }, tickets, edges, pendingWrites };
-  } finally { db.close(); }
 }
 
 export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectConfig['tracker']; links?: boolean } = {}): string {
@@ -473,7 +489,7 @@ export interface LogEntry { id: number; time: string; event: Record<string, unkn
 /** One ticket's log rows, oldest first, read without writing the run file. */
 export function readTicketLog(cwd: string, number: number): LogEntry[] {
   if (!existsSync(runPath(cwd))) throw new CliError('No drafted run; use mill run draft <numbers...>.');
-  const db = new DatabaseSync(runPath(cwd), { readOnly: true });
+  const db = openRun(cwd, true);
   try {
     db.exec('PRAGMA busy_timeout = 5000');
     if (!db.prepare('SELECT number FROM tickets WHERE number = ?').get(number)) throw new CliError(`Ticket #${number} is not in the run.`);

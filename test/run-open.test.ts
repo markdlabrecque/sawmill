@@ -30,5 +30,5 @@ test('opening an existing run for writing writes that run', async t => {
   const check = new DatabaseSync(runPath(cwd), { readOnly: true });
   try { assert.deepEqual(check.prepare('SELECT id FROM run').all().map(row => row.id), ['written']); }
   finally { check.close(); }
-  assert.deepEqual(await readdir(join(cwd, '.mill')), ['run.sqlite']);
+  assert.deepEqual(await readdir(join(cwd, '.mill')), ['run-access.sqlite', 'run.sqlite']);
 });

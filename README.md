@@ -243,7 +243,8 @@ Run these from any worktree of the project, or any folder inside one. Drafting a
 | `mill run --foreground` | Activate the run and coordinate it in the terminal until it finishes, has no runnable work, pauses, or is stopped. |
 | `mill run log 12` | Print every step Mill took on a ticket, oldest first, with each report in full. |
 | `mill run once` | Dispatch one pass and return; detached workers continue. The run stays inactive if it was. |
-| `mill run stop` | Stop the run: no new tickets start until `mill run`. |
+| `mill run stop` | Stop the run: no new tickets start until `mill run`; working tickets carry on. |
+| `mill run clear [--json]` | Remove a quiescent current run without archiving; missing runs are a successful no-op. See [Clearing a run](#clearing-a-run). |
 | `mill scheduler status` | Show the shared scheduler, its log, and every registered run. |
 | `mill scheduler stop` | Stop the shared scheduler; working tickets keep going. |
 | `mill run refresh 12` | Pick up the latest ticket text and comments without resetting its work or state. |
@@ -269,7 +270,17 @@ Add `--json` for machine-readable output; tail streams JSON events. Exit codes a
 
 Commands other than `mill build` work from any worktree of the project: the millyard, a ticket worktree, the main checkout, or any other linked worktree. They find the one worktree that holds `.mill/config.yaml` and use its settings and run state. If no worktree holds it, or more than one does, Mill lists the worktrees and stops. Commands that need the integration branch still check the millyard itself and refuse when it is dirty or on another branch.
 
-One millyard holds one current run. Drafting a new run first copies the old one, if it has tickets, to `.mill/history/<run id>.sqlite` for safekeeping. `--replace` on `run draft` replaces an unfinished run, including its pending tracker writes; the run is still kept in `.mill/history` as it was. Finish or stop its active teams before replacing it.
+One millyard holds one current run. Drafting again appends to an unfinished run without resetting its existing tickets. Drafting after completion saves the old run to `.mill/history/<run id>.sqlite` and creates a new inactive run. `run draft --replace` archives and replaces only an inactive draft with no working or logjam tickets; it can discard pending tracker writes. It cannot replace a run in progress.
+
+### Clearing a run
+
+`mill run clear [--json]` removes only the resolved millyard's current `.mill/run.sqlite`, even when invoked in a linked worktree. **Membership, saved checkpoints and the run log are discarded without an archive or interactive confirmation.** Export any evidence you need first. Existing `.mill/history/`, `.mill/records.sqlite` attempt records, role/worker logs, configuration, hooks, environment files, worktrees, branches and tracker content remain unchanged. Registration stays: it does not imply a run exists.
+
+Clear is not stop (which preserves the run), reset (which restarts one ticket and removes its worktree, branches and agent comments), or draft replacement (which archives the old run and creates another). Clear creates no new run. Absence, including repeated clear, is an explicit successful no-op; a later draft creates a fresh inactive run normally.
+
+For a started run, first `mill run stop` to prevent new dispatch. Then `mill run stop <n>` for every working ticket, and wait for its stopped logjam at a safe stage boundary **and for its worker to exit**. Whole-run stop does not stop workers. Do not stop the shared scheduler for other projects. Resolve held tracker writes through `mill run answer <n>` while keeping the run stopped. Clear refuses active or paused runs, working tickets, live run connections/locks, live or uncertain worker ownership, retained worker slots and pending tracker writes. An otherwise quiescent logjam is allowed. There is no force bypass and no worker is killed.
+
+Text and JSON distinguish `removed`, `absent`, `refused` and `failed`; exits are 0 for removal/absence, 1 for safety refusal or operational failure, and 2 for invalid arguments/configuration. Only `--json` is accepted; `--force` is invalid. If a connection is still in use, wait for it to close and retry. Use this command, never manual SQLite deletion. See the [safe removal sequence](docs/operating-mill.md#removing-the-current-run).
 
 ### Watching every run
 
