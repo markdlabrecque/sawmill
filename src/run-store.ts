@@ -66,7 +66,7 @@ export interface TeamProgress {
   /** Ancestry anchor after a verified rebase; the protected commits then name their rebased copies. */
   checkpointHead?: string;
   repair?: RepairContext;
-  /** A reviewer-requested correction of protected tests, pending until a fresh review passes it. */
+  /** A scoped correction of protected tests, pending until a fresh review passes it. */
   correction?: TestCorrection;
   /** A question ends the invocation; an answer re-enters this role on its saved branch. */
   question?: { role: Role; question: string; wipHead?: string; preserved: boolean; error?: string };
@@ -96,13 +96,15 @@ export interface PreparedSite {
 }
 /** The original writer commits stay in `testCommits`; `testCommit` moves only when a review accepts `head`. */
 export interface TestCorrection {
-  /** The reviewer's request: the only paths the test-writers may change. */
+  /** The request: the only paths the test-writers may change. */
   files: string[];
+  /** Absent on older reviewer requests. Required-check requests are identified by `check`. */
+  requestedBy?: 'implementer' | 'reviewer';
   /** The required check whose failure in protected tests asked for this correction, when no reviewer did. */
   check?: string;
   mistake: string;
   preserves: string;
-  /** Protected baseline and reviewed HEAD when the first request was made. */
+  /** Protected baseline and committed HEAD when the request was made. */
   baseline: string;
   requestedHead: string;
   /** Correction attempts, separate from implementation-review bounces. */
