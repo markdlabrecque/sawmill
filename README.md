@@ -315,7 +315,7 @@ mill run answer 12
 
 If a repair was stuck because the implementer had nothing new to commit, commit the fix yourself in the ticket worktree and answer: the committed fix goes to review.
 
-Agents may not change the test-writers' committed tests on their own. When the reviewer finds a protected test is wrong, it sends a scoped correction to the test writers and reviews the result again. A passing review makes the correction the new baseline. After two failed attempts, the ticket stops with a question. To correct a protected test yourself, commit the fix in the ticket worktree, then approve it and answer:
+Agents may not change the test-writers' committed tests on their own. When the implementer or reviewer finds a protected test is wrong, it returns `test-correction` naming the protected files, the mistake and the requirements to preserve. Mill sends the request to the test writers, then to a fresh review. A passing review makes the correction the new baseline. After two failed attempts, the ticket stops with a question. To correct a protected test yourself, commit the fix in the ticket worktree, then approve it and answer:
 
 ```sh
 mill run approve-tests 12
@@ -572,7 +572,7 @@ When the run fails and its results are readable, the red check:
 
 When the output is not readable, a failing run still counts as red, as before, but it proves no scenario: the implementer's handoff says the red check is unverified, and no green check follows. To get the stricter checks, print the line or use `node --test`.
 
-A reviewer's test correction renews the proof: Mill runs the corrected test files against the unfixed code the red check accepted. If they now pass there, or no longer fail for the intended reason, the reviewer's handoff says so, and a passing review stops with a question instead of accepting the correction. An accepted correction replaces the saved scenarios. Tests a person approves with `mill run approve-tests` clear them.
+An implementer- or reviewer-requested test correction renews the proof: Mill runs the corrected test files against the unfixed code the red check accepted. If they now pass there, or no longer fail for the intended reason, the reviewer's handoff says so, and a passing review stops with a question instead of accepting the correction. An accepted correction replaces the saved scenarios. Tests a person approves with `mill run approve-tests` clear them.
 
 ### Browser testing and runtimes
 

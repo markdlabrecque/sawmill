@@ -34,7 +34,7 @@ import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
 
 const execute = promisify(execFile);
-const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; a human must decide any test correction.' };
+const tampered: Extract<Outcome, { outcome: 'bounce' }> = { outcome: 'bounce', feedback: 'Test-writer files changed after their committed baseline. Restore the original tests; request a scoped test correction if they are wrong.' };
 const notRed = 'Your tests all pass without any new code. Write tests that fail until the ticket is built, and that check what the ticket says.';
 const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;
@@ -441,23 +441,23 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const evidence = redEvidence(progress.redBaseline?.results, read.results);
         return evidence.valid ? evidence : failed(`${at}: ${evidence.problem}`);
       };
-      /** A reviewer's scoped test correction goes to the test-writers, at most `correctionCap` times. */
-      const requestCorrection = async (outcome: Extract<Outcome, { outcome: 'test-correction' }>, head: string, round?: number, check?: string): Promise<TeamResult | undefined> => {
+      /** A scoped test correction goes to the test-writers, at most `correctionCap` times. */
+      const requestCorrection = async (outcome: Extract<Outcome, { outcome: 'test-correction' }>, head: string, round?: number, check?: string, requestedBy: 'implementer' | 'reviewer' = 'reviewer'): Promise<TeamResult | undefined> => {
         delete progress.activeRole;
         const request = `Files: ${outcome.files.join(', ')}\nMistake: ${outcome.mistake}\nPreserves: ${outcome.preserves}`;
         const unprotected = outcome.files.filter(file => !progress.testFiles?.includes(file));
         const attempts = (progress.correction?.attempts ?? 0) + 1;
         if (unprotected.length || attempts > correctionCap) {
-          return question(path, 'reviewer', { outcome: 'question', question: unprotected.length
-            ? `The reviewer asked the test-writers to correct files they did not write: ${unprotected.join(', ')}. Only protected test files can be corrected this way. A person must decide.\n\n${request}`
-            : `The reviewer asked for another test correction after ${correctionCap} attempts. The protected tests are unchanged. A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.\n\n${request}` });
+          return question(path, requestedBy, { outcome: 'question', question: unprotected.length
+            ? `The ${requestedBy} asked the test-writers to correct files they did not write: ${unprotected.join(', ')}. Only protected test files can be corrected this way. A person must decide.\n\n${request}`
+            : `The ${requestedBy} asked for another test correction after ${correctionCap} attempts. The protected tests are unchanged. A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to the ${requestedBy}.\n\n${request}` });
         }
         progress.correction = { ...progress.correction, files: outcome.files, mistake: outcome.mistake, preserves: outcome.preserves,
-          baseline: progress.correction?.baseline ?? progress.testCommit!, requestedHead: head, attempts, ...(check ? { check } : {}) };
+          baseline: progress.correction?.baseline ?? progress.testCommit!, requestedHead: head, requestedBy, attempts, ...(check ? { check } : {}) };
         if (!check) delete progress.correction.check;
         delete progress.correction.from;
         resume = progress.next = 'test-writers';
-        await save({ report: { stage: 'test-correction', details: `${check ? `Required check ${check} failed in protected tests; requesting` : 'Reviewer requested'} test correction ${attempts}/${correctionCap} at ${head}; protected baseline ${progress.correction.baseline}.\n\n${request}`, reachedStage: check ? 'integrate' : 'reviewer', round } });
+        await save({ report: { stage: 'test-correction', details: `${check ? `Required check ${check} failed in protected tests; requesting` : `${requestedBy === 'implementer' ? 'Implementer' : 'Reviewer'} requested`} test correction ${attempts}/${correctionCap} at ${head}; protected baseline ${progress.correction.baseline}.\n\n${request}`, reachedStage: check ? 'integrate' : requestedBy, round } });
         checkStop(cwd, number);
         guard();
       };
@@ -492,7 +492,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (!correction) return '';
         const request = `Files: ${correction.files.join(', ')}\nMistake: ${correction.mistake}\nPreserves: ${correction.preserves}`;
         if (role === 'test-writers') {
-          return `\n\nTest correction ${correction.attempts}/${correctionCap}: ${correction.check ? `the required check \`${correction.check}\` failed in your protected tests` : 'the reviewer found a mistake in your protected tests'}. Change only the files named here, commit, and change no implementation code or other test.\n${request}\n\n` +
+          return `\n\nTest correction ${correction.attempts}/${correctionCap}: ${correction.check ? `the required check \`${correction.check}\` failed in your protected tests` : `the ${correction.requestedBy ?? 'reviewer'} found a mistake in your protected tests`}. Change only the files named here, commit, and change no implementation code or other test.\n${request}\n\n` +
             `Implementation diff:\n${await git(path, 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.requestedHead, '--')}`;
         }
         if (role !== 'reviewer' || !correction.head) return '';
@@ -667,7 +667,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           if (!await ancestor(beforeRole) || !await ancestor(progress.repair.baseCommit)) {
             throw new Error('Repair rewrote prior history: the pre-repair HEAD and the review bounce point must remain ancestors of HEAD; prior work retained.');
           }
-          if (head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
+          if (result.outcome.outcome !== 'test-correction' && head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
             throw new Error('Repair added no new commits since the review bounce; prior work retained.');
           }
         }
@@ -710,7 +710,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             `Files: ${accepted.files.join(', ')}\nMistake: ${accepted.mistake}\nPreserves: ${accepted.preserves}\n\n${accepted.tests ?? ''}`, reachedStage: role, round: result.round } });
         }
         if (result.outcome.outcome === 'test-correction') {
-          const stopped = await requestCorrection(result.outcome, beforeRole, result.round);
+          const stopped = await requestCorrection(result.outcome, await git(path, 'rev-parse', 'HEAD'), result.round, undefined, role === 'implementer' ? 'implementer' : 'reviewer');
           if (stopped) return stopped;
           role = 'test-writers'; continue;
         }

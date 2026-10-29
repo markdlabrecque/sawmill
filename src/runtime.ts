@@ -144,7 +144,7 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
         (a.reason === undefined || typeof a.reason === 'string')))) return bad();
       break;
     case 'test-correction':
-      if (role !== 'reviewer' || !Array.isArray(v.files) || !v.files.length || !v.files.every(nonempty) || !nonempty(v.mistake) || !nonempty(v.preserves)) return bad();
+      if ((role !== 'reviewer' && role !== 'implementer') || !Array.isArray(v.files) || !v.files.length || !v.files.every(nonempty) || !nonempty(v.mistake) || !nonempty(v.preserves)) return bad();
       break;
     case 'question': if (!nonempty(v.question)) return bad(); break;
     case 'infrastructure': if (!nonempty(v.error)) return bad(); break;

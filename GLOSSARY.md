@@ -204,7 +204,7 @@ One agent's job within a team: test writers, implementer, or reviewer.
 _Avoid_: Agent type, persona
 
 **Test writers**:
-The role that proves a ticket's missing behaviour with failing tests before implementation, and corrects those tests when review finds them wrong.
+The role that proves a ticket's missing behaviour with failing tests before implementation, and corrects protected tests when the implementer, reviewer or a required check identifies a mistake.
 
 **Implementer**:
 The role that makes the ticket's change and addresses review or gate feedback, with passing tests and checks as required by the project.
@@ -246,7 +246,7 @@ The limit on repair bounces before a ticket goes to logjam. An answer at the cap
 _Avoid_: Retry limit, max attempts
 
 **Test correction**:
-A reviewer's scoped request for the test writers to fix incorrect tests, separate from an implementation bounce.
+A scoped request from the implementer, reviewer or a required check for the test writers to fix incorrect protected tests, separate from an implementation bounce. A fresh review must accept the correction before it becomes the protected baseline.
 
 **Waiver**:
 A human decision to accept one acceptance item without proof, with a recorded reason. It does not waive tests, review or CI.
