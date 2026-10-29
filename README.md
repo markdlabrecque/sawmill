@@ -181,7 +181,16 @@ mill scheduler status
 
 With `concurrency: 1`, `tool` starts #12. When the slot frees up, `site` gets #7, and then `tool` gets #14.
 
-`mill run status` starts with the run's state (`inactive`, `active`, `paused`, `stopped` or `completed`) and whether the scheduler is running. `mill scheduler status` lists every registered run and prints the scheduler log path, `~/.local/state/sawmill/scheduler/scheduler.log`. `mill scheduler stop` stops the scheduler. Working tickets carry on, and the next `mill run` starts a new scheduler that recovers dead workers and adopts live ones before dispatching. The scheduler keeps the environment, such as `PATH` and credentials, of the command that started it. Restart it after changing them.
+`mill run status` starts with the run's state (`inactive`, `active`, `paused`, `stopped` or `completed`) and whether the scheduler is running. `mill scheduler status` lists every registered run and prints the scheduler log path, `~/.local/state/sawmill/scheduler/scheduler.log`. `mill scheduler stop` stops the scheduler. Working tickets carry on, and the next `mill run` starts a new scheduler that recovers dead workers and adopts live ones before dispatching. The scheduler inherits the environment of the command that started it. For project tools, declare directories in `.mill/config.yaml` instead of relying on that launching shell:
+
+```yaml
+env:
+  path:
+    - ~/.cargo/bin
+    - /opt/project-tools/bin
+```
+
+`env.path` prepends these directories to the inherited `PATH` for every worker, including its roles, hooks, tests and required checks. Relative directories resolve from the millyard; `~` resolves from the user's home. The scheduler rereads this configuration, including after a restart by `mill update`, without changing another project's environment. Before dispatch, it checks literal `tests.command` and `required_checks` entry points using that PATH. A missing command leaves tickets queued and reports one project-level diagnostic in the scheduler log; correcting the configuration or installing the tool allows dispatch on a later scan. Shell programs and inline environment assignments still rely on the project's readiness check; this does not execute wrappers to discover commands inside them. Other inherited environment changes still require a scheduler restart.
 
 Compatibility with the older modes:
 

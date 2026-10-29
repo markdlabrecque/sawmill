@@ -15,6 +15,7 @@ import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.
 import { claimScheduler, dispatchHeld, readScheduler, releaseScheduler, schedulerPath } from './scheduler.js';
 import { describeUnresolved, listSlots, processStart, slotsPath, unresolvedSlots } from './slots.js';
 import { consumeResults, reconcilePick } from './transitions.js';
+import { requireVerificationCommands } from './project-environment.js';
 
 // Internal process entry point started by ensureScheduler; `mill scheduler stop` ends it.
 const [home] = process.argv.slice(2);
@@ -104,7 +105,10 @@ async function inspect(cwd: string): Promise<Candidate | undefined> {
     if (!config.valid) throw new Error(config.issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('; '));
     // Admission belongs to this project, not the shared service. Reject before
     // recovery, pick reconciliation, claims or retries can mutate its run.
-    if (before.run.lifecycle === 'active') requireTypeSafeKey(config.project, cwd);
+    if (before.run.lifecycle === 'active') {
+      requireTypeSafeKey(config.project, cwd);
+      await requireVerificationCommands(cwd, config.project);
+    }
     if (before.run.pendingPick !== undefined) {
       const note = reconcilePick(cwd, before.run.id);
       if (note) say(`${cwd}: ${note}`);
