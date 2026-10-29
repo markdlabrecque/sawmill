@@ -27,7 +27,7 @@ async function fixture(t: TestContext) {
   const original = originalEnvironment;
   Object.assign(process.env, y.env, { PATH: `${bin}:${process.env.PATH}`, FAKE_GITLAB_STATE: statePath, FAKE_GITLAB_LOG: logPath });
   t.after(() => { for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key]; Object.assign(process.env, original); });
-  const state = { host: 'git.example.invalid', pageSize: 2, availableLabels: ['logjam', 'batch / ready', 'human / ready'], issues: [issue(7, 'Blocked by: #2\n\nBuild it.'), issue(2, '', 'closed')], notes: { 7: [note(1, 'First'), note(2, 'Second'), note(3, 'Last page')], 2: [] } };
+  const state = { host: 'git.example.invalid', pageSize: 2, availableLabels: ['logjam', 'batch / ready', 'human / ready'], issues: [issue(7, 'Blocked by: #2\n\nBuild it.'), issue(2, '', 'closed')], notes: { 7: [note(1, 'First'), note(2, 'Second'), note(3, 'Last page')], 2: [] } as Record<number, ReturnType<typeof note>[]> };
   const save = async (value: object = state) => writeFile(statePath, JSON.stringify(value));
   await save();
   const status = async (): Promise<any> => readRun(y.cwd);
@@ -76,6 +76,88 @@ test('GitLab draft normalizes full paginated threads and closed outside body blo
   assert.deepEqual(row.blockers, []);
   assert.deepEqual(snapshot.edges, [{ blocked: 7, blocker: 2, outsideClosed: true }]);
   assert.deepEqual((await y.status()).tickets, snapshot.tickets);
+});
+
+for (const selector of [['1', '3', '2'], ['--label', 'batch / ready'], ['--spec', '40']]) {
+  test(`GitLab CE blocked-by declarations combine body and paginated comments for ${selector.join(' ')}`, async t => {
+    const y = await fixture(t);
+    y.state.issues = [issue(40), issue(1, 'Part of #40\n\nBlocked by: #2, #2'), issue(2, 'Part of #40'), issue(3, 'Part of #40')];
+    y.state.issues[0]!.labels = [];
+    y.state.notes = {
+      1: [note(1, 'Mention #900\n```\nBlocked by: #901\n```'),
+        note(2, '~~~md\n## Blocked by\n- #902\n~~~'),
+        note(3, '**Blocked by**: #3, #2'),
+        note(4, '## Blocked by\n- #3\n\n## Context\nSee #903')],
+      2: [], 3: [], 40: [],
+    };
+    await y.save();
+    const result = await y.cli('run', 'draft', ...selector, '--json');
+    assert.equal(result.code, 0, result.stdout);
+    const snapshot = JSON.parse(result.stdout);
+    assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [2, 3, 1]);
+    assert.deepEqual(snapshot.edges, [
+      { blocked: 1, blocker: 2, outsideClosed: false },
+      { blocked: 1, blocker: 3, outsideClosed: false },
+    ]);
+    assert.deepEqual(snapshot.tickets[2].blockers, [2, 3]);
+  });
+}
+
+test('GitLab CE comment blockers validate append atomically and accept closed outside tickets', async t => {
+  const y = await fixture(t);
+  y.state.issues = [issue(7), issue(1), issue(2), issue(3)];
+  y.state.notes = { 7: [], 2: [], 1: [note(1, 'Blocked by: #2, #3')] };
+  await y.save();
+  assert.equal((await y.cli('run', 'draft', '7')).code, 0);
+  const before = await y.status();
+  const refused = await y.cli('run', 'draft', '1', '2', '--json');
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stdout, /#1.*open blocker #3 outside/);
+  assert.deepEqual(await y.status(), before);
+  y.state.issues[3]!.state = 'closed';
+  await y.save();
+  const accepted = await y.cli('run', 'draft', '1', '2', '--json');
+  assert.equal(accepted.code, 0, accepted.stdout);
+  const snapshot = JSON.parse(accepted.stdout);
+  assert.deepEqual(snapshot.tickets.map((row: { number: number }) => row.number), [7, 2, 1]);
+  assert.deepEqual(snapshot.edges, [
+    { blocked: 1, blocker: 2, outsideClosed: false },
+    { blocked: 1, blocker: 3, outsideClosed: true },
+  ]);
+});
+
+for (const blocker of [1, 2]) {
+  test(`GitLab CE comment blockers reject ${blocker === 1 ? 'self-blocking' : 'cycles'} without changing the run`, async t => {
+    const y = await fixture(t);
+    y.state.issues = [issue(7), issue(1), issue(2, 'Blocked by: #1')];
+    y.state.notes = { 7: [], 2: [], 1: [note(1, `Blocked by: #${blocker}`)] };
+    await y.save();
+    assert.equal((await y.cli('run', 'draft', '7')).code, 0);
+    const before = await y.status();
+    const result = await y.cli('run', 'draft', '1', '2', '--json');
+    assert.equal(result.code, 1, result.stdout);
+    assert.match(result.stdout, /cycle.*#1/i);
+    assert.deepEqual(await y.status(), before);
+  });
+}
+
+test('GitLab CE fresh drafts reflect edited and deleted comment declarations without leaking sections between sources', async t => {
+  const y = await fixture(t);
+  y.state.issues = [issue(1, '## Blocked by'), issue(2), issue(3)];
+  y.state.notes = { 7: [], 2: [], 1: [note(1, 'Mention #900'), note(2, 'Blocked by: #2')] };
+  await y.save();
+  const draft = async () => {
+    const result = await y.cli('run', 'draft', '1', '2', '3', '--replace', '--json');
+    assert.equal(result.code, 0, result.stdout);
+    return JSON.parse(result.stdout).edges;
+  };
+  assert.deepEqual(await draft(), [{ blocked: 1, blocker: 2, outsideClosed: false }]);
+  y.state.notes[1]![1]!.body = 'Blocked by: #3';
+  await y.save();
+  assert.deepEqual(await draft(), [{ blocked: 1, blocker: 3, outsideClosed: false }]);
+  y.state.notes[1]!.pop();
+  await y.save();
+  assert.deepEqual(await draft(), []);
 });
 
 test('GitLab drafts work_items addresses and persists the ticket and its closed blocker', async t => {

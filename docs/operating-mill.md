@@ -66,6 +66,18 @@ ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
 
 To add work, run `mill run draft <numbers...>` (or use `--label` or `--spec`) again. New tickets append in blocked-by order after the existing queue; existing tickets are reported as already present and keep their state and checkpoints. Validation finishes before any additions are saved. Active runs pick up additions through ordinary scheduler dispatch without interrupting workers; inactive, stopped and paused runs keep their execution intent. A completed run is archived and drafting creates a new inactive run. You cannot replace a run in progress, even with `--replace`; that option is only for an inactive draft with no working or logjam tickets.
 
+### GitLab CE blocked-by links
+
+When native blocked-by links are unavailable, `mill run draft` reads explicit declarations from the ticket description and comments, including all comment pages. Use unqualified ticket numbers in the configured GitLab project:
+
+```markdown
+Blocked by: #123, #456
+```
+
+A `## Blocked by` heading followed by a list of ticket references also works, as does `**Blocked by**: #123`. Ordinary mentions outside these declarations and fenced code examples do not create links. Declarations across the description and comments are additive, and repeated references create only one link. There is no removal declaration. Edit or delete the source declaration and create a fresh draft to remove a link. Appending does not reparse tickets already in the run, and `mill run refresh` does not change saved links.
+
+Explicit numbers, `--label`, `--spec` and appended tickets all use these links for blocked-by order and validation. Open blockers outside the run, cycles and self-blocking refuse the draft without changing the current run; closed outside blockers are already satisfied. Where native blocked-by results are supported, they remain authoritative, even when empty. GitHub's native behavior is unchanged.
+
 `mill run status` shows the run's state on its first line:
 
 | State | Meaning | What starts work again |

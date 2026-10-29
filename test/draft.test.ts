@@ -91,6 +91,19 @@ test('draft uses native dependencies and orders each ready ticket by number', as
   ]);
 });
 
+test('native blocked-by results remain authoritative over body and comment declarations, including empty results', async t => {
+  const comments = [{ body: 'Blocked by: #999', author: 'user' }];
+  const tracker = new FakeTracker([
+    ticket(1, { blockedBy: [2], body: 'Blocked by: #998', comments }),
+    ticket(2, { blockedBy: [], body: 'Blocked by: #997', comments }),
+  ]);
+  const yard = await configured(t, tracker);
+  const result = await yard.cli('run', 'draft', '1', '2', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout).edges, [{ blocked: 1, blocker: 2, outsideClosed: false }]);
+  assert.deepEqual(JSON.parse(result.stdout).tickets.map((row: Ticket) => row.number), [2, 1]);
+});
+
 test('fallback Blocked by sections and inline links form the same graph, ignoring unrelated references', async (t) => {
   const tracker = new FakeTracker([
     ticket(1, { blockedBy: null, body: 'Related #99\n\n## Blocked by\n- #3\n- #3\n\n## Acceptance\nSee #88' }),

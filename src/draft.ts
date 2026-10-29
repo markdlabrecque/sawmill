@@ -86,7 +86,11 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers]);
   const edges: RunEdge[] = [
     ...existing?.edges.map(edge => ({ ...edge, outsideClosed: selected.has(edge.blocker) ? false : edge.outsideClosed })) ?? [],
-    ...tickets.flatMap(ticket => [...new Set(ticket.blockedBy ?? bodyBlockers(ticket.body))].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false }))),
+    ...tickets.flatMap(ticket => {
+      // Parse each source separately so headings and fences cannot spill into another comment.
+      const blockers = ticket.blockedBy ?? [ticket.body, ...ticket.comments.map(comment => comment.body)].flatMap(bodyBlockers);
+      return [...new Set(blockers)].map(blocker => ({ blocked: ticket.number, blocker, outsideClosed: false }));
+    }),
   ];
   // A skipped closed ticket is an already satisfied blocker, not runnable work.
   const outside = new Map<number, Ticket>(closed.map(ticket => [ticket.number, ticket]));
