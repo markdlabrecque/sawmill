@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { GitHubAccountError } from './github-account.js';
 import { ciScreeningNote, ciScreeningOptions, type CiScreeningOptions } from './ci-screening.js';
 import type { CiJob, IntegrationTracker, LogLimits, Pipeline } from './tracker.js';
 
@@ -13,9 +14,9 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 
 /** Run a tracker CLI, keeping the first `prefix` bytes and the last `maxBytes` of its output. */
-export function boundedOutput(command: string, args: string[], cwd: string, limits: LogLimits, prefix = 0): Promise<{ head: Buffer; tail: Buffer; bytes: number }> {
+export function boundedOutput(command: string, args: string[], cwd: string, limits: LogLimits, prefix = 0, env?: NodeJS.ProcessEnv): Promise<{ head: Buffer; tail: Buffer; bytes: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let head = Buffer.alloc(0), tail: Buffer[] = [], tailBytes = 0, bytes = 0, stderr = '', timedOut = false;
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
@@ -64,7 +65,10 @@ export async function ciLogReport(cwd: string, number: number, tracker: Integrat
       const text = log.truncated ? `${truncatedMark} kept the last ${mib(ciLogLimits.maxBytes)} of ${mib(log.bytes)}. Full log: ${job.url ?? 'see the CI job'}\n${log.text}` : log.text;
       await writeFile(file, text);
       return { file, text };
-    } catch (error) { return `Log unavailable: the download failed: ${message(error)}`; }
+    } catch (error) {
+      if (error instanceof GitHubAccountError) throw error;
+      return `Log unavailable: the download failed: ${message(error)}`;
+    }
   };
   // Finish deterministic collection before any optional service calls. A slow or
   // unavailable classifier must never consume a later job's download budget.

@@ -11,6 +11,44 @@ These rules are for the person working around a live run. Each rule comes from a
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
 
+### Per-project GitHub account
+
+Put one GitHub username in the millyard's `.mill/gh-user`, for example:
+
+```text
+markdlabrecque
+```
+
+This is a username, never a password or token. `.mill/` is git-ignored by
+`mill build`. Usernames may contain only ASCII letters, digits and hyphens.
+Mill rereads this file on every GitHub call: ticket reads, tracker mirror writes,
+pull requests, CI checks and job-log downloads all use the selected account.
+Changing or removing it needs no scheduler or Board restart, and two projects
+on the shared scheduler can use different accounts concurrently.
+
+Mill obtains that account's existing credential with `gh auth token --user
+<name>` (and the configured GitHub hostname, when present). It passes the token
+only in the request child's `GH_TOKEN` (and `GH_ENTERPRISE_TOKEN` for enterprise
+hosts), redacts it from output, and never stores
+it in project files, logs or the run file or changes the scheduler's environment.
+The account must already be logged in on this machine. An invalid username or
+unavailable account fails closed rather than using another account. An unavailable
+account's error names the username and `gh auth login`. Fix the login or file, then use
+`mill run answer <n>` for a ticket in tracker logjam. Held writes are retried and
+work resumes from its saved checkpoint, without infrastructure retries for the
+account configuration error. Removing the file restores the existing behavior:
+`gh` inherits the process environment and otherwise uses its active login.
+Git push identity is still controlled separately by Git/SSH; GitLab is unchanged.
+
+The local `~/bin/gitid` helper's `personal|ab [dir]` commands also write the
+username (`markdlabrecque` or `marklabrecque-ab`) into every existing `.mill/`
+directory under the marked folder, including the folder itself. `gitid unset
+[dir]` removes those files; `gitid list` is unchanged. Mark the folder again after
+creating a new millyard beneath it. Its direnv configuration still serves
+interactive shells, but the shared scheduler uses `.mill/gh-user` instead.
+The helper is maintained outside the Mill release; the matching small change is
+retained in [gitid-gh-user.patch](gitid-gh-user.patch) for separate installation.
+
 ### Shared TypeSafe key
 
 Store only the TypeSafe credential in `~/.config/sawmill/.env`, or
@@ -66,6 +104,60 @@ ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
 
 To add work, run `mill run draft <numbers...>` (or use `--label` or `--spec`) again. New tickets append in blocked-by order after the existing queue; existing tickets are reported as already present and keep their state and checkpoints. Validation finishes before any additions are saved. Active runs pick up additions through ordinary scheduler dispatch without interrupting workers; inactive, stopped and paused runs keep their execution intent. A completed run is archived and drafting creates a new inactive run. You cannot replace a run in progress, even with `--replace`; that option is only for an inactive draft with no working or logjam tickets.
 
+### Draft worktree conflicts
+
+Before saving new tickets, draft preflight requires both an unused intended worktree path and no local `mill/<ticket>` branch. A registered git worktree, file, directory or symlink at the intended path refuses the draft. An existing ticket branch refuses it even without a worktree or when registered elsewhere. The intended path follows creation's rules: a sibling `<ticket>` directory by default, or `<worktrees>/<project name>/<ticket>` using the machine's `worktrees` setting; relative roots resolve from the millyard.
+
+The refusal names the ticket, intended path, registered path and branch when available, and unmerged commits relative to the local integration branch when known. Detached or unregistered entries have unknown ownership; an unknown commit count is not zero and does not mean the entry is safe to reuse. Drafting changes no entry, branch or git worktree, creates no worktree, and leaves the current run unchanged. Already-present members of an unfinished run retain their work and are not checked as additions.
+
+The human user must inspect the named paths and branches and decide what happens to the existing work. Review committed, uncommitted and untracked work, not only the reported count. Preserve independent work before authorizing any separate disposition; Mill does not delete, relocate, reset, adopt or overwrite it during drafting. Do not use `mill run reset`, `mill worktree remove` or `gc` to settle an independent collision. If it belongs to live execution, follow the stopping procedure below before considering any changes. Mill has no automatic conflict-resolution command: settle the path and branch conflict through a separately authorized, preservation-first action, or leave that ticket out. Retry `mill run draft` only after the intended path and ticket branch are available. There is no need to activate a run to diagnose this.
+
+Draft inspection is not a reservation. Dispatch-time validation remains authoritative and still refuses a path collision introduced after drafting; never bypass that refusal by removing independent work.
+
+### GitLab readiness during integration
+
+After a successful push, GitLab can briefly lag behind the ticket branch. Mill
+waits inside the integration invocation rather than spending an infrastructure
+retry for each ordinary readiness observation:
+
+- If MR creation explicitly reports only `source_branch does not exist`, Mill
+  verifies that the tested head was pushed and still exists on the exact remote
+  ticket branch before waiting. Each retry discovers an existing MR first, so a
+  lost creation response does not create a duplicate. Unrelated validation or
+  permission errors are not visibility delays.
+- After an acknowledged merge refusal, Mill rereads the same MR and verifies its
+  identity, source and target branches and tested head. Only `preparing` and
+  `unchecked` trigger a preparation wait. It polls until `mergeable` before
+  retrying the exact-head merge. A generic 405, a `mergeable` refusal, a conflict
+  or an approval requirement is not preparation evidence. A lost merge response
+  still follows reconciliation, never readiness retry.
+
+Creation and merge preparation each have one deadline: **30 seconds or the
+shorter `phase_timeouts.ci`**, whichever comes first. Observations and repeated
+refusals do not reset it. Time spent in a separate native CI wait does not
+consume the merge preparation budget, whether CI comes before or after
+preparation waiting; the remaining budget resumes rather than restarting.
+Polls use the machine's `ci_poll_interval`, capped at
+**2 seconds** for these short waits and clipped to the remaining time. Mill
+rechecks the local worktree and pushed remote head before and after sleeping,
+and honors ticket stop requests
+before another attempt. Changed identity or head and a deleted branch stop the
+operation rather than authorizing another merge.
+
+`mill run log <n>` distinguishes **Waiting for GitLab readiness** from a failed
+infrastructure invocation. A timeout reports the last observed readiness state
+and keeps the pushed branch and any MR. Let GitLab finish preparation, or fix
+the reported cause, then use `mill integrate <n>` to wait again; if the ticket
+has reached logjam, first use `mill run answer <n>`. No repair or infrastructure
+cap is raised, and readiness observations do not rerun completed local gates.
+For `ci: none`, preparation and visibility waits do not require a pipeline;
+existing waits for native GitLab CI merge refusals remain separate.
+
+When comparing later GitLab deliveries, count readiness waits separately from
+failed infrastructure invocations. Keep genuine failures and unclassified
+`mergeable` refusals separate; the inner error and its wrapper describe one
+failed invocation, not two.
+
 ### GitLab CE blocked-by links
 
 When native blocked-by links are unavailable, `mill run draft` reads explicit declarations from the ticket description and comments, including all comment pages. Use unqualified ticket numbers in the configured GitLab project:
@@ -101,6 +193,10 @@ The same line says whether the scheduler is running. `mill scheduler status` lis
   4. Restarts the scheduler on the new build if it was running. The new scheduler adopts the run state, and it never launches a ticket twice.
 
   Every run keeps its state, whether active, inactive, stopped or paused. If the build or the switch fails, the previous installation stays usable, and dispatch goes back to how it was. The report names the source, installed and scheduler builds.
+
+  The update also checks globally installed Sawmill skills against the newly shipped content, without changing them or run state. A warning names each affected skill's resolved location and distinguishes outdated installer-owned copies from differing or unverified guidance. Shared symlink aliases produce one warning per resolved copy. Run **`mill skills refresh`** at an interactive terminal to consent to refresh. It replaces only verified installer-owned guidance, preserves user edits and unrelated skills, and refuses differing copies without trustworthy provenance. Declining leaves the copies unchanged; failed replacement restores them, or names retained backups if a filesystem error prevents restoration. Missing skills still use opt-in installation; remembered declines are not reset by updates.
+
+  **Reload the skill in an already-running conversation or start a fresh session before watcher work.** Updating files does not replace instructions in an agent's context. Verify the path and guidance actually loaded; fresh files alone do not prove a watcher reloaded them. See [Agent skills](../README.md#agent-skills) for handling legacy/customized copies safely.
 - **After upgrading Mill.** Runs drafted before activation existed are inactive. Start each run you still want with `mill run`. The scheduler keeps the build and environment of the command that started it. `mill run status`, `mill scheduler status` and `mill run` show the scheduler's build id and warn when it differs from your `mill`'s. If you installed by hand, restart it with `mill scheduler stop` and then `mill run`. A ticket whose worktree was last worked on by another build gets a warning when its work resumes.
 - **Unresolved slot reservations.** Each worker holds a directory under `~/.local/state/sawmill/slots`. A directory left without ownership metadata by a crash or a manual lease cleanup is reclaimed by the next `mill run once` or scheduler pass, so don't delete it by hand. A directory whose metadata is malformed or unreadable stays reserved, because a live worker may own it. `mill run once`, `mill run status` and the scheduler log name it as an unresolved reservation and say why. To free it, first make sure no worker uses it: `mill run status` in every millyard listed by `mill scheduler status` shows no working ticket with that slot. Then run `mill scheduler stop`, remove only that directory, and run `mill run`. Mill has no command for this step; it is done by hand.
 - **`mill run --foreground`** coordinates one run in your terminal, as before. It activates the run, and while it is attached the scheduler leaves that run to it.

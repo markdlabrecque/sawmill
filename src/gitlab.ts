@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
-import { MergeRefusedError } from './tracker.js';
+import { MergeRefusedError, SourceBranchNotVisibleError } from './tracker.js';
 import type { AssignResult, ChangeRequest, CiJob, HostPolicy, IssueComment, JobLog, LogLimits, Pipeline, ReconciledChangeRequest, Ticket, Tracker } from './tracker.js';
 
 class GitLabApiError extends Error {
-  constructor(message: string, readonly status?: number) { super(message); }
+  constructor(message: string, readonly status?: number, readonly value?: unknown) { super(message); }
 }
 
 type RecordValue = Record<string, unknown>;
@@ -31,7 +31,9 @@ export class GitLabTracker implements Tracker {
         if (error) {
           const message = stderr.trim() || error.message;
           const status = message.match(/HTTP (\d{3})/i)?.[1];
-          reject(new GitLabApiError(message, status ? Number(status) : undefined)); return;
+          let value: unknown;
+          try { value = JSON.parse(stdout.split(/\r?\n\r?\n/).slice(1).join('\n\n')); } catch { /* No structured refusal; do not infer readiness from stderr. */ }
+          reject(new GitLabApiError(message, status ? Number(status) : undefined, value)); return;
         }
         try {
           const response = stdout.match(/^HTTP\/\S+ (\d{3})[^\r\n]*((?:\r?\n[^\r\n]+)*)\r?\n\r?\n([\s\S]*)$/);
@@ -40,7 +42,7 @@ export class GitLabTracker implements Tracker {
             const colon = line.indexOf(':');
             return [line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim()];
           }));
-          if (Number(response[1]) >= 400) throw new GitLabApiError(response[3]!, Number(response[1]));
+          if (Number(response[1]) >= 400) throw new GitLabApiError(response[3]!, Number(response[1]), JSON.parse(response[3]!));
           resolve({ value: response[3]!.trim() ? JSON.parse(response[3]!) : null, headers });
         } catch (failure) { reject(failure); }
       });
@@ -191,6 +193,8 @@ export class GitLabTracker implements Tracker {
     if (!['http:', 'https:'].includes(url.protocol) || url.host.toLowerCase() !== (this.config.host ?? 'gitlab.com').toLowerCase() ||
         decodeURIComponent(url.pathname) !== `/${this.config.repo}/-/merge_requests/${mr.iid}`) throw new Error('GitLab returned an MR from a different project.');
     return { id: mr.iid, url: mr.web_url, headCommit: mr.sha,
+      ...(typeof mr.source_branch === 'string' ? { branch: mr.source_branch } : {}),
+      ...(typeof mr.target_branch === 'string' ? { base: mr.target_branch } : {}),
       ...(typeof mr.detailed_merge_status === 'string' ? { mergeStatus: mr.detailed_merge_status } : {}) };
   }
 
@@ -200,16 +204,35 @@ export class GitLabTracker implements Tracker {
       mr.state === 'opened' && mr.source_branch === input.branch && mr.target_branch === input.base &&
       positive(mr.source_project_id) && mr.source_project_id === mr.target_project_id);
     if (existing.length > 1) throw new Error('Multiple open GitLab MRs match the ticket branch and base.');
-    const value = existing[0] ?? (await this.request('POST', '/merge_requests', {
-      source_branch: input.branch, target_branch: input.base, title: input.title, description: input.body,
-    })).value;
+    let value: unknown = existing[0];
+    if (!value) {
+      try {
+        value = (await this.request('POST', '/merge_requests', {
+          source_branch: input.branch, target_branch: input.base, title: input.title, description: input.body,
+        })).value;
+      } catch (error) {
+        // Only this structured validation refusal is evidence of visibility lag.
+        // Mixed validation errors, permissions and transport failures remain terminal.
+        if (error instanceof GitLabApiError && [400, 422].includes(error.status ?? 0)) {
+          const body = error.value as { message?: unknown } | undefined;
+          const fields = body?.message;
+          if (fields && typeof fields === 'object' && !Array.isArray(fields) && Object.keys(fields).length === 1) {
+            const source = (fields as RecordValue).source_branch;
+            if (Array.isArray(source) && source.length === 1 && source[0] === 'source_branch does not exist') throw new SourceBranchNotVisibleError(error.message);
+          }
+        }
+        throw error;
+      }
+    }
     const mr = record(value);
     if (mr.state !== 'opened' || mr.source_branch !== input.branch || mr.target_branch !== input.base) throw new Error('GitLab MR branches or state differ from the requested integration.');
     return this.changeRequest(mr);
   }
 
   async getChangeRequest(id: number | string): Promise<ChangeRequest> {
-    const result = this.changeRequest((await this.request('GET', `/merge_requests/${encodeURIComponent(String(id))}`)).value);
+    const mr = record((await this.request('GET', `/merge_requests/${encodeURIComponent(String(id))}`)).value);
+    if (mr.state !== 'opened') throw new Error(`GitLab MR is no longer open: ${String(mr.state)}.`);
+    const result = this.changeRequest(mr);
     if (String(result.id) !== String(id)) throw new Error('GitLab returned a different MR.');
     return result;
   }

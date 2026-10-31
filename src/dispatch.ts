@@ -57,7 +57,7 @@ export async function dispatchOnce(cwd: string, project: ProjectConfig, machine:
   for (const ticket of readyTickets(snapshot)) {
     if (result.started.length + result.failures.length >= (options.limit ?? Infinity) || !beforeClaim()) break;
     // Before any slot or claim: a closed ticket is skipped, a failed lookup leaves it queued.
-    const first = await checkFirstStart(cwd, ticket, writer);
+    const first = await checkFirstStart(cwd, ticket, writer, project);
     if (first.status === 'skipped') {
       const note = reconcilePick(cwd, snapshot.run.id);
       if (note) result.notes.push(note);

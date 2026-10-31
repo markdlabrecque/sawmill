@@ -836,6 +836,271 @@ test('non-CI GitLab refusal reports the host merge status without waiting for CI
   assert.deepEqual(y.delays, []);
 });
 
+// #263: exercise real GitLab error decoding inside one integration invocation.
+// Only the accepted merge is delegated to the local bare-remote host fixture.
+async function readinessHost(t: TestContext, mode: 'merge' | 'create', initial = 'preparing', ciTimeout = '5s', maxElapsed = 5000) {
+  let elapsed = 0;
+  const delays: number[] = [];
+  let onSleep: (() => Promise<void>) | undefined;
+  const y = await fixture(t, async ms => {
+    assert.ok(ms > 0 && ms <= 2000, 'readiness polling must be paced');
+    elapsed += ms;
+    assert.ok(elapsed <= maxElapsed, 'refusals must not restart the operation deadline');
+    delays.push(ms);
+    await onSleep?.();
+  }, 'gitlab');
+  await writeFile(join(y.userConfig, 'config.yaml'), 'ci_poll_interval: 2s\n');
+  await writeFile(y.projectConfig, `${await readFile(y.projectConfig, 'utf8')}\nphase_timeouts:\n  ci: ${ciTimeout}\n`);
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now + elapsed);
+  const head = y.git('-C', y.path, 'rev-parse', 'HEAD');
+  const statePath = join(y.root, 'gitlab-readiness.json');
+  const callsPath = join(y.root, 'gitlab-readiness-calls');
+  const state = { status: initial, head, id: 42, visible: mode !== 'create', error: 'source_branch does not exist', lost: false };
+  const sync = () => writeFile(statePath, JSON.stringify(state));
+  await sync();
+  const bin = join(y.root, 'readiness-bin');
+  await mkdir(bin);
+  await writeFile(join(bin, 'glab'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv;
+const endpoint = args[3];
+const method = args[args.indexOf('--method') + 1];
+const s = JSON.parse(fs.readFileSync(${JSON.stringify(statePath)}, 'utf8'));
+fs.appendFileSync(${JSON.stringify(callsPath)}, method + ' ' + endpoint + '\\n');
+const mr = { iid: s.id, web_url: 'https://gitlab.com/team/tool/-/merge_requests/' + s.id,
+  sha: s.head, project_id: 71, source_project_id: 71, target_project_id: 71,
+  source_branch: 'mill/9', target_branch: 'integration', state: 'opened', detailed_merge_status: s.status };
+function reply(code, value) {
+  process.stdout.write('HTTP/2.0 ' + code + '\\r\\nContent-Type: application/json\\r\\n\\r\\n' + JSON.stringify(value));
+  if (code >= 400) { process.stderr.write('glab: ' + JSON.stringify(value) + ' (HTTP ' + code + ')\\n'); process.exit(1); }
+}
+if (endpoint.endsWith('/merge_requests/42/merge')) {
+  if (s.lost) { process.stderr.write('connection reset'); process.exit(1); }
+  reply(405, { message: 'Method Not Allowed' });
+} else if (endpoint.endsWith('/merge_requests/42')) reply(200, mr);
+else if (endpoint.includes('/merge_requests?')) reply(200, []);
+else if (endpoint.endsWith('/merge_requests') && method === 'POST') {
+  if (!s.visible) reply(400, { message: { source_branch: [s.error] } });
+  else reply(201, mr);
+} else { process.stderr.write('Unscripted endpoint: ' + endpoint); process.exit(1); }
+`);
+  await chmod(join(bin, 'glab'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath}`;
+  t.after(() => { process.env.PATH = oldPath; });
+  const adapter = new GitLabTracker({ backend: 'gitlab', repo: 'team/tool' }, y.cwd);
+  y.tracker.getChangeRequest = async id => ({ branch: 'mill/9', base: 'integration', title: '', body: '', ...await adapter.getChangeRequest(id) });
+  if (mode === 'create') y.tracker.findOrOpenChangeRequest = async input => ({ ...input, ...await adapter.findOrOpenChangeRequest(input) });
+  const merge = y.tracker.merge;
+  y.tracker.merge = async (id, method, expected) => {
+    assert.equal(String(id), '42');
+    assert.equal(expected, head, 'every merge must target the tested and pushed head');
+    if (mode === 'merge' && state.status !== 'mergeable') return adapter.mergeChangeRequest(id, method, expected);
+    return merge(id, method, expected);
+  };
+  const runs = join(y.root, 'readiness-local-tests');
+  await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
+    .replace('command: test -f feature.test.ts', `command: 'test -f feature.test.ts && echo tested >> "${runs}"'`));
+  return { ...y, state, sync, head, delays, elapsed: () => elapsed,
+    afterSleep: (fn: () => Promise<void>) => { onSleep = fn; },
+    calls: () => readFile(callsPath, 'utf8'),
+    localRuns: () => readFile(runs, 'utf8') };
+}
+
+for (const status of ['preparing', 'unchecked']) {
+  test(`GitLab readiness ${status} catches up within one integration invocation without CI or rerunning gates`, async t => {
+    const y = await readinessHost(t, 'merge', status);
+    y.afterSleep(async () => { if (y.elapsed() >= 4000) y.state.status = 'mergeable'; await y.sync(); });
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'merged', reply.stdout);
+    assert.deepEqual(y.delays, [2000, 2000]);
+    assert.equal(await y.localRuns(), 'tested\n');
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.integration.mergedHead, y.head);
+    assert.equal(row.bounces, 0);
+    const log = (await y.cli('run', 'log', '9')).stdout;
+    assert.match(log, /waiting.*(?:readiness|prepar|unchecked)|(?:readiness|prepar|unchecked).*waiting/i);
+    assert.doesNotMatch(log, /\[infrastructure\]/);
+  });
+}
+
+for (const order of ['preparation-first', 'CI-first'] as const) {
+  test(`GitLab ${order} merges the exact head when native CI exceeds the preparation budget`, async t => {
+    const y = await readinessHost(t, 'merge', order === 'CI-first' ? 'ci_still_running' : 'preparing', '1m', 44000);
+    let ciStarted: number | undefined;
+    const pipelineHeads: string[] = [];
+    y.tracker.pipeline = async head => {
+      pipelineHeads.push(head);
+      ciStarted ??= y.elapsed();
+      const passed = y.elapsed() - ciStarted >= 40000;
+      y.state.status = passed ? (order === 'CI-first' ? 'preparing' : 'mergeable') : 'ci_still_running';
+      await y.sync();
+      return { headCommit: head, state: passed ? 'passed' : 'pending' };
+    };
+    y.afterSleep(async () => {
+      if (ciStarted === undefined) y.state.status = 'ci_still_running';
+      else if (y.state.status === 'preparing') y.state.status = 'mergeable';
+      await y.sync();
+    });
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'merged', reply.stdout);
+    assert.equal(y.elapsed(), 42000, '40s native CI and 2s preparation have separate budgets');
+    assert.deepEqual(y.delays, Array(21).fill(2000));
+    assert.ok(pipelineHeads.length >= 21);
+    assert.ok(pipelineHeads.every(head => head === y.head));
+    assert.equal(await y.localRuns(), 'tested\n');
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.integration.mergedHead, y.head);
+    assert.equal(row.bounces, 0);
+    assert.doesNotMatch((await y.cli('run', 'log', '9')).stdout, /\[infrastructure\]/);
+  });
+}
+
+test('GitLab preparation resumes only its remaining budget after a longer native CI wait', async t => {
+  const y = await readinessHost(t, 'merge', 'preparing', '1m', 70000);
+  let ciStarted: number | undefined;
+  y.tracker.pipeline = async head => {
+    assert.equal(head, y.head);
+    ciStarted ??= y.elapsed();
+    const passed = y.elapsed() - ciStarted >= 40000;
+    y.state.status = passed ? 'preparing' : 'ci_still_running';
+    await y.sync();
+    return { headCommit: head, state: passed ? 'passed' : 'pending' };
+  };
+  y.afterSleep(async () => {
+    if (ciStarted === undefined) y.state.status = 'ci_still_running';
+    else if (y.state.status !== 'ci_still_running') {
+      y.state.status = y.state.status === 'preparing' ? 'unchecked' : 'preparing';
+    }
+    await y.sync();
+  });
+  const reply = await y.cli('integrate', '9', '--json');
+  const result = JSON.parse(reply.stdout);
+  assert.equal(result.outcome, 'infrastructure', reply.stdout);
+  assert.equal(y.elapsed(), 70000, '2s preparation + 40s CI + only 28s remaining preparation');
+  assert.deepEqual(y.delays, Array(35).fill(2000));
+  assert.match(result.message, /timed? out|deadline/i);
+  assert.match(result.message, /preparing|unchecked/);
+  assert.match(result.message, /mill integrate 9/);
+  assert.equal(y.tracker.head('mill/9'), y.head);
+  assert.equal(y.tracker.ticket.state, 'open');
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.completion, null);
+  assert.equal(row.integration.changeRequest.id, 42);
+  assert.deepEqual(y.tracker.methods, ['squash', 'squash'], 'no successful merge after the preparation budget expires');
+  assert.equal(await y.localRuns(), 'tested\n');
+});
+
+for (const mode of ['merge', 'create'] as const) {
+  test(`GitLab ${mode} readiness times out once, reports recovery and retains pushed work`, async t => {
+    const y = await readinessHost(t, mode);
+    // Alternate acknowledged refusals: the common deadline must survive each observation.
+    y.afterSleep(async () => { y.state.status = y.state.status === 'preparing' ? 'unchecked' : 'preparing'; await y.sync(); });
+    const reply = await y.cli('integrate', '9', '--json');
+    const result = JSON.parse(reply.stdout);
+    assert.equal(result.outcome, 'infrastructure', reply.stdout);
+    assert.equal(y.elapsed(), 5000);
+    assert.deepEqual(y.delays, [2000, 2000, 1000]);
+    assert.match(result.message, /timed? out|deadline/i);
+    assert.match(result.message, mode === 'merge' ? /preparing|unchecked/ : /source.branch|visibility/i);
+    assert.match(result.message, /mill integrate 9/);
+    assert.equal(y.tracker.head('mill/9'), y.head);
+    assert.equal(y.tracker.ticket.state, 'open');
+    const row = (await y.status()).tickets[0];
+    assert.equal(row.completion, null);
+    if (mode === 'merge') assert.equal(row.integration.changeRequest.id, 42);
+    assert.equal(await y.localRuns(), 'tested\n');
+  });
+
+  test(`GitLab ${mode} readiness honors a stop request during the wait`, async t => {
+    const y = await readinessHost(t, mode);
+    y.afterSleep(async () => { y.seed('UPDATE tickets SET stop_requested=1 WHERE number=9'); });
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'stopped', reply.stdout);
+    assert.deepEqual(y.delays, [2000]);
+    assert.equal(y.tracker.head('mill/9'), y.head);
+    assert.equal((await y.status()).tickets[0].completion, null);
+  });
+}
+
+test('GitLab briefly invisible pushed source branch catches up without an infrastructure retry', async t => {
+  const y = await readinessHost(t, 'create');
+  y.afterSleep(async () => { if (y.elapsed() >= 4000) y.state.visible = true; await y.sync(); });
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(reply.stdout).outcome, 'merged', reply.stdout);
+  assert.deepEqual(y.delays, [2000, 2000]);
+  assert.equal(await y.localRuns(), 'tested\n');
+  assert.equal((await y.status()).tickets[0].integration.mergedHead, y.head);
+  assert.doesNotMatch((await y.cli('run', 'log', '9')).stdout, /\[infrastructure\]/);
+});
+
+for (const mutation of ['identity', 'head', 'deleted-branch', 'wrong-branch']) {
+  test(`GitLab readiness stops without merging when ${mutation} changes during the wait`, async t => {
+    const y = await readinessHost(t, 'merge');
+    y.afterSleep(async () => {
+      if (mutation === 'identity') y.state.id = 43;
+      if (mutation === 'head') y.state.head = 'b'.repeat(40);
+      if (mutation === 'deleted-branch') y.git('push', 'origin', '--delete', 'mill/9');
+      if (mutation === 'wrong-branch') y.git('push', 'origin', 'integration:refs/heads/mill/9', '--force');
+      await y.sync();
+    });
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+    assert.deepEqual(y.delays, [2000], 'reobserve identity and remote head before continuing');
+    assert.equal((await y.status()).tickets[0].completion, null);
+    assert.deepEqual(y.tracker.methods, ['squash'], 'no merge with changed identity or head');
+  });
+}
+
+for (const status of ['mergeable', 'not_approved', 'conflict']) {
+  test(`GitLab 405 with terminal or unclassified ${status} is not readiness`, async t => {
+    const y = await gitlabRefusal(t, status);
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+    assert.deepEqual(y.delays, []);
+    assert.deepEqual(y.tracker.methods, ['squash']);
+  });
+}
+
+for (const mutation of ['deleted', 'wrong-head']) {
+  test(`GitLab invisible source branch with ${mutation} remote head is rejected before waiting`, async t => {
+    const y = await readinessHost(t, 'create');
+    const open = y.tracker.findOrOpenChangeRequest.bind(y.tracker);
+    y.tracker.findOrOpenChangeRequest = async input => {
+      if (mutation === 'deleted') y.git('push', 'origin', '--delete', 'mill/9');
+      else y.git('push', 'origin', 'integration:refs/heads/mill/9', '--force');
+      return open(input);
+    };
+    const reply = await y.cli('integrate', '9', '--json');
+    assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+    assert.deepEqual(y.delays, [], 'a source-branch error alone is not evidence of readiness');
+    assert.deepEqual(y.tracker.methods, []);
+  });
+}
+
+test('GitLab MR creation does not hide unrelated source-branch validation errors', async t => {
+  const y = await readinessHost(t, 'create');
+  y.state.error = 'is protected: permission denied';
+  await y.sync();
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+  assert.match(reply.stdout, /permission denied/);
+  assert.deepEqual(y.delays, []);
+  assert.deepEqual(y.tracker.methods, []);
+});
+
+test('a lost GitLab merge response while preparing is not an acknowledged readiness refusal', async t => {
+  const y = await readinessHost(t, 'merge');
+  y.state.lost = true;
+  await y.sync();
+  const reply = await y.cli('integrate', '9', '--json');
+  assert.equal(JSON.parse(reply.stdout).outcome, 'infrastructure', reply.stdout);
+  assert.deepEqual(y.delays, []);
+  assert.deepEqual(y.tracker.methods, ['squash']);
+  assert.equal((await y.status()).tickets[0].integration.operation.kind, 'merge');
+});
+
 test('merge retry reuses passing local tests for the unchanged tested and pushed head', async t => {
   const y = await fixture(t);
   const runs = join(y.root, 'local-test-runs');

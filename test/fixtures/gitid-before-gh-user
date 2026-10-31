@@ -1,0 +1,87 @@
+#!/bin/bash
+# Mark a folder as a git identity: personal (markdlabrecque) or ab (marklabrecque-ab).
+# Every repo under the folder then commits and pushes as that user.
+#   gitid personal|ab [dir]   mark dir (default: current dir)
+#   gitid unset [dir]         remove the mark
+#   gitid show [dir]          show the identity git will use in dir
+#   gitid list                list marked folders
+set -euo pipefail
+
+usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1; }
+
+abspath() { (cd "${1:-.}" 2>/dev/null && pwd -P) || { echo "gitid: no such dir: ${1:-.}" >&2; exit 1; }; }
+
+profile_file() { echo "$HOME/.gitconfig-$1"; }
+
+ensure_profile() {
+  local id="$1" file key email
+  file=$(profile_file "$id")
+  [ -f "$file" ] && return
+  case "$id" in
+    ab)       key="$HOME/.ssh/id_marklabrecque_ab"; email="mark@affinitybridge.com" ;;
+    personal) key="$HOME/.ssh/id_markdlabrecque"
+              [ -t 0 ] || { echo "gitid: $file missing; run once from a terminal to set the email" >&2; exit 1; }
+              read -r -p "Email for the personal GitHub user (markdlabrecque): " email ;;
+  esac
+  [ -f "$key" ] || { echo "gitid: missing SSH key $key" >&2; exit 1; }
+  cat > "$file" <<EOF
+[user]
+	name = Mark Labrecque
+	email = $email
+[core]
+	sshCommand = ssh -i $key -o IdentitiesOnly=yes
+EOF
+  echo "created $file"
+}
+
+mark_key() { echo "includeIf.gitdir:$1/.path"; }
+
+gh_user() { case "$1" in ab) echo marklabrecque-ab ;; personal) echo markdlabrecque ;; esac; }
+
+# Keep a marked block in dir/.envrc so direnv points gh at the right account.
+envrc_set() {
+  local dir="$1" user="$2" f="$1/.envrc"
+  envrc_clear "$dir"
+  printf '# gitid begin\nexport GH_TOKEN=$(gh auth token --user %s)\n# gitid end\n' "$user" >> "$f"
+  [ -d "$dir/.git" ] && { grep -qxF .envrc "$dir/.git/info/exclude" 2>/dev/null || echo .envrc >> "$dir/.git/info/exclude"; }
+  command -v direnv >/dev/null && direnv allow "$dir" 2>/dev/null || true
+  gh auth token --user "$user" >/dev/null 2>&1 || echo "gitid: gh is not logged in as $user yet; run: gh auth login" >&2
+}
+
+envrc_clear() {
+  local f="$1/.envrc"
+  [ -f "$f" ] || return 0
+  sed '/^# gitid begin$/,/^# gitid end$/d' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  [ -s "$f" ] || rm -f "$f"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  personal|ab)
+    dir=$(abspath "${2:-.}")
+    ensure_profile "$cmd"
+    git config --global --replace-all "$(mark_key "$dir")" "$(profile_file "$cmd")"
+    envrc_set "$dir" "$(gh_user "$cmd")"
+    echo "$dir -> $cmd"
+    ;;
+  unset)
+    dir=$(abspath "${2:-.}")
+    git config --global --unset-all "$(mark_key "$dir")" 2>/dev/null || { echo "gitid: $dir is not marked" >&2; exit 1; }
+    envrc_clear "$dir"
+    echo "$dir unmarked"
+    ;;
+  show)
+    dir=$(abspath "${2:-.}")
+    cd "$dir"
+    git rev-parse --git-dir >/dev/null 2>&1 || { echo "gitid: $dir is not a git repo (show needs one)" >&2; exit 1; }
+    echo "email: $(git config user.email || echo '(none)')"
+    echo "ssh:   $(git config core.sshCommand || echo '(default)')"
+    ;;
+  list)
+    { git config --global --get-regexp '^includeif\..*\.path$' || true; } | while read -r key path; do
+      dir=${key#includeif.gitdir:}; dir=${dir%.path}
+      echo "${dir} -> ${path##*gitconfig-}"
+    done
+    ;;
+  *) usage ;;
+esac

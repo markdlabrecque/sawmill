@@ -6,6 +6,8 @@ import { clearRun } from './run-clear.js';
 import { ensureExecutionScheduler, requireSchedulerConfiguration, notifyScheduler, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
+import { offerSkills } from './agent-skills.js';
+import { createInterface } from 'node:readline/promises';
 import { describeUnresolved, listSlots, unresolvedSlots } from './slots.js';
 import { listMillyards, registerMillyard } from './registry.js';
 import { tailTicket } from './team-tail.js';
@@ -48,6 +50,8 @@ export interface CliOptions {
   root?: string;
   /** Runs the installer steps of mill update. */
   exec?: Exec;
+  /** Consent prompt for an explicit skill refresh. */
+  ask?: (question: string) => Promise<string>;
   runtime?: Runtime;
   /** Offline transport seam; selection validation and persistence always run normally. */
   typeSafeChoices?: typeof import('./typesafe.js').typeSafeChoices;
@@ -119,6 +123,26 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       await serveView(home, port, { stdout, signal: options.signal, tracker: options.tracker, sleep: options.sleep });
       return 0;
     }
+    if (positional[0] === 'skills') {
+      if (positional.length !== 2 || positional[1] !== 'refresh') {
+        emit({ status: 'usage-error' }, usage('skills refresh'));
+        return 2;
+      }
+      if (!options.ask && (!process.stdin.isTTY || json)) {
+        const message = 'Run mill skills refresh in an interactive terminal to review and consent; no files were changed.';
+        emit({ status: 'configuration-error', message }, message);
+        return 2;
+      }
+      const ask = options.ask ?? (async (question: string) => {
+        const prompt = createInterface({ input: process.stdin, output: process.stdout });
+        try { return await prompt.question(question); }
+        finally { prompt.close(); }
+      });
+      let message = '';
+      const status = await offerSkills({ root, home, refresh: true, ask, stdout: text => { message += text; if (!json) stdout(text); } });
+      if (json) emit({ status, message: message.trimEnd() }, message.trimEnd());
+      return status === 'failed' ? 1 : 0;
+    }
     if (positional[0] === 'update') {
       // Machine-wide: it replaces this installation and coordinates with the shared scheduler.
       if (positional.length !== 2) {
@@ -132,7 +156,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         `Source: ${source.path}${source.revision ? ` at ${source.revision.slice(0, 7)}${source.dirty ? ' with uncommitted edits' : ''}` : ''}`,
         `Installed: ${describeBuild(installed ?? undefined)}`,
         `Scheduler: ${scheduler.available ? `running (pid ${scheduler.pid}, ${scheduler.build ? `build ${scheduler.build}` : 'unstamped build'})` : 'not running'}`,
-        ...(report.message ? [report.message] : [])].join('\n'));
+        ...(report.message ? [report.message] : []), ...(report.warnings ?? [])].join('\n'));
       return report.status === 'updated' ? 0 : 1;
     }
     if (positional[0] === 'scheduler') {
@@ -471,7 +495,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         };
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
+        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle, config.machine);
         if (writer && drafted.added.length) await flushAssignments(cwd, config.project, writer, { ...options, tickets: drafted.added });
         const snapshot = readRun(cwd);
         if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);
