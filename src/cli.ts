@@ -132,7 +132,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         `Source: ${source.path}${source.revision ? ` at ${source.revision.slice(0, 7)}${source.dirty ? ' with uncommitted edits' : ''}` : ''}`,
         `Installed: ${describeBuild(installed ?? undefined)}`,
         `Scheduler: ${scheduler.available ? `running (pid ${scheduler.pid}, ${scheduler.build ? `build ${scheduler.build}` : 'unstamped build'})` : 'not running'}`,
-        ...(report.message ? [report.message] : [])].join('\n'));
+        ...(report.message ? [report.message] : []), ...(report.warnings ?? [])].join('\n'));
       return report.status === 'updated' ? 0 : 1;
     }
     if (positional[0] === 'scheduler') {
