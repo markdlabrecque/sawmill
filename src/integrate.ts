@@ -462,7 +462,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       };
       if (ciRequired && await waitForCi()) return await ciFailed();
       let merged: { mergeCommit: string };
-      const mergeEnds = Date.now() + readinessMs;
+      let mergeEnds = Date.now() + readinessMs;
       let readinessWaited = false;
       const checkRequest = (current: ChangeRequest) => {
         if (current.id !== progress.changeRequest!.id || current.headCommit !== head ||
@@ -508,7 +508,11 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
               const ciBlocked = project.tracker.backend === 'gitlab' && ['ci_still_running', 'ci_must_pass'].includes(current.mergeStatus ?? '');
               if (ciBlocked) {
                 ciRequired = true;
+                const ciStarted = Date.now();
                 if (await waitForCi(true)) return await ciFailed();
+                // Native CI has its own deadline; pause, but never reset, the
+                // preparation budget even when CI precedes the first readiness wait.
+                mergeEnds += Date.now() - ciStarted;
                 continue;
               }
               if (project.ci === 'wait' && (await readPipeline()).state === 'failed') return await ciFailed();
