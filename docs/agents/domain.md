@@ -73,3 +73,5 @@ Glossary checked; no glossary update needed because the skill-freshness regressi
 ## Ticket #262 conflict-repair record
 
 Glossary checked; no glossary update needed because this repair only preserves independent completion records and changes no domain definitions. The rebase conflict in this file was an overlapping addition, not a terminology conflict: both the integration branch's ticket #259 record and the test writers' ticket #262 record are retained unchanged. The protected freshness tests are unchanged from the reviewed revision.
+
+The subsequent conflict repair onto integration revision `41af42a` also preserves all ticket #263 completion records alongside the ticket #259 and #262 records. Glossary rechecked; no definitions changed because this resolution only combines independent records, with no conflicting domain claims. No test file was edited during the repair.
