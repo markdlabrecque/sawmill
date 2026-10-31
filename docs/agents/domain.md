@@ -65,3 +65,7 @@ For every change, including code, tests, documentation and agent instructions:
   completion records. Glossary checked; no update needed because these are
   compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
   Logjam. The protected account tests are unchanged from the writer commit.
+
+## Ticket #262 test-writers record
+
+Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
