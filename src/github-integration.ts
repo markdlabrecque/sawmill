@@ -1,4 +1,5 @@
 import { githubRequest } from './github-transport.js';
+import { githubAccount, GitHubAccountError } from './github-account.js';
 import { boundedOutput } from './ci-logs.js';
 import type { ProjectConfig } from './config.js';
 import { GitHubApiError } from './github.js';
@@ -21,6 +22,7 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     const read = async (what: string, run: () => Promise<unknown>) => {
       try { return await run(); }
       catch (error) {
+        if (error instanceof GitHubAccountError) throw error;
         gaps.push(`${what}: ${error instanceof GitHubApiError && [401, 403, 404].includes(error.status ?? 0) ? `not readable with this token (HTTP ${error.status})` : error instanceof Error ? error.message : String(error)}`);
         return undefined;
       }
@@ -152,7 +154,10 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
         if (detail.head_sha !== commit || run.head_sha !== commit) job.unavailable = `the job ran on commit ${detail.head_sha}, not the tested commit ${commit}`;
         else if (detail.run_attempt !== run.run_attempt) job.unavailable = `the job is from attempt ${detail.run_attempt}; run ${runId} is on attempt ${run.run_attempt}`;
         else job.logId = String(jobId);
-      } catch (error) { job.unavailable = `could not verify the job: ${error instanceof Error ? error.message : String(error)}`; }
+      } catch (error) {
+        if (error instanceof GitHubAccountError) throw error;
+        job.unavailable = `could not verify the job: ${error instanceof Error ? error.message : String(error)}`;
+      }
     }
     for (const status of statuses) {
       if (['failure', 'error'].includes(status.state)) jobs.push({ name: status.context, ...(status.target_url ? { url: status.target_url } : {}), source: 'commit status', unavailable: 'a commit status has no job log' });
@@ -165,8 +170,13 @@ export class GitHubIntegration extends GitHubWriter implements IntegrationTracke
     // Raw output bypasses gh's terminal-escape guard without buffering the log.
     const args = ['api', `repos/${this.trackerConfig.repo}/actions/jobs/${job.logId}/logs`, '--method', 'GET', '--output', '-'];
     if (this.trackerConfig.host) args.push('--hostname', this.trackerConfig.host);
-    const { tail, bytes } = await boundedOutput('gh', args, this.directory, limits);
-    return { text: tail.toString('utf8'), bytes, truncated: bytes > tail.length };
+    const account = await githubAccount(this.directory, this.trackerConfig.host, limits.timeoutMs);
+    try {
+      const { tail, bytes } = await boundedOutput('gh', args, this.directory, limits, 0, account.env);
+      return { text: account.redact(tail.toString('utf8')), bytes, truncated: bytes > tail.length };
+    } catch (error) {
+      throw new Error(account.redact(error instanceof Error ? error.message : String(error)));
+    }
   }
 
   async mergeChangeRequest(id: number | string, method: 'squash' | 'merge', expectedHead?: string): Promise<{ mergeCommit: string }> {

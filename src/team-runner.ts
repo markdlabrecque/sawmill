@@ -14,6 +14,7 @@ import { createRuntime } from './runtime-factory.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { routingEnabled, type MachineConfig, type ProjectConfig, type Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
+import { GitHubAccountError } from './github-account.js';
 import { integrate, tests, type IntegrationResult } from './integrate.js';
 import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
 import { recordChild } from './process-ownership.js';
@@ -26,7 +27,7 @@ import { checkFirstStart } from './first-start.js';
 import { alreadyClosed, readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
 import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
-import { transition, type MirrorOptions, type Transition } from './transitions.js';
+import { holdTrackerFailure, transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
 import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { verificationFrom, verificationInstructions } from './verification.js';
@@ -75,9 +76,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (ticket.completion === 'manual' || ticket.blockers.length) throw new CliError('Team requires an unfinished, unblocked ticket.');
     if (!ticket.completion) requireBrowserCapability(project, ticket);
     if (project.ci === 'wait' && (!tracker.getPipeline || !tracker.getChangeRequest)) throw new CliError('Tracker CI adapter is not available.', 2);
-    const first = await checkFirstStart(cwd, number, () => tracker);
+    const first = await checkFirstStart(cwd, number, () => tracker, project);
     if (first.status === 'skipped') return { outcome: 'skipped', ticket: number, stage: 'first-start', reason: alreadyClosed, error: `#${number} was already closed on the tracker; it was skipped before any role started.` };
-    if (first.status === 'lookup-failed') return { outcome: 'infrastructure', ticket: number, stage: 'first-start', error: first.error };
+    if (first.status === 'lookup-failed') return { outcome: first.reason === 'tracker' ? 'aborted' : 'infrastructure', ticket: number, stage: 'first-start', error: first.error, ...(first.reason ? { reason: first.reason } : {}) };
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
     let stage = ticket.stage ?? 'worktree-create';
@@ -751,6 +752,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         role = progress.correction && !progress.correction.head ? 'test-writers' : 'implementer';
       }
     } catch (error) {
+      if (error instanceof GitHubAccountError) {
+        holdTrackerFailure(cwd, project, number, error);
+        // This needs a corrected account setting, not an infrastructure retry or
+        // a scheduler pause. Keep the account's login guidance in the worker result.
+        return { outcome: 'aborted', ticket: number, stage: current().stage ?? stage, reason: 'tracker', error: error.message };
+      }
       if (error instanceof StopRequested || current()?.stopRequested) return stopAtBoundary(cwd, project, tracker, number, stage, resume, progress, options);
       return stop(infrastructure(error instanceof Error ? error.message : String(error)));
     }

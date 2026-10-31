@@ -1,0 +1,37 @@
+--- a/gitid
++++ b/gitid
+@@ -55,6 +55,18 @@
+   [ -s "$f" ] || rm -f "$f"
+ }
+ 
++# Mill's shared scheduler cannot see direnv: store only the username in each millyard.
++mill_account() {
++  local dir="$1" user="${2:-}" mill
++  while IFS= read -r -d '' mill; do
++    if [ -n "$user" ]; then
++      printf '%s\n' "$user" > "$mill/gh-user"
++    else
++      rm -f "$mill/gh-user"
++    fi
++  done < <(find "$dir" -type d -name .mill -prune -print0)
++}
++
+ cmd="${1:-}"
+ case "$cmd" in
+   personal|ab)
+@@ -61,6 +73,7 @@
+     ensure_profile "$cmd"
+     git config --global --replace-all "$(mark_key "$dir")" "$(profile_file "$cmd")"
+     envrc_set "$dir" "$(gh_user "$cmd")"
++    mill_account "$dir" "$(gh_user "$cmd")"
+     echo "$dir -> $cmd"
+     ;;
+   unset)
+@@ -67,6 +80,7 @@
+     dir=$(abspath "${2:-.}")
+     git config --global --unset-all "$(mark_key "$dir")" 2>/dev/null || { echo "gitid: $dir is not marked" >&2; exit 1; }
+     envrc_clear "$dir"
++    mill_account "$dir"
+     echo "$dir unmarked"
+     ;;
+   show)

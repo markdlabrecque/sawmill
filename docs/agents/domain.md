@@ -43,3 +43,25 @@ For every change, including code, tests, documentation and agent instructions:
   domain policies. Glossary checked; no update needed because the existing
   Draft, Worktree, Rebase gate and CI gate definitions still cover both sections.
   Protected `test/integrate.test.ts` is unchanged from the reviewed revision.
+- Ticket #264: Glossary checked; no glossary update needed because the existing
+  Project, Millyard, Scheduler, Tracker and Tracker mirror definitions already
+  cover per-millyard GitHub account selection. A username file and child-process
+  credentials are implementation mechanics, documented in
+  [Operating Mill](../operating-mill.md#per-project-github-account). No terminology
+  conflicts were found; code, the protected account tests, helper patch and
+  operating guidance use the existing concepts.
+  Review repair also checked Logjam, Worker and Infrastructure outcome: an
+  unavailable GitHub account now returns an aborted tracker result rather than
+  an infrastructure result, preserving the existing distinction without changing
+  those definitions. `test/github-account-recovery.test.ts` exercises integration
+  through worker-result consumption and the first-start boundary.
+  `test/gitid-account.test.ts` executes both the separately installed helper
+  (when it matches the patch) and the applied patch with isolated HOME and scripted
+  `gh`/`direnv`, checking both identities, nested millyards, unset and unchanged
+  list output. Execution exposed and corrected the patch's hunk counts; no
+  additional domain concept or terminology conflict was introduced.
+- Ticket #264, rebase repair: Preserved GitLab readiness imports alongside
+  GitHub account-error handling in `src/integrate.ts`, and retained all concurrent
+  completion records. Glossary checked; no update needed because these are
+  compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
+  Logjam. The protected account tests are unchanged from the writer commit.

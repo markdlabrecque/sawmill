@@ -11,6 +11,44 @@ These rules are for the person working around a live run. Each rule comes from a
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
 
+### Per-project GitHub account
+
+Put one GitHub username in the millyard's `.mill/gh-user`, for example:
+
+```text
+markdlabrecque
+```
+
+This is a username, never a password or token. `.mill/` is git-ignored by
+`mill build`. Usernames may contain only ASCII letters, digits and hyphens.
+Mill rereads this file on every GitHub call: ticket reads, tracker mirror writes,
+pull requests, CI checks and job-log downloads all use the selected account.
+Changing or removing it needs no scheduler or Board restart, and two projects
+on the shared scheduler can use different accounts concurrently.
+
+Mill obtains that account's existing credential with `gh auth token --user
+<name>` (and the configured GitHub hostname, when present). It passes the token
+only in the request child's `GH_TOKEN` (and `GH_ENTERPRISE_TOKEN` for enterprise
+hosts), redacts it from output, and never stores
+it in project files, logs or the run file or changes the scheduler's environment.
+The account must already be logged in on this machine. An invalid username or
+unavailable account fails closed rather than using another account. An unavailable
+account's error names the username and `gh auth login`. Fix the login or file, then use
+`mill run answer <n>` for a ticket in tracker logjam. Held writes are retried and
+work resumes from its saved checkpoint, without infrastructure retries for the
+account configuration error. Removing the file restores the existing behavior:
+`gh` inherits the process environment and otherwise uses its active login.
+Git push identity is still controlled separately by Git/SSH; GitLab is unchanged.
+
+The local `~/bin/gitid` helper's `personal|ab [dir]` commands also write the
+username (`markdlabrecque` or `marklabrecque-ab`) into every existing `.mill/`
+directory under the marked folder, including the folder itself. `gitid unset
+[dir]` removes those files; `gitid list` is unchanged. Mark the folder again after
+creating a new millyard beneath it. Its direnv configuration still serves
+interactive shells, but the shared scheduler uses `.mill/gh-user` instead.
+The helper is maintained outside the Mill release; the matching small change is
+retained in [gitid-gh-user.patch](gitid-gh-user.patch) for separate installation.
+
 ### Shared TypeSafe key
 
 Store only the TypeSafe credential in `~/.config/sawmill/.env`, or
