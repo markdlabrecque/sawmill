@@ -37,3 +37,9 @@ For every change, including code, tests, documentation and agent instructions:
   not the existing phase, CI gate or infrastructure outcome definitions. No
   terminology conflicts found. Evidence: the preserved readiness deadline in
   `src/integrate.ts` and the separate-wait guidance in `docs/operating-mill.md`.
+- Ticket #263, rebase repair: Preserved both tickets' completion records and both
+  the draft worktree conflict guidance and GitLab readiness guidance in
+  `docs/operating-mill.md`. These were concurrent additions, not conflicting
+  domain policies. Glossary checked; no update needed because the existing
+  Draft, Worktree, Rebase gate and CI gate definitions still cover both sections.
+  Protected `test/integrate.test.ts` is unchanged from the reviewed revision.
