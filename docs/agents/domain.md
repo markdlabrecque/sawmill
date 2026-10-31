@@ -60,3 +60,8 @@ For every change, including code, tests, documentation and agent instructions:
   `gh`/`direnv`, checking both identities, nested millyards, unset and unchanged
   list output. Execution exposed and corrected the patch's hunk counts; no
   additional domain concept or terminology conflict was introduced.
+- Ticket #264, rebase repair: Preserved GitLab readiness imports alongside
+  GitHub account-error handling in `src/integrate.ts`, and retained all concurrent
+  completion records. Glossary checked; no update needed because these are
+  compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
+  Logjam. The protected account tests are unchanged from the writer commit.
