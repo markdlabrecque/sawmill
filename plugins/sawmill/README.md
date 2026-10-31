@@ -27,7 +27,7 @@ claude plugin marketplace update sawmill
 claude plugin update sawmill@sawmill
 ```
 
-Restart Claude Code to load the refreshed plugin and check that `/sawmill:sawdust` is available. For skills installed separately through `npx skills add`, rerun the [README's skills install](../../README.md#agent-skills) after `mill update`; there is no automatic skill-sync step. A stale copy of the old retrospective (previously named learn) is not the new skill. Inspect its contents and symlinks, then remove only the verified old Sawmill entry from the shared or agent-specific skill directory, leaving unrelated user skills alone. Do not hand-edit the plugin cache; refresh the plugin instead.
+Restart Claude Code to load the refreshed plugin and check that `/sawmill:sawdust` is available. For separately installed global skills, run `mill skills refresh` after `mill update` and review the consent prompt. Mill warns about differing content but never automatically overwrites it; customized or unverified copies are preserved. See [Agent skills](../../README.md#agent-skills) for safe legacy-copy handling. Reload skills in an already-running conversation or start a fresh session: replacing skill files does not replace instructions already loaded into context. A stale copy of the old retrospective (previously named learn) is not the new skill. Inspect its contents and symlinks, then remove only the verified old Sawmill entry from the shared or agent-specific skill directory, leaving unrelated user skills alone. Do not hand-edit the plugin cache; refresh the plugin instead.
 
 For a session-only local load, start from the millyard:
 

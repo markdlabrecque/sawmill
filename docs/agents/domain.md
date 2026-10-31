@@ -65,3 +65,15 @@ For every change, including code, tests, documentation and agent instructions:
   completion records. Glossary checked; no update needed because these are
   compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
   Logjam. The protected account tests are unchanged from the writer commit.
+
+## Ticket #262 test-writers record
+
+Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
+
+## Ticket #262 conflict-repair record
+
+Glossary checked; no glossary update needed because this repair only preserves independent completion records and changes no domain definitions. The rebase conflict in this file was an overlapping addition, not a terminology conflict: both the integration branch's ticket #259 record and the test writers' ticket #262 record are retained unchanged. The protected freshness tests are unchanged from the reviewed revision.
+
+The subsequent conflict repair onto integration revision `41af42a` also preserves all ticket #263 completion records alongside the ticket #259 and #262 records. Glossary rechecked; no definitions changed because this resolution only combines independent records, with no conflicting domain claims. No test file was edited during the repair.
+
+Verification against integration revision `5fdaa0e` confirms that all upstream completion records, including ticket #264, remain unchanged alongside the ticket #262 records. The requested rebase reports the branch already up to date. Glossary checked; no update needed because preserving these independent records changes no domain definitions. No test file was edited.

@@ -18,7 +18,7 @@ if (roleCommand) {
 process.env.MILL_WORKER_TOKEN ??= randomUUID();
 // Only a person at a terminal is asked; scripts, workers and --json output never see the question.
 const informational = !args.length || args.some(arg => ['--json', '--help', '-h', '--version'].includes(arg));
-if (process.stdin.isTTY && process.stdout.isTTY && !informational) {
+if (process.stdin.isTTY && process.stdout.isTTY && !informational && !['skills', 'update'].includes(args[0] ?? '')) {
   const ask = async (question: string) => {
     const prompt = createInterface({ input: process.stdin, output: process.stdout });
     prompt.once('SIGINT', () => process.exit(130));

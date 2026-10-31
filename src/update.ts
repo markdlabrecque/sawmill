@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { readBuildIdentity, sourceState, stampBuild, type BuildIdentity } from './build-identity.js';
+import { skillWarnings } from './agent-skills.js';
 import { loadMachineConfig, milliseconds, updateDrainDefault } from './config.js';
 import { processAlive } from './process-ownership.js';
 import { ensureScheduler, holdDispatch, notifyScheduler, releaseDispatch, schedulerStatus, stopScheduler, type SchedulerStatus } from './scheduler.js';
@@ -27,6 +28,7 @@ export const runStep: Exec = async (command, args, { cwd }) => {
 export interface UpdateReport {
   status: 'updated' | 'failed';
   message?: string;
+  warnings?: string[];
   source: { path: string } & Omit<BuildIdentity, 'id'>;
   installed: BuildIdentity | null;
   scheduler: SchedulerStatus;
@@ -77,7 +79,7 @@ export async function updateMill(source: string, options: UpdateOptions): Promis
   source = resolve(source);
   const state = await sourceState(source);
   const report = (status: UpdateReport['status'], message?: string): UpdateReport => ({
-    status, ...(message ? { message } : {}), source: { path: source, ...state }, installed: readBuildIdentity(root) ?? null, scheduler: schedulerStatus(home),
+    status, ...(message ? { message } : {}), ...(status === 'updated' ? { warnings: skillWarnings(root, home) } : {}), source: { path: source, ...state }, installed: readBuildIdentity(root) ?? null, scheduler: schedulerStatus(home),
   });
   if (!existsSync(join(source, 'package.json'))) return report('failed', `${source} is not a Sawmill checkout: it has no package.json.`);
   if (existsSync(join(root, '.git')) || await realpath(source) === await realpath(root)) {
