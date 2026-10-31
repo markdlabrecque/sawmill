@@ -207,10 +207,18 @@ function logPick(db: DatabaseSync, number: number, message: string): void {
 }
 
 /** Replaces one preference atomically, without activating the run or changing its stored order. */
-export function pickTicket(cwd: string, project: ProjectConfig, number?: number): { previous?: number; pendingPick?: number } {
+export function pickTicket(cwd: string, project: ProjectConfig, number?: number, expected?: { runId: string; clearPick?: number }): { previous?: number; pendingPick?: number } {
   checkTracker(cwd, project);
   return transaction(cwd, db => {
+    // Board requests name the run and, when clearing, the pick they saw. Fence both
+    // under the same write lock as eligibility and mutation, not just at HTTP admission.
+    if (expected && db.prepare('SELECT id FROM run').get()?.id !== expected.runId) {
+      throw new CliError('The Board is out of date: this project has a different run now. Reload the Board.');
+    }
     const previous = pendingPick(db);
+    if (expected?.clearPick !== undefined && previous !== expected.clearPick) {
+      throw new CliError('The pending pick has changed; nothing was cleared. Reload the Board.');
+    }
     if (number !== undefined) {
       const row = requireTicket(db, number);
       if (!readyToClaim(db, number) || row.completion) throw new CliError(`Cannot pick #${number}: it is not a ready queued ticket (state: ${row.state}).`);
