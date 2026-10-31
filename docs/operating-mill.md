@@ -66,6 +66,16 @@ ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
 
 To add work, run `mill run draft <numbers...>` (or use `--label` or `--spec`) again. New tickets append in blocked-by order after the existing queue; existing tickets are reported as already present and keep their state and checkpoints. Validation finishes before any additions are saved. Active runs pick up additions through ordinary scheduler dispatch without interrupting workers; inactive, stopped and paused runs keep their execution intent. A completed run is archived and drafting creates a new inactive run. You cannot replace a run in progress, even with `--replace`; that option is only for an inactive draft with no working or logjam tickets.
 
+### Draft worktree conflicts
+
+Before saving new tickets, draft preflight requires both an unused intended worktree path and no local `mill/<ticket>` branch. A registered git worktree, file, directory or symlink at the intended path refuses the draft. An existing ticket branch refuses it even without a worktree or when registered elsewhere. The intended path follows creation's rules: a sibling `<ticket>` directory by default, or `<worktrees>/<project name>/<ticket>` using the machine's `worktrees` setting; relative roots resolve from the millyard.
+
+The refusal names the ticket, intended path, registered path and branch when available, and unmerged commits relative to the local integration branch when known. Detached or unregistered entries have unknown ownership; an unknown commit count is not zero and does not mean the entry is safe to reuse. Drafting changes no entry, branch or git worktree, creates no worktree, and leaves the current run unchanged. Already-present members of an unfinished run retain their work and are not checked as additions.
+
+The human user must inspect the named paths and branches and decide what happens to the existing work. Review committed, uncommitted and untracked work, not only the reported count. Preserve independent work before authorizing any separate disposition; Mill does not delete, relocate, reset, adopt or overwrite it during drafting. Do not use `mill run reset`, `mill worktree remove` or `gc` to settle an independent collision. If it belongs to live execution, follow the stopping procedure below before considering any changes. Mill has no automatic conflict-resolution command: settle the path and branch conflict through a separately authorized, preservation-first action, or leave that ticket out. Retry `mill run draft` only after the intended path and ticket branch are available. There is no need to activate a run to diagnose this.
+
+Draft inspection is not a reservation. Dispatch-time validation remains authoritative and still refuses a path collision introduced after drafting; never bypass that refusal by removing independent work.
+
 ### GitLab CE blocked-by links
 
 When native blocked-by links are unavailable, `mill run draft` reads explicit declarations from the ticket description and comments, including all comment pages. Use unqualified ticket numbers in the configured GitLab project:

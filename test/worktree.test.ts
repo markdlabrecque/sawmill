@@ -347,8 +347,8 @@ test('a configured integration branch cannot be deleted as a ticket branch', asy
 test('adopting a hand-created sandbox records it, and an abort keeps its stage and WIP intact', async t => {
   const tracker = new Tracker(7);
   const yard = await configured(t, tracker);
-  assert.equal((await yard.cli('worktree', 'create', '7')).code, 0);
   assert.equal((await yard.cli('run', 'draft', '7')).code, 0);
+  assert.equal((await yard.cli('worktree', 'create', '7')).code, 0);
   tracker.readsAllowed = false;
   assert.equal((await yard.cli('worktree', 'create', '7')).code, 0);
   const path = join(yard.root, '7');

@@ -471,7 +471,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         };
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle);
+        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle, config.machine);
         if (writer && drafted.added.length) await flushAssignments(cwd, config.project, writer, { ...options, tickets: drafted.added });
         const snapshot = readRun(cwd);
         if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);

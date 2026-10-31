@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { checkMillyard } from './millyard.js';
-import type { ProjectConfig } from './config.js';
+import type { MachineConfig, ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
 import { registerMillyard } from './registry.js';
 import { literalCommand, requiredCheckNames } from './verification.js';
@@ -10,13 +10,14 @@ import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js
 import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection, requireBrowserCapability } from './user-testing.js';
+import { checkDraftWorktrees } from './worktrees.js';
 
 const execute = promisify(execFile);
 
 /** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch.
  * `checkPolicy` settles the merge policy once the selection is valid; it throws to refuse the draft. */
 export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false,
-  checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined) {
+  checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined, machine: Pick<MachineConfig, 'worktrees'> = {}) {
   await checkMillyard(cwd, project.integration);
   const previous = checkDraftable(cwd, replace);
   const existing = previous && previous.run.lifecycle !== 'completed' && !replace ? previous : undefined;
@@ -70,6 +71,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     throw new CliError(`${message} Choose another selector or use explicit ticket numbers.`);
   }
   const numbers = tickets.map(ticket => ticket.number);
+  await checkDraftWorktrees(cwd, project, machine, numbers);
   const sections = tickets.map(ticket => {
     try { return { ticket, section: userTestSection(ticket.body) }; }
     catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
