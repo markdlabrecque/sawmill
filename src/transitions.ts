@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
 import type { ProjectConfig } from './config.js';
 import { CliError } from './errors.js';
+import { GitHubAccountError } from './github-account.js';
 import { alreadyClosed, openRun, readRun, mergeCleanupPending, type Assignment, type IntegrationProgress, type LoopProgress, type MirrorWrite, type PhaseRecord, type PhaseWait, type RunTicket, type TeamProgress, type WorkerOwnership } from './run-store.js';
 import { operationMarker, reportComment, type StageReport } from './reporter.js';
 import type { AssignResult, Ticket, TicketWriter } from './tracker.js';
@@ -280,6 +281,16 @@ export function skipClosedTicket(cwd: string, number: number): boolean {
   });
 }
 
+/** Hold a non-retryable tracker configuration failure locally, ready for answer. */
+export function holdTrackerFailure(cwd: string, project: ProjectConfig, number: number, error: Error): void {
+  transaction(cwd, db => {
+    const label = { label: project.labels.logjam };
+    const held = db.prepare("SELECT id FROM pending_writes WHERE ticket = ? AND kind = 'add-label' AND payload = ?").get(number, JSON.stringify(label));
+    update(db, number, { state: 'logjam', reason: 'tracker' }, held ? [] : [{ kind: 'add-label', payload: label }]);
+    db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, new Date().toISOString(), JSON.stringify({ mirrorError: error.message }));
+  });
+}
+
 /** The ticket stays queued; the loop counts the failure toward its infrastructure pause. */
 export function logStateLookupFailure(cwd: string, number: number, error: string): void {
   transaction(cwd, db => {
@@ -372,7 +383,7 @@ export async function flushPending(cwd: string, project: ProjectConfig, tracker:
       } catch (error) {
         // A blind retry of a marked report could post it twice; it is held for a replay that looks for it first.
         const marked = write.kind === 'comment' && Boolean(write.payload.marker);
-        if (attempt < 3 && !marked) { await sleep(100 * 2 ** attempt); continue; }
+        if (attempt < 3 && !marked && !(error instanceof GitHubAccountError)) { await sleep(100 * 2 ** attempt); continue; }
         transaction(cwd, db => {
           const label = { label: project.labels.logjam };
           const held = db.prepare("SELECT id FROM pending_writes WHERE ticket = ? AND kind = 'add-label' AND payload = ?").get(number, JSON.stringify(label));

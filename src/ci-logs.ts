@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { GitHubAccountError } from './github-account.js';
 import { ciScreeningNote, ciScreeningOptions, type CiScreeningOptions } from './ci-screening.js';
 import type { CiJob, IntegrationTracker, LogLimits, Pipeline } from './tracker.js';
 
@@ -64,7 +65,10 @@ export async function ciLogReport(cwd: string, number: number, tracker: Integrat
       const text = log.truncated ? `${truncatedMark} kept the last ${mib(ciLogLimits.maxBytes)} of ${mib(log.bytes)}. Full log: ${job.url ?? 'see the CI job'}\n${log.text}` : log.text;
       await writeFile(file, text);
       return { file, text };
-    } catch (error) { return `Log unavailable: the download failed: ${message(error)}`; }
+    } catch (error) {
+      if (error instanceof GitHubAccountError) throw error;
+      return `Log unavailable: the download failed: ${message(error)}`;
+    }
   };
   // Finish deterministic collection before any optional service calls. A slow or
   // unavailable classifier must never consume a later job's download budget.

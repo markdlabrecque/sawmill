@@ -22,6 +22,8 @@ export async function githubAccount(cwd: string, host?: string, timeoutMs = 6000
   const env = { ...process.env };
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
+  delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_ENTERPRISE_TOKEN;
   const args = ['auth', 'token', '--user', user];
   if (host) args.push('--hostname', host);
   const token = await new Promise<string>((resolve, reject) => {
@@ -30,5 +32,5 @@ export async function githubAccount(cwd: string, host?: string, timeoutMs = 6000
       else resolve(stdout.trim());
     });
   });
-  return { env: { ...process.env, GH_TOKEN: token }, redact: text => text.split(token).join('[REDACTED]') };
+  return { env: { ...process.env, GH_TOKEN: token, GH_ENTERPRISE_TOKEN: token }, redact: text => text.split(token).join('[REDACTED]') };
 }

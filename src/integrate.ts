@@ -18,12 +18,13 @@ import { PhaseTimeout, waitPhase } from './phases.js';
 import { requiredCheckNames } from './verification.js';
 import { configuredCheckPolicy, describeCheckPolicy } from './check-policy.js';
 import { CliError, FinalError } from './errors.js';
+import { GitHubAccountError } from './github-account.js';
 import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js';
 import { checkMillyard } from './millyard.js';
 import { ciLogReport } from './ci-logs.js';
 import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
-import { logRerunRow, rerunCount, transition, type MirrorOptions, type Transition } from './transitions.js';
+import { holdTrackerFailure, logRerunRow, rerunCount, transition, type MirrorOptions, type Transition } from './transitions.js';
 import { MergeRefusedError, SourceBranchNotVisibleError } from './tracker.js';
 import type { ChangeRequest, IntegrationTracker, Pipeline, ReconciledChangeRequest } from './tracker.js';
 import { withRunLock } from './run-lock.js';
@@ -195,7 +196,10 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
     const check = `Check it on the host, then run \`mill integrate ${number}\` again.`;
     let current: ReconciledChangeRequest;
     try { current = await tracker.reconcileChangeRequest!(operation.changeRequestId); }
-    catch (error) { throw new Error(`Could not confirm whether ${request} merged after its merge response was lost: ${message(error)}. Nothing was retried; run \`mill integrate ${number}\` again once the host answers.`); }
+    catch (error) {
+      if (error instanceof GitHubAccountError) throw error;
+      throw new Error(`Could not confirm whether ${request} merged after its merge response was lost: ${message(error)}. Nothing was retried; run \`mill integrate ${number}\` again once the host answers.`);
+    }
     if (String(current.id) !== String(operation.changeRequestId)) throw new Error(`The host answered for request ${current.id}, which differs from the saved ${request}. ${check}`);
     if (current.state === 'open') return undefined;
     if (current.state === 'closed') throw new Error(`The saved ${request} was closed without merging. ${check}`);
@@ -487,6 +491,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         boundary();
         try { merged = await tracker.mergeChangeRequest(progress.changeRequest.id, project.merge_method, head); }
         catch (error) {
+          if (error instanceof GitHubAccountError) throw error;
           // A refusal is acknowledged by the server, so it leaves nothing to reconcile; the next save drops the operation.
           // A lost response is ambiguous and must never be reclassified as a repairable check failure.
           if (error instanceof MergeRefusedError) {
@@ -567,6 +572,7 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       const stopped = await stopAtBoundary(cwd, project, tracker, number, stage, 'integrate', readRun(cwd).tickets.find(row => row.number === number)!.team, options);
       return { ...result(stopped.outcome), ...(stopped.error ? { message: stopped.error } : {}) };
     }
+    if (error instanceof GitHubAccountError) holdTrackerFailure(cwd, project, number, error);
     if (error instanceof FinalError) throw error;
     const current = readRun(cwd).tickets.find(row => row.number === number)!;
     if (current.state !== 'logjam' && current.completion !== 'manual') {
