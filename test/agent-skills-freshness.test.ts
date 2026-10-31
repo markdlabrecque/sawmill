@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { cpSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -36,6 +39,12 @@ async function fixture(t: TestContext) {
   const base = await mkdtemp(join(tmpdir(), 'mill-skill-freshness-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const home = join(base, 'home');
+  // Never discover configured agent homes belonging to the person running the tests.
+  for (const key of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME']) {
+    const previous = process.env[key];
+    process.env[key] = join(home, key === 'CLAUDE_CONFIG_DIR' ? '.claude' : '.codex');
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
   const root = join(base, 'package');
   const shipped = join(root, 'plugins/sawmill/skills');
   const installed = join(home, '.agents/skills');
@@ -139,25 +148,121 @@ test('explicit refresh accepts consent and replaces a known old copy while leavi
   assert.equal(subsequent, '', 'a successful refresh records the new identity');
 });
 
-for (const choice of ['decline', 'failure'] as const) {
-  test(`explicit refresh ${choice} leaves existing copies usable and reports the result`, async t => {
-    const f = await fixture(t);
-    await f.seedOwned();
-    await put(join(f.shipped, 'watch/SKILL.md'), newWatch);
-    let output = '';
-    let asked = 0;
-    const before = await snapshot(f.installed);
-    const result = await offer({ ...f, refresh: true,
-      ask: async () => { asked++; return choice === 'decline' ? 'n' : 'y'; },
-      install: () => { assert.equal(choice, 'failure', 'declined refresh must not install'); return false; },
-      stdout: text => { output += text; },
-    });
-    assert.equal(result, choice === 'decline' ? 'declined' : 'failed', output);
-    assert.equal(asked, 1);
-    assert.deepEqual(await snapshot(f.installed), before);
-    assert.match(output, choice === 'decline' ? /declin|skip|unchanged/i : /fail|unchanged/i);
-    assert.match(output, /(?:mill [^\n]*skill|npx skills add)/i, 'a clear supported retry path');
+test('explicit refresh decline leaves existing copies usable and reports the result', async t => {
+  const f = await fixture(t);
+  await f.seedOwned();
+  await put(join(f.shipped, 'watch/SKILL.md'), newWatch);
+  let output = '';
+  let asked = 0;
+  const before = await snapshot(f.installed);
+  const result = await offer({ ...f, refresh: true,
+    ask: async () => { asked++; return 'n'; },
+    install: () => assert.fail('declined refresh must not install'),
+    stdout: text => { output += text; },
   });
+  assert.equal(result, 'declined', output);
+  assert.equal(asked, 1);
+  assert.deepEqual(await snapshot(f.installed), before);
+  assert.match(output, /declin|skip|unchanged/i);
+  assert.match(output, /mill skills refresh/, 'a clear supported retry path');
+});
+
+test('explicit refresh failure leaves existing copies usable and reports the result', async t => {
+  const f = await fixture(t);
+  await f.seedOwned();
+  await put(join(f.shipped, 'watch/SKILL.md'), newWatch);
+  await put(join(f.shipped, 'foreman/SKILL.md'), '# Foreman\nUpdated instructions.\n');
+  await put(join(f.installed, 'private/SKILL.md'), 'Private instructions.\n');
+  const before = await snapshot(f.home);
+  const rename = fsPromises.rename;
+  let promotions = 0;
+  let failedAfterPromotion = false;
+  t.mock.method(fsPromises, 'rename', async (from: string, to: string) => {
+    if (from.endsWith('/content') && to.startsWith(f.installed + '/')) {
+      if (promotions === 1) {
+        // Observe a real replacement before failing the next production promotion.
+        const visible = await snapshot(f.installed);
+        assert.ok(Object.values(visible).includes(newWatch) || Object.values(visible).includes('# Foreman\nUpdated instructions.\n'));
+        failedAfterPromotion = true;
+        throw Object.assign(new Error('Injected promotion failure'), { code: 'EIO' });
+      }
+      await rename(from, to);
+      promotions++;
+      return;
+    }
+    await rename(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  let output = '';
+  let asked = 0;
+  const result = await offer({ ...f, install: undefined, refresh: true,
+    ask: async () => { asked++; return 'y'; }, stdout: text => { output += text; },
+  });
+  assert.equal(failedAfterPromotion, true, 'failure must occur after a real production promotion');
+  assert.equal(promotions, 1);
+  assert.equal(result, 'failed', output);
+  assert.equal(asked, 1);
+  assert.deepEqual(await snapshot(f.home), before, 'rollback restores all original skills, provenance, unrelated files and run state');
+  assert.match(output, /fail/i);
+  assert.match(output, /restor|unchanged/i);
+  assert.match(output, /mill skills refresh/, 'name the supported retry command');
+});
+
+for (const destination of ['cursor', 'configured Claude'] as const) {
+  test(`detection finds an outdated copy in ${destination} without writing skills or run state`, async t => {
+    const f = await fixture(t);
+    const agentHome = destination === 'cursor' ? join(f.home, '.cursor') : join(f.home, 'configured-claude');
+    if (destination === 'configured Claude') process.env.CLAUDE_CONFIG_DIR = agentHome;
+    const target = join(agentHome, 'skills');
+    assert.equal(await offer({ ...f, install: () => { cpSync(f.shipped, target, { recursive: true }); return true; },
+      ask: async () => 'y', stdout: () => {},
+    }), 'installed');
+    await put(join(f.shipped, 'watch/SKILL.md'), newWatch);
+    const before = await snapshot(f.home);
+    let output = '';
+    await offer({ ...f, install: undefined, ask: async () => assert.fail('existing skills must not prompt'), stdout: text => { output += text; } });
+    diagnostic(output, join(target, 'watch'));
+    assert.match(output, /outdated/i);
+    assert.deepEqual(await snapshot(f.home), before);
+  });
+
+  for (const incomplete of [false, true]) {
+    test(`missing-skill installation preserves ${incomplete ? 'incomplete' : 'customized'} ${destination} copies and restricts installer targets`, async t => {
+      const f = await fixture(t);
+      const agentHome = destination === 'cursor' ? join(f.home, '.cursor') : join(f.home, 'configured-claude');
+      if (destination === 'configured Claude') process.env.CLAUDE_CONFIG_DIR = agentHome;
+      const target = join(agentHome, 'skills/watch');
+      await put(join(target, incomplete ? 'notes.md' : 'SKILL.md'), 'Human user custom guidance.\n');
+      await put(join(agentHome, 'skills/private/SKILL.md'), 'Private instructions.\n');
+      const before = await snapshot(agentHome);
+      const runBefore = await readFile(join(f.home, 'project/.mill/run.json'), 'utf8');
+      let calls = 0;
+      t.mock.method(childProcess, 'spawnSync', (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        calls++;
+        assert.equal(incomplete, false, 'an incomplete existing directory must prevent broad installation');
+        assert.equal(command, 'npx');
+        const skills = args.slice(args.indexOf('--skill') + 1, args.indexOf('--agent'));
+        assert.deepEqual(skills, ['foreman'], 'never give the installer an existing customized skill name or wildcard');
+        assert.deepEqual(args.slice(args.indexOf('--agent') + 1, args.indexOf('-g')), ['claude-code', 'codex', 'pi', 'cursor'], 'restrict writes to the explicitly checked agent destinations');
+        assert.equal(options.env.HOME, f.home);
+        assert.equal(options.env.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR);
+        assert.equal(options.env.CODEX_HOME, process.env.CODEX_HOME);
+        cpSync(join(f.shipped, 'foreman'), join(f.installed, 'foreman'), { recursive: true });
+        return { status: 0 };
+      });
+      syncBuiltinESMExports();
+      t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+      let output = '';
+      const result = await offer({ ...f, install: undefined, ask: async () => 'y', stdout: text => { output += text; } });
+      assert.equal(result, incomplete ? 'failed' : 'installed', output);
+      assert.equal(calls, incomplete ? 0 : 1);
+      assert.deepEqual(await snapshot(agentHome), before, 'existing custom and unrelated skills remain intact');
+      assert.equal(await readFile(join(f.home, 'project/.mill/run.json'), 'utf8'), runBefore);
+      diagnostic(output, target);
+      if (incomplete) assert.match(output, /preserv|refus/i);
+    });
+  }
 }
 
 test('explicit consent is not permission to overwrite a customized copy', async t => {
