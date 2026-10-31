@@ -62,13 +62,19 @@ apply it.
 
 The first time you run `mill` at a terminal without them, it offers to install them. Answer `y` to run the install, or `n` to skip it. Mill remembers a skip in `~/.config/sawmill/skills-declined` and never asks again; delete that file to be asked once more. Scripts, `--json`, `--help`, and `--version` are never asked.
 
-To install them yourself, from the copy that ships with your `mill`:
+To install explicitly, or refresh after `mill update`, run at an interactive terminal:
 
 ```sh
-npx skills add "$(npm root -g)/@markdlabrecque/sawmill" --skill '*' -g -y
+mill skills refresh
 ```
 
-Run it again after `mill update` to pick up changed skills; updating Mill does not automatically refresh installed skills. The shipped directory names drive discovery, so an old retrospective installation alone does not satisfy the new `sawdust` skill.
+Mill asks for consent before installing missing skills or refreshing installer-owned copies. Updating Mill replaces its runtime and packaged skills, **not** globally installed skill copies. Both the update report and the ordinary terminal check warn when installed guidance differs, even when every `SKILL.md` exists. They name affected skills and resolved locations; shared symlink targets appear once. These checks only read skill content and never change run state or install files, and the scheduler does not prompt on its passes.
+
+Mill compares the complete skill content, not timestamps. It remembers content installed through Mill in `~/.config/sawmill/skills-installed.json`: an unchanged installer-owned copy can be identified as outdated after an update. A differing legacy copy, a user edit, or missing/invalid provenance is reported as differing or unverified, not as a known old unmodified release. Matching content produces no stale warning.
+
+Refresh preserves user edits and unrelated skills. If differing guidance has unknown ownership, Mill refuses to overwrite it even with consent. Review and back up the named skill directories, move only those copies and their agent symlink aliases aside (keeping them in the backup), then retry `mill skills refresh` to install missing skills. Do not delete the provenance record as a way to force refresh: unknown ownership never grants overwrite permission. A declined refresh leaves files unchanged and can be retried explicitly without resetting the remembered installation decline; failed replacement restores the existing copies and reports the retry command. If filesystem errors prevent restoration, the diagnostic names the retained backup directories instead; keep those backups and resolve the error before retrying.
+
+**Reload the skill in any conversation that already loaded it, or start a fresh session**, including watchers. Replacing files does not update instructions already in an agent's context. Verify the resolved skill path and content actually loaded before watcher work; fresh files alone are not proof of a conversation reload. The shipped directory names drive discovery, so an old retrospective installation alone does not satisfy the new `sawdust` skill.
 
 After refreshing, verify that `sawdust/SKILL.md` is installed under `~/.agents/skills` or your agent's global skill directory. If a stale old retrospective copy remains (the previous name was learn), inspect that copy and any agent symlinks to confirm they belong to Sawmill, then remove only those old skill entries. Do not delete the whole skills directory or unrelated user skills. For the Claude plugin installation and refresh procedure, see the [plugin README](plugins/sawmill/README.md).
 
