@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -22,13 +22,55 @@ async function worktrees(cwd: string) {
   const output = (await execute('git', ['worktree', 'list', '--porcelain', '-z'], { cwd, encoding: 'utf8' })).stdout;
   return output.split('\0\0').filter(Boolean).map(record => {
     const fields = record.split('\0');
-    return { path: fields.find(field => field.startsWith('worktree '))!.slice(9), branch: fields.find(field => field.startsWith('branch '))?.slice(7), locked: fields.some(field => field === 'locked' || field.startsWith('locked ')) };
+    return { path: fields.find(field => field.startsWith('worktree '))!.slice(9), head: fields.find(field => field.startsWith('HEAD '))?.slice(5), branch: fields.find(field => field.startsWith('branch '))?.slice(7), locked: fields.some(field => field === 'locked' || field.startsWith('locked ')) };
   });
 }
 
 async function hasBranch(cwd: string, branch: string) {
   try { await git(cwd, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`); return true; }
   catch { return false; }
+}
+
+function worktreePath(cwd: string, project: ProjectConfig, machine: Pick<MachineConfig, 'worktrees'>, number: number) {
+  return machine.worktrees ? resolve(cwd, machine.worktrees, project.name, String(number)) : resolve(dirname(resolve(cwd)), String(number));
+}
+
+/** Drafting requires fresh paths and ticket branches; inspection never adopts or changes existing work. */
+export async function checkDraftWorktrees(cwd: string, project: ProjectConfig, machine: Pick<MachineConfig, 'worktrees'>, numbers: number[]) {
+  if (!numbers.length) return;
+  const trees = await worktrees(cwd);
+  const conflicts: string[] = [];
+  for (const number of numbers) {
+    const path = worktreePath(cwd, project, machine, number), branch = `mill/${number}`;
+    const atPath = [];
+    for (const tree of trees) if (await samePath(path, tree.path)) atPath.push(tree);
+    const onBranch = trees.filter(tree => tree.branch === `refs/heads/${branch}`);
+    const registered = [...new Set([...atPath, ...onBranch])];
+    let occupied = false;
+    try { await lstat(path); occupied = true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new CliError(`#${number}: Cannot inspect intended worktree path ${path}; ownership is unknown.\n${failure(error)}`);
+      }
+    }
+    // Unlike reuse at dispatch, even an existing ticket branch without a worktree refuses a draft.
+    const branchExists = (await git(cwd, 'for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).split('\n').includes(`refs/heads/${branch}`);
+    if (!occupied && !registered.length && !branchExists) continue;
+    const details = [`#${number}: Intended worktree path ${path} conflicts with existing work.`];
+    for (const tree of registered) {
+      details.push(`Registered git worktree: ${tree.path}; branch: ${tree.branch?.replace(/^refs\/heads\//, '') ?? '(detached HEAD; ownership unknown)'}.`);
+    }
+    if (occupied && !atPath.length) details.push('The path is occupied by a filesystem entry; ownership is unknown.');
+    if (branchExists) details.push(`Ticket branch ${branch} already exists.`);
+    const heads = [...new Set([...registered.map(tree => tree.head), ...(branchExists ? [`refs/heads/${branch}`] : [])].filter((head): head is string => Boolean(head)))];
+    for (const head of heads) {
+      const count = await git(cwd, 'rev-list', '--count', `refs/heads/${project.integration}..${head}`).catch(() => undefined);
+      details.push(`Unmerged commits relative to ${project.integration} (${head}): ${count ?? 'unknown'}.`);
+    }
+    if (!heads.length) details.push('Unmerged commits: unknown.');
+    conflicts.push(details.join('\n'));
+  }
+  if (conflicts.length) throw new CliError(`${conflicts.join('\n\n')}\nDraft refused; existing work was not changed. The human user must inspect and settle these conflicts, preserving independent work, before drafting again. Mill will not delete, relocate, reset, adopt or overwrite it.`);
 }
 
 export interface WorktreeOptions extends MirrorOptions {
@@ -310,7 +352,7 @@ async function markBuild(path: string, root: string, reused: boolean): Promise<s
 
 export async function createWorktree(cwd: string, project: ProjectConfig, machine: MachineConfig, number: number, options: WorktreeOptions = {}) {
   cwd = resolve(cwd);
-  const path = machine.worktrees ? resolve(cwd, machine.worktrees, project.name, String(number)) : resolve(dirname(cwd), String(number));
+  const path = worktreePath(cwd, project, machine, number);
   const ticket = member(cwd, project, number);
   const tracker = ticket ? writer(options) : undefined;
   const branch = `mill/${number}`;
