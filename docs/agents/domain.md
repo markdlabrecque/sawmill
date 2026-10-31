@@ -50,3 +50,13 @@ For every change, including code, tests, documentation and agent instructions:
   [Operating Mill](../operating-mill.md#per-project-github-account). No terminology
   conflicts were found; code, the protected account tests, helper patch and
   operating guidance use the existing concepts.
+  Review repair also checked Logjam, Worker and Infrastructure outcome: an
+  unavailable GitHub account now returns an aborted tracker result rather than
+  an infrastructure result, preserving the existing distinction without changing
+  those definitions. `test/github-account-recovery.test.ts` exercises integration
+  through worker-result consumption and the first-start boundary.
+  `test/gitid-account.test.ts` executes both the separately installed helper
+  (when it matches the patch) and the applied patch with isolated HOME and scripted
+  `gh`/`direnv`, checking both identities, nested millyards, unset and unchanged
+  list output. Execution exposed and corrected the patch's hunk counts; no
+  additional domain concept or terminology conflict was introduced.

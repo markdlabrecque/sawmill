@@ -1,6 +1,6 @@
 --- a/gitid
 +++ b/gitid
-@@ -55,6 +55,19 @@
+@@ -55,6 +55,18 @@
    [ -s "$f" ] || rm -f "$f"
  }
  
@@ -19,7 +19,7 @@
  cmd="${1:-}"
  case "$cmd" in
    personal|ab)
-@@ -61,6 +74,7 @@
+@@ -61,6 +73,7 @@
      ensure_profile "$cmd"
      git config --global --replace-all "$(mark_key "$dir")" "$(profile_file "$cmd")"
      envrc_set "$dir" "$(gh_user "$cmd")"
@@ -27,7 +27,7 @@
      echo "$dir -> $cmd"
      ;;
    unset)
-@@ -67,6 +81,7 @@
+@@ -67,6 +80,7 @@
      dir=$(abspath "${2:-.}")
      git config --global --unset-all "$(mark_key "$dir")" 2>/dev/null || { echo "gitid: $dir is not marked" >&2; exit 1; }
      envrc_clear "$dir"
