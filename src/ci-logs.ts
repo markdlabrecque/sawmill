@@ -13,9 +13,9 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 
 /** Run a tracker CLI, keeping the first `prefix` bytes and the last `maxBytes` of its output. */
-export function boundedOutput(command: string, args: string[], cwd: string, limits: LogLimits, prefix = 0): Promise<{ head: Buffer; tail: Buffer; bytes: number }> {
+export function boundedOutput(command: string, args: string[], cwd: string, limits: LogLimits, prefix = 0, env?: NodeJS.ProcessEnv): Promise<{ head: Buffer; tail: Buffer; bytes: number }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let head = Buffer.alloc(0), tail: Buffer[] = [], tailBytes = 0, bytes = 0, stderr = '', timedOut = false;
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
