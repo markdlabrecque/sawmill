@@ -69,3 +69,7 @@ For every change, including code, tests, documentation and agent instructions:
 ## Ticket #262 test-writers record
 
 Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
+
+## Ticket #262 conflict-repair record
+
+Glossary checked; no glossary update needed because this repair only preserves independent completion records and changes no domain definitions. The rebase conflict in this file was an overlapping addition, not a terminology conflict: both the integration branch's ticket #259 record and the test writers' ticket #262 record are retained unchanged. The protected freshness tests are unchanged from the reviewed revision.
