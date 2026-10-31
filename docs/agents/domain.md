@@ -32,3 +32,8 @@ For every change, including code, tests, documentation and agent instructions:
   gate. No terminology conflicts found. Evidence: scripted readiness scenarios
   in `test/integrate.test.ts`, implementation in `src/gitlab.ts` and
   `src/integrate.ts`, and recovery guidance in `docs/operating-mill.md`.
+- Ticket #263, review repair: Glossary checked; no update needed because excluding
+  native CI waiting from the merge preparation budget changes deadline accounting,
+  not the existing phase, CI gate or infrastructure outcome definitions. No
+  terminology conflicts found. Evidence: the preserved readiness deadline in
+  `src/integrate.ts` and the separate-wait guidance in `docs/operating-mill.md`.

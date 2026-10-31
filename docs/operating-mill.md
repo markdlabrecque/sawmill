@@ -96,7 +96,10 @@ retry for each ordinary readiness observation:
 
 Creation and merge preparation each have one deadline: **30 seconds or the
 shorter `phase_timeouts.ci`**, whichever comes first. Observations and repeated
-refusals do not reset it. Polls use the machine's `ci_poll_interval`, capped at
+refusals do not reset it. Time spent in a separate native CI wait does not
+consume the merge preparation budget, whether CI comes before or after
+preparation waiting; the remaining budget resumes rather than restarting.
+Polls use the machine's `ci_poll_interval`, capped at
 **2 seconds** for these short waits and clipped to the remaining time. Mill
 rechecks the local worktree and pushed remote head before and after sleeping,
 and honors ticket stop requests
