@@ -23,6 +23,19 @@ For every change, including code, tests, documentation and agent instructions:
 
 ## Completion records
 
+- Ticket #258: Glossary checked; no glossary update needed because the existing
+  Reviewer, Test correction, Bounce, Handoff and Acceptance checklist definitions
+  cover mixed protected and unprotected test findings. `roles/reviewer.md` now
+  distinguishes the saved protected-file list and documents an unprotected repair
+  bounce followed by a scoped protected correction and fresh review of both
+  repairs. `src/team-runner.ts` accepts a pending correction only on a pass, which
+  can proceed to integration, so the guidance does not allow passing a correction
+  with an unresolved finding. No terminology conflict was found. The accepted
+  `test/reviewer-mixed-correction.test.ts` is retained unchanged; runtime behavior
+  and existing tests are unchanged. Verification: build, all 22 focused correction
+  tests and `git diff --check` pass. The effect on routing-related human answers
+  remains unmeasured until a later run contains a mixed-file finding.
+
 - Ticket #259: Glossary checked across draft preflight code, tests and documentation. No glossary update needed: the existing Draft, Worktree, Millyard, Integration branch and Human user definitions cover read-only collision detection and human-directed disposition. Independent registered entries are described as git worktrees, not ticket worktrees to adopt. No conflicting definition was found. `src/draft.ts` and `src/worktrees.ts` implement the policy; `test/draft-worktree-preflight.test.ts` covers refusal, preservation and later collisions; the README, spec and operating guide distinguish draft refusal from dispatch-time validation. The legacy setup in `test/worktree.test.ts`, “adopting a hand-created sandbox records it, and an abort keeps its stage and WIP intact”, conflicted with the ticket's draft-refusal policy. As authorized by the human user, the setup now drafts before creation; dispatch-time reuse, stage and WIP preservation assertions remain unchanged. No protected test was edited. Verification at `5dda48a`: all 1175 suite tests and 3 process-permission tests pass; build and typecheck pass. Glossary rechecked for this setup correction; no definitions changed because the existing Draft, Worktree and Stage definitions still apply.
 - Ticket #263: Glossary checked across the GitLab adapter, integration code,
   protected integration tests and operating guidance. No glossary update needed:

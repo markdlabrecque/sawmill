@@ -46,7 +46,20 @@ The CLI refuses a pass with an unresolved, missing or unevidenced item and sends
 
 ## Test corrections
 
+The handoff's saved `testFiles` list identifies the protected files. Other tests are not protected merely because they are tests. Send repairs to unprotected tests to the implementer through an ordinary bounce; name only saved protected files in a `test-correction` request. Mill refuses a request containing any unprotected file.
+
 The implementer cannot change the test writers' protected tests. When one of them is wrong (it asserts something the ticket never promised, or it targets the wrong fixture), do not bounce. Request a `test-correction` instead: name the protected test files, the mistake, and how the corrected tests still cover what the ticket requires. The CLI sends the request to the test writers, who may change only those files. You then review the correction: it must fix only the named mistake, keep every requirement covered, and leave the implementation meeting the ticket. A green run is not evidence that the correction is valid. Where it applies, check that the corrected test still fails against the unfixed behaviour. Pass accepts it as the new protected baseline. Another `test-correction` sends it back. After two attempts, a further request stops the ticket for a person. If the ticket is unclear or contradicts itself, ask a question instead.
+
+### Findings involving both kinds of test
+
+Repair the unprotected files first. A pass accepts a pending protected correction and can proceed to integration; it is not a way to approve only the correction while deferring another finding.
+
+For example, suppose protected `test/run-clear.test.ts` asserts the wrong fixture, while an existing, unprotected assertion in `test/run-open.test.ts` needs a compatibility repair:
+
+1. Bounce the `test/run-open.test.ts` repair to the implementer. Number both findings in the feedback, marking the protected-file finding as deferred to the test writers. Tell the implementer to repair only the unprotected finding and leave the protected file unchanged.
+2. On re-review, verify the unprotected repair and retain the deferred finding. Once the unprotected repair is correct, request `test-correction` with only `test/run-clear.test.ts` in `files`. In `mistake`, describe the protected error and retain the numbered unprotected finding, its repair and the verification still needed. In `preserves`, explain how the correction keeps the ticket's required acceptance coverage.
+3. After the test writers commit, perform a fresh review of the correction and verify that the unprotected repair still works with it. Keep every acceptance item accounted for and perform the handoff's requested user test cases. If the unprotected repair needs further work, bounce it while retaining the pending correction and its finding; a bounce does not accept the correction as the protected baseline.
+4. Pass only when both findings are resolved, the scoped correction preserves requirements, and the final revision has the required evidence. Request another scoped correction if the protected test is still wrong; ask a question if the ticket's meaning is unclear.
 
 ## User test cases
 
