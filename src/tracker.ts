@@ -33,6 +33,9 @@ export interface ChangeRequest {
   id: number | string;
   url: string;
   headCommit: string;
+  /** Source and target branches when the host reports them. */
+  branch?: string;
+  base?: string;
   /** GitLab's reason a merge is currently blocked, when reported. */
   mergeStatus?: string;
 }
@@ -112,6 +115,10 @@ export interface CheckPolicy {
 
 /** A definite server refusal, distinct from transport/authentication failures. */
 export class MergeRefusedError extends Error {}
+
+/** MR creation explicitly reported only that its source branch is not visible yet.
+ * The caller must verify the pushed remote head before deciding to wait. */
+export class SourceBranchNotVisibleError extends Error {}
 
 /** Shared by GitHub and GitLab; mirror and integration operations arrive separately. */
 export interface IntegrationTracker extends TicketWriter {
