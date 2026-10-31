@@ -24,8 +24,8 @@ import { ciLogReport } from './ci-logs.js';
 import { ticketUrl } from './links.js';
 import { readRun, type IntegrationProgress } from './run-store.js';
 import { logRerunRow, rerunCount, transition, type MirrorOptions, type Transition } from './transitions.js';
-import { MergeRefusedError } from './tracker.js';
-import type { IntegrationTracker, Pipeline, ReconciledChangeRequest } from './tracker.js';
+import { MergeRefusedError, SourceBranchNotVisibleError } from './tracker.js';
+import type { ChangeRequest, IntegrationTracker, Pipeline, ReconciledChangeRequest } from './tracker.js';
 import { withRunLock } from './run-lock.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
@@ -361,7 +361,40 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
         await advance('pr-opened');
       }
       const issueUrl = ticketUrl(project.tracker, number);
-      progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}${policySummary}\nHead: ${head}` });
+      const checkPushedHead = async () => {
+        guard();
+        boundary();
+        if (progress.testedHead !== head || progress.pushedHead !== head ||
+            await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
+            await git(ticket.worktree!, 'status', '--porcelain', '--untracked-files=all') ||
+            (await git(cwd, 'ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).split(/\s/)[0] !== head) throw new Error('Local worktree or remote head differs from the tested, pushed commit.');
+        boundary();
+      };
+      // Like MR head propagation, ordinary host preparation gets at most 30 seconds,
+      // or the shorter CI deadline. Each operation keeps its deadline across refusals.
+      const readinessMs = Math.min(30_000, milliseconds(phaseDeadline(project, 'ci')));
+      const readinessInterval = milliseconds(options.ciPollInterval ?? '30s');
+      const waitForReadiness = async (ends: number, observed: string) => {
+        await checkPushedHead();
+        const timedOut = () => new PhaseTimeout(`GitLab readiness timed out: ${observed}. Let GitLab finish preparation or fix the reported state, then run \`mill integrate ${number}\` again. The pushed branch and any change request are kept.`);
+        if (Date.now() >= ends) throw timedOut();
+        await save({ report: { stage: 'pr-opened', reachedStage: stage, details: `Waiting for GitLab readiness: ${observed}.` } });
+        await (options.sleep ?? sleep)(Math.min(readinessInterval, ends - Date.now()));
+        await checkPushedHead();
+        if (Date.now() >= ends) throw timedOut();
+      };
+      const createEnds = Date.now() + readinessMs;
+      for (;;) {
+        guard();
+        boundary();
+        try {
+          progress.changeRequest = await tracker.findOrOpenChangeRequest({ branch, base: project.integration, title: `#${number}: ${ticket.title}`, body: `Implements ${issueUrl}\n\n${testSummary(project)}${checkSummary(progress)}${policySummary}\nHead: ${head}` });
+          break;
+        } catch (error) {
+          if (project.tracker.backend !== 'gitlab' || !(error instanceof SourceBranchNotVisibleError)) throw error;
+          await waitForReadiness(createEnds, `source branch ${branch} visibility after push of ${head}`);
+        }
+      }
       await save({ report: { stage: 'pr-opened', details: `Change request for ${branch}.`, changeRequestUrl: progress.changeRequest.url } });
       // The host's request head can lag a successful push. Give only that observation
       // up to 30 seconds to catch up (or the shorter configured CI deadline).
@@ -427,11 +460,19 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       };
       if (ciRequired && await waitForCi()) return await ciFailed();
       let merged: { mergeCommit: string };
+      const mergeEnds = Date.now() + readinessMs;
+      let readinessWaited = false;
+      const checkRequest = (current: ChangeRequest) => {
+        if (current.id !== progress.changeRequest!.id || current.headCommit !== head ||
+            (current.branch !== undefined && current.branch !== branch) ||
+            (current.base !== undefined && current.base !== project.integration)) throw new Error('Change request identity or head differs from the tested, pushed commit.');
+      };
       for (;;) {
         await advance('merge');
-        if (ciRequired) {
+        if (ciRequired || readinessWaited) {
           const current = await tracker.getChangeRequest!(progress.changeRequest.id);
-          if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head differs from the tested, pushed commit.');
+          checkRequest(current);
+          if (readinessWaited && Date.now() >= mergeEnds) throw new PhaseTimeout(`GitLab merge readiness timed out (observed ${current.mergeStatus ?? 'unknown'}). Run \`mill integrate ${number}\` again once GitLab is ready. The pushed branch and change request are kept.`);
         }
         if (progress.testedHead !== head || progress.pushedHead !== head || (declared.length && progress.checks?.head !== head) ||
             await git(ticket.worktree!, 'rev-parse', 'HEAD') !== head ||
@@ -449,8 +490,19 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
           if (error instanceof MergeRefusedError) {
             delete progress.operation;
             if (tracker.getChangeRequest && (project.ci === 'wait' || project.tracker.backend === 'gitlab')) {
-              const current = await tracker.getChangeRequest(progress.changeRequest.id);
-              if (current.id !== progress.changeRequest.id || current.headCommit !== head) throw new Error('Change request head changed before merge.');
+              let current = await tracker.getChangeRequest(progress.changeRequest.id);
+              checkRequest(current);
+              if (project.tracker.backend === 'gitlab' && ['preparing', 'unchecked'].includes(current.mergeStatus ?? '')) {
+                readinessWaited = true;
+                do {
+                  await waitForReadiness(mergeEnds, `MR ${current.id} merge status ${current.mergeStatus}`);
+                  current = await tracker.getChangeRequest(progress.changeRequest.id);
+                  checkRequest(current);
+                } while (['preparing', 'unchecked'].includes(current.mergeStatus ?? ''));
+                // Only a ready observation authorizes another merge. Terminal states retain
+                // the original refusal instead of becoming a generic HTTP retry.
+                if (current.mergeStatus === 'mergeable') continue;
+              }
               const ciBlocked = project.tracker.backend === 'gitlab' && ['ci_still_running', 'ci_must_pass'].includes(current.mergeStatus ?? '');
               if (ciBlocked) {
                 ciRequired = true;
