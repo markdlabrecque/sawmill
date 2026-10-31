@@ -43,3 +43,10 @@ For every change, including code, tests, documentation and agent instructions:
   domain policies. Glossary checked; no update needed because the existing
   Draft, Worktree, Rebase gate and CI gate definitions still cover both sections.
   Protected `test/integrate.test.ts` is unchanged from the reviewed revision.
+- Ticket #264: Glossary checked; no glossary update needed because the existing
+  Project, Millyard, Scheduler, Tracker and Tracker mirror definitions already
+  cover per-millyard GitHub account selection. A username file and child-process
+  credentials are implementation mechanics, documented in
+  [Operating Mill](../operating-mill.md#per-project-github-account). No terminology
+  conflicts were found; code, the protected account tests, helper patch and
+  operating guidance use the existing concepts.
