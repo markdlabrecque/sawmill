@@ -2,13 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
-// The Vercel skills CLI installs the skills this mill ships, so they always match it, into the global skill directory of each agent it detects.
-export const installArgs = (root: string, names: string[] = ['*']) => ['-y', 'skills', 'add', root, '--skill', ...names, '-g', '-y'];
-export const installCommand = (root: string) => `npx skills add '${root}' --skill '*' -g -y`;
-// The skills CLI always targets PromptScript, which has no global directory, so every global install reports it failed.
-const expectedFailures = 'Note: the PromptScript "does not support global skill installation" failures above are expected; the skills CLI always tries it and no Sawmill skill is affected.\n';
+// Keep installation targets explicit: automatic agent discovery can write to unchecked user copies.
+const agentTargets = ['claude-code', 'codex', 'pi', 'cursor'];
+export const installArgs = (root: string, names: string[] = ['*']) => ['-y', 'skills', 'add', root, '--skill', ...names, '--agent', ...agentTargets, '-g', '-y'];
+export const installCommand = (root: string) => `npx skills add '${root}' --skill '*' --agent ${agentTargets.join(' ')} -g -y`;
 
 export interface SkillOffer {
   root: string;
@@ -22,7 +21,19 @@ export interface SkillOffer {
 
 export const declinedMarker = (home: string) => join(home, '.config/sawmill/skills-declined');
 const ownershipFile = (home: string) => join(home, '.config/sawmill/skills-installed.json');
-const agentDirectories = ['.agents/skills', '.claude/skills', '.codex/skills', '.pi/agent/skills'];
+const agentHomes = (home: string) => ({
+  claude: resolve(home, process.env.CLAUDE_CONFIG_DIR?.trim() || '.claude'),
+  codex: resolve(home, process.env.CODEX_HOME?.trim() || '.codex'),
+});
+// The selected installer targets use .agents/skills, Claude's configured home and Cursor's home.
+// Also inspect legacy direct copies, including default homes after configuration changes.
+function agentDirectories(home: string): string[] {
+  const homes = agentHomes(home);
+  return [...new Set([
+    ...['.agents/skills', '.claude/skills', '.codex/skills', '.pi/agent/skills', '.cursor/skills'].map(dir => join(home, dir)),
+    join(homes.claude, 'skills'), join(homes.codex, 'skills'),
+  ])];
+}
 const entryExists = (path: string) => {
   try { lstatSync(path); return true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
@@ -73,8 +84,8 @@ function installedSkills(root: string, home: string): InstalledSkill[] {
   const copies = new Map<string, InstalledSkill>();
   for (const name of shippedNames(root)) {
     const shipped = fingerprint(join(root, 'plugins/sawmill/skills', name));
-    for (const directory of agentDirectories) {
-      const alias = join(home, directory, name);
+    for (const directory of agentDirectories(home)) {
+      const alias = join(directory, name);
       if (!entryExists(alias)) continue;
       let path = alias;
       try { path = realpathSync(alias); }
@@ -116,10 +127,18 @@ async function rememberInstalled(root: string, home: string, eligible: Set<strin
 /** The shipped skills absent from all supported global agent directories. */
 export function missingSkills(root: string, home: string): string[] {
   return shippedNames(root)
-    .filter(name => !agentDirectories.some(dir => existsSync(join(home, dir, name, 'SKILL.md'))));
+    .filter(name => !agentDirectories(home).some(dir => existsSync(join(dir, name, 'SKILL.md'))));
 }
 
-const npx = (root: string, names: string[]) => spawnSync('npx', installArgs(root, names), { stdio: 'inherit' }).status === 0;
+function npx(root: string, home: string, names: string[]): boolean {
+  // Recheck after consent as well: an incomplete directory or broken symlink is not a free destination.
+  if (installedSkills(root, home).some(copy => names.includes(copy.name))) return false;
+  const homes = agentHomes(home);
+  return spawnSync('npx', installArgs(root, names), {
+    stdio: 'inherit',
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: homes.claude, CODEX_HOME: homes.codex },
+  }).status === 0;
+}
 
 /** Stage complete skill trees beside their resolved destinations; failed promotion restores the originals. */
 async function refreshSkills(root: string, home: string, copies: InstalledSkill[], install?: () => boolean) {
@@ -154,7 +173,7 @@ async function refreshSkills(root: string, home: string, copies: InstalledSkill[
         entry.promoted = true;
       }
       const missing = missingSkills(root, home);
-      if (missing.length && !npx(root, missing)) throw new Error('Installing missing skills failed.');
+      if (missing.length && !npx(root, home, missing)) throw new Error('Installing missing skills failed.');
     }
     const eligible = new Set(copies.filter(copy => copy.owned).map(copy => copy.path));
     const before = new Set(copies.map(copy => copy.path));
@@ -221,13 +240,12 @@ export async function offerSkills({ root, home, ask, install, refresh = false, s
     stdout(`Skipped. Mill will not ask again; to install later, run: ${refreshCommand}\n`);
     return 'declined';
   }
-  // Never give the broad installer existing skill names: unknown ownership is not permission to overwrite.
+  // Never give the installer existing skill names: unknown ownership is not permission to overwrite.
   if (!install && copies.some(copy => missing.includes(copy.name))) {
     stdout(`Installation refused: an existing skill directory is incomplete or unverified; preserved. Review it before retrying ${refreshCommand}.\n`);
     return 'failed';
   }
-  const installed = install ? install() : npx(root, missing);
-  stdout(expectedFailures);
+  const installed = install ? install() : npx(root, home, missing);
   // Some agent targets can fail after others succeeded; record only new copies matching shipped content.
   const added = new Set(installedSkills(root, home).filter(copy => !before.has(copy.path) && copy.hash && copy.hash === copy.shipped).map(copy => copy.path));
   if (added.size) await rememberInstalled(root, home, added);
