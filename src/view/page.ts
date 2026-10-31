@@ -33,17 +33,18 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 const LANES=${JSON.stringify(lanes)},SHORT=${JSON.stringify(short)};
 const root=document.getElementById('root'),sum=document.getElementById('sum'),at=document.getElementById('at'),live=document.getElementById('live');
 let view=null,got=0;const rows=new Map(),prevBounces=new Map(),opened=new Set();
-const ACTIONS=[['stop','Stop'],['answer','Answer and resume'],['reset','Reset'],['close','Close']];
+const ACTIONS=[['pick','Pick next'],['clear-pick','Clear pick'],['stop','Stop'],['answer','Answer and resume'],['reset','Reset'],['close','Close']];
+const unavailable={available:false,reason:'This action is unavailable in this snapshot. Wait for the Board to refresh.'};
 /** Each project's run and each ticket has one request line: pending, ok or failed. A pending request blocks repeats. */
 const notes=new Map();
 function controls(box,key,rule){const pending=notes.get(key)?.state==='pending';
-  box.querySelectorAll('button').forEach(b=>{const r=rule(b.dataset.a);b.setAttribute('aria-disabled',String(pending||!r.available));b.title=r.available?'':r.reason||''})}
+  box.querySelectorAll('button').forEach(b=>{const r=rule(b.dataset.a)||unavailable;b.setAttribute('aria-disabled',String(pending||!r.available));b.title=r.available?'':r.reason||''})}
 function feedback(box,key){const n=notes.get(key);box.className='fb'+(n?' '+n.state:'');box.textContent=n?n.message:''}
 function note(key,state,message){clearTimeout(notes.get(key)?.timer);const n={state,message};
   if(state==='ok'||state==='info')n.timer=setTimeout(()=>{if(notes.get(key)===n){notes.delete(key);render()}},8000);notes.set(key,n);render()}
 const CONFIRM={reset:t=>'Reset #'+t.number+'? This deletes its worktree, branches, logs and agent comments, and queues it to start fresh.',close:t=>'Close #'+t.number+'? This marks it done and closes its tracker issue without merging.'};
 function act(key,p,t,a){if(!p||notes.get(key)?.state==='pending')return;
-  const r=t?t.actions[a]:p.runActions[a==='start-run'?'start':'stop'];
+  const r=(t?t.actions[a]:p.runActions[a==='start-run'?'start':'stop'])||unavailable;
   if(!r.available){note(key,'info',r.reason);return}
   if(a==='answer'){openAnswer(key,p,t);return}
   if(CONFIRM[a]&&!confirm(CONFIRM[a](t)))return;

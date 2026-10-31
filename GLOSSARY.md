@@ -182,7 +182,7 @@ _Avoid_: Sync
 The machine-wide list of registered millyards, populated by build, draft or run activation and used by the Board and scheduler for discovery. Being registered does not imply a run exists or is active.
 
 **Board**:
-The page showing every current, unfinished run on the machine at once, each unfinished ticket placed on its lane, with controls to stop, answer, reset and close tickets and to start or stop a run.
+The page showing every current, unfinished run on the machine at once, each unfinished ticket placed on its lane, with controls to stop, answer, reset and close tickets, set or clear a pick, and start or stop a run.
 _Avoid_: Dashboard, Live view, UI
 
 **Active Section**:

@@ -34,13 +34,13 @@ export interface ViewTicket {
   question: string | null;
   /** What keeps the ticket from moving, or null when nothing does. */
   blockage: string | null;
-  actions: Record<TicketAction, ViewAction>;
+  actions: Record<Exclude<TicketAction, 'pick' | 'clear-pick'>, ViewAction> & Partial<Record<'pick' | 'clear-pick', ViewAction>>;
   /** The attempt this view drew, whatever the state; an action naming it is refused once the ticket moves on. */
   attempt: string;
   /** The evidence and supported next command for a ticket in logjam in the current run; null otherwise. */
   diagnosis: Diagnosis | null;
 }
-export type TicketAction = 'stop' | 'answer' | 'reset' | 'close';
+export type TicketAction = 'stop' | 'answer' | 'reset' | 'close' | 'pick' | 'clear-pick';
 /** Whether the run rules allow an action now; `reason` says why not. */
 export interface ViewAction { available: boolean; reason: string | null }
 /** `stopping` is a stopped run whose working tickets have not all reached a stage boundary. */
@@ -102,10 +102,16 @@ function issueUrl(tracker: ProjectConfig['tracker'] | null, number: number): str
 const allow = (reason: string | null): ViewAction => ({ available: reason === null, reason });
 
 /** The run rules for each ticket action, shared by the page and the board's command path. */
-export function ticketActions(ticket: RunTicket, pending: boolean): Record<TicketAction, ViewAction> {
+export function ticketActions(ticket: RunTicket, pending: boolean, pendingPick?: number): Record<TicketAction, ViewAction> {
   const { number, state } = ticket;
   const done = state === 'done' || Boolean(ticket.completion || ticket.mergeCommit);
   return {
+    pick: allow(done ? 'A done ticket cannot be picked.'
+      : ticket.blockers.length ? `Cannot pick #${number}: blocked by ${ticket.blockers.map(n => `#${n}`).join(', ')}.`
+      : state !== 'queued' ? `Only a ready queued ticket can be picked; #${number} is ${state}.`
+      : pending ? 'Pending tracker writes must finish before this ticket can be picked.'
+      : ticket.worker && ticket.worker.status !== 'finished' ? 'Wait for the ticket’s worker to finish before picking it.' : null),
+    'clear-pick': allow(pendingPick === number ? null : `#${number} is not the current pending pick.`),
     stop: allow(state !== 'working' ? `Only a working ticket can be stopped; #${number} is ${state}.`
       : ticket.stopRequested ? 'A stop is already requested; the ticket stops at its next stage boundary.' : null),
     answer: allow(state === 'working' ? (ticket.stopRequested ? 'Wait for the requested stop to reach its stage boundary.' : 'The ticket is working; nothing is waiting for an answer.')
@@ -142,7 +148,7 @@ function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null,
     };
     const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
     return { ...row, lane: laneOf({ ...row, history: ticket.stageHistory }), question: question === null ? null : redact(question),
-      blockage: blockage(ticket, pending), actions: ticketActions(ticket, pending), attempt: attemptOf(ticket),
+      blockage: blockage(ticket, pending), actions: ticketActions(ticket, pending, run.run.pendingPick), attempt: attemptOf(ticket),
       diagnosis: ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };
   });
 }

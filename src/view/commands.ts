@@ -10,13 +10,13 @@ import { resumeRun } from '../run-loop.js';
 import { readRun, type RunSnapshot } from '../run-store.js';
 import { ensureExecutionScheduler, requireSchedulerConfiguration, notifyScheduler } from '../scheduler.js';
 import type { TicketWriter } from '../tracker.js';
-import { activateRun, answerTicket, closeTicket, requestStop, stopRunAtBoundaries } from '../transitions.js';
+import { activateRun, answerTicket, closeTicket, pickTicket, requestStop, stopRunAtBoundaries } from '../transitions.js';
 import { attemptOf } from './diagnosis.js';
 import { discoverMillyards, runActions, ticketActions, type TicketAction } from './model.js';
 
 export interface CommandReply { code: 200 | 400 | 409 | 500; status: 'ok' | 'invalid' | 'refused' | 'failed'; message: string }
 
-const actions = ['stop', 'answer', 'reset', 'close', 'start-run', 'stop-run'] as const;
+const actions = ['stop', 'answer', 'reset', 'close', 'pick', 'clear-pick', 'start-run', 'stop-run'] as const;
 type Action = typeof actions[number];
 /** Only the actions that discard work or mark a ticket complete ask for confirmation. */
 const confirm: readonly Action[] = ['reset', 'close'];
@@ -72,8 +72,15 @@ async function command(home: string, body: unknown, options: Pick<CliOptions, 't
     if (!ticket) return refused(`Ticket #${number} is not in this run; reload the board.`);
     // An action taken from an older diagnosis must not answer or reset newer work.
     if (request.attempt !== undefined && request.attempt !== attemptOf(ticket)) return refused(`#${ticket.number} has moved on since this view was drawn; nothing was changed. Reload the board and check its diagnosis again.`);
-    const rule = ticketActions(ticket, run.pendingWrites.some(write => write.ticket === ticket.number))[action as TicketAction];
+    const rule = ticketActions(ticket, run.pendingWrites.some(write => write.ticket === ticket.number), run.run.pendingPick)[action as TicketAction];
     if (!rule.available) return refused(rule.reason!);
+    if (action === 'pick' || action === 'clear-pick') {
+      const result = pickTicket(cwd, project, action === 'pick' ? ticket.number : undefined,
+        { runId: request.runId, ...(action === 'clear-pick' ? { clearPick: ticket.number } : {}) });
+      notifyScheduler(home);
+      return ok(action === 'pick' ? `Picked #${ticket.number}${result.previous && result.previous !== ticket.number ? ` instead of #${result.previous}` : ''}.`
+        : `Cleared pending pick #${ticket.number}.`);
+    }
     if (action === 'stop') {
       requestStop(cwd, project, ticket.number);
       return ok(`Stop requested for #${ticket.number}; it stops at the next stage boundary.`);
