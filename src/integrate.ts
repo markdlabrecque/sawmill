@@ -373,13 +373,15 @@ async function integrateLocked(cwd: string, project: ProjectConfig, number: numb
       // Like MR head propagation, ordinary host preparation gets at most 30 seconds,
       // or the shorter CI deadline. Each operation keeps its deadline across refusals.
       const readinessMs = Math.min(30_000, milliseconds(phaseDeadline(project, 'ci')));
-      const readinessInterval = milliseconds(options.ciPollInterval ?? '30s');
+      const readinessInterval = Math.min(2000, milliseconds(options.ciPollInterval ?? '30s'));
       const waitForReadiness = async (ends: number, observed: string) => {
         await checkPushedHead();
         const timedOut = () => new PhaseTimeout(`GitLab readiness timed out: ${observed}. Let GitLab finish preparation or fix the reported state, then run \`mill integrate ${number}\` again. The pushed branch and any change request are kept.`);
         if (Date.now() >= ends) throw timedOut();
         await save({ report: { stage: 'pr-opened', reachedStage: stage, details: `Waiting for GitLab readiness: ${observed}.` } });
-        await (options.sleep ?? sleep)(Math.min(readinessInterval, ends - Date.now()));
+        const remaining = ends - Date.now();
+        if (remaining <= 0) throw timedOut();
+        await (options.sleep ?? sleep)(Math.min(readinessInterval, remaining));
         await checkPushedHead();
         if (Date.now() >= ends) throw timedOut();
       };

@@ -24,3 +24,11 @@ For every change, including code, tests, documentation and agent instructions:
 ## Completion records
 
 - Ticket #259: Glossary checked across draft preflight code, tests and documentation. No glossary update needed: the existing Draft, Worktree, Millyard, Integration branch and Human user definitions cover read-only collision detection and human-directed disposition. Independent registered entries are described as git worktrees, not ticket worktrees to adopt. No conflicting definition was found. `src/draft.ts` and `src/worktrees.ts` implement the policy; `test/draft-worktree-preflight.test.ts` covers refusal, preservation and later collisions; the README, spec and operating guide distinguish draft refusal from dispatch-time validation. The legacy setup in `test/worktree.test.ts`, “adopting a hand-created sandbox records it, and an abort keeps its stage and WIP intact”, conflicted with the ticket's draft-refusal policy. As authorized by the human user, the setup now drafts before creation; dispatch-time reuse, stage and WIP preservation assertions remain unchanged. No protected test was edited. Verification at `5dda48a`: all 1175 suite tests and 3 process-permission tests pass; build and typecheck pass. Glossary rechecked for this setup correction; no definitions changed because the existing Draft, Worktree and Stage definitions still apply.
+- Ticket #263: Glossary checked across the GitLab adapter, integration code,
+  protected integration tests and operating guidance. No glossary update needed:
+  existing definitions of worker, infrastructure outcome, retry cap, rebase gate
+  and CI gate still apply. GitLab readiness is bounded host preparation within
+  integration, an implementation mechanic rather than a new ticket state or CI
+  gate. No terminology conflicts found. Evidence: scripted readiness scenarios
+  in `test/integrate.test.ts`, implementation in `src/gitlab.ts` and
+  `src/integrate.ts`, and recovery guidance in `docs/operating-mill.md`.
