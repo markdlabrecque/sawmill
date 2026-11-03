@@ -154,6 +154,33 @@ ignored. See [draft](draft-screening.md), [acceptance](acceptance-screening.md),
 
 To add work, run `mill run draft <numbers...>` (or use `--label` or `--spec`) again. New tickets append in blocked-by order after the existing queue; existing tickets are reported as already present and keep their state and checkpoints. Validation finishes before any additions are saved. Active runs pick up additions through ordinary scheduler dispatch without interrupting workers; inactive, stopped and paused runs keep their execution intent. A completed run is archived and drafting creates a new inactive run. You cannot replace a run in progress, even with `--replace`; that option is only for an inactive draft with no working or logjam tickets.
 
+### Tracker labels when a ticket starts
+
+Once a ticket is admitted to work, before its first role, Mill removes `Ready to do`
+and adds `In Progress` on GitHub or GitLab. Drafting and tickets left queued or
+blocked do not change labels. Configure other names in the millyard's
+`.mill/config.yaml`:
+
+```yaml
+labels:
+  ready: Ready to do
+  in_progress: In Progress
+  logjam: logjam
+```
+
+Both label definitions must exist, even when the ticket does not carry the ready
+label. If either is missing, the ticket goes to logjam before work begins. The
+Board question names the tracker and every missing label. Answer
+`mill run answer <n> "yes"` to authorize creating only those missing definitions.
+Answer `"no"` to create nothing and leave the ticket in logjam with its reason
+recorded. After supplying the labels yourself or configuring names that exist,
+`mill run answer <n>` rechecks them and requeues the ticket. Other answer text is
+not consent to create labels. The normal run activation rules still apply.
+
+Label writes are durable and idempotent: an already-present in-progress label or
+absent ready label is a no-op, and interrupted writes are retried before any role
+runs. Mill does not undo this swap on finish, merge, stop, reset or logjam.
+
 ### Draft worktree conflicts
 
 Before saving new tickets, draft preflight requires both an unused intended worktree path and no local `mill/<ticket>` branch. A registered git worktree, file, directory or symlink at the intended path refuses the draft. An existing ticket branch refuses it even without a worktree or when registered elsewhere. The intended path follows creation's rules: a sibling `<ticket>` directory by default, or `<worktrees>/<project name>/<ticket>` using the machine's `worktrees` setting; relative roots resolve from the millyard.

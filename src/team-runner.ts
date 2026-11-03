@@ -27,7 +27,7 @@ import { checkFirstStart } from './first-start.js';
 import { alreadyClosed, readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
 import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
-import { holdTrackerFailure, transition, type MirrorOptions, type Transition } from './transitions.js';
+import { holdTrackerFailure, startTicketLabels, transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
 import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
 import { verificationFrom, verificationInstructions } from './verification.js';
@@ -68,7 +68,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
   return withRoleLock(cwd, number, async () => {
     const snapshot = readRun(cwd);
     const current = () => readRun(cwd).tickets.find(row => row.number === number)!;
-    const ticket = current();
+    let ticket = current();
     if (!ticket) throw new CliError(`Ticket #${number} is not in the run.`);
     const a = snapshot.run.tracker, b = project.tracker;
     if (a.backend !== b.backend || a.repo !== b.repo || (a.host ?? '') !== (b.host ?? '') || snapshot.run.baseBranch !== project.integration) throw new CliError('Configured tracker or integration does not match the drafted run.', 2);
@@ -81,6 +81,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
     if (first.status === 'lookup-failed') return { outcome: first.reason === 'tracker' ? 'aborted' : 'infrastructure', ticket: number, stage: 'first-start', error: first.error, ...(first.reason ? { reason: first.reason } : {}) };
     const integrationOptions = { ...options, ciPollInterval: machine.ci_poll_interval };
     await withRunLock(cwd, 'integration', () => checkMillyard(cwd, project.integration), true);
+    if (!await startTicketLabels(cwd, project, tracker, number, options)) {
+      ticket = current();
+      return { outcome: 'aborted', ticket: number, stage: 'first-start', reason: ticket.reason ?? 'tracker', error: ticket.team.startLabels?.question ?? 'First-start label update failed; answer the tracker logjam to retry.' };
+    }
+    ticket = current();
     let stage = ticket.stage ?? 'worktree-create';
     // With tests: none, or a drafted existing-checks plan, there is nothing to write, so the flow starts
     // at the implementer. Review and the final tests and required checks still run.

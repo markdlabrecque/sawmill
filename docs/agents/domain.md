@@ -91,6 +91,22 @@ The subsequent conflict repair onto integration revision `41af42a` also preserve
 
 Verification against integration revision `5fdaa0e` confirms that all upstream completion records, including ticket #264, remain unchanged alongside the ticket #262 records. The requested rebase reports the branch already up to date. Glossary checked; no update needed because preserving these independent records changes no domain definitions. No test file was edited.
 
+## Ticket #280 implementation record
+
+Glossary checked across configuration, tracker adapters, first-start transitions,
+Board diagnosis and operating guidance. No glossary update needed: the existing
+Ticket state, Logjam, Human user, Tracker mirror, Slot and Stage definitions cover
+this first-start label gate and human consent. No terminology conflicts found.
+Label names are tracker configuration, not new ticket states or Board lanes.
+
+The implementation passes all 20 protected start-label tests and 22 focused mirror
+and guidance checks; build and typecheck pass. No tests were changed. The full test
+command encountered existing fake-tracker fixtures that reject the newly required
+label-definition reads (including `test/dispatch-fixture.ts` and the hosted CI
+fixtures), then exceeded 600 seconds while their callers timed out waiting for
+roles. Those fixtures need test-writer attention before full-suite green can be
+claimed; bypassing definition checks would violate the missing-label requirement.
+
 ## Ticket #274 completion record
 
 Glossary checked across the Logging skill, packaged ticket template, plugin

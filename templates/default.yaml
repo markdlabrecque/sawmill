@@ -197,6 +197,9 @@ merge_method: squash
 #   ci: 3h
 #   teardown: 10m
 
-# Names of the labels Sawmill writes to the tracker. Only logjam exists.
+# Tracker labels. On first start only, Mill removes ready and adds in_progress.
+# Missing definitions require a human answer before Mill creates them or starts work.
 # labels:
 #   logjam: logjam
+#   ready: Ready to do
+#   in_progress: In Progress
