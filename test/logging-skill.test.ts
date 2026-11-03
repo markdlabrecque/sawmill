@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -137,6 +138,127 @@ test('the ticket template uses GitLab blocked-by lists and GitHub native links',
     /^\s*-\s+#\d+\s*$/m,
     /(?:omit|do not|not written|instead)[^\n]*(?:section|Blocked by)|(?:section|Blocked by)[^\n]*(?:omit|not written|instead)/i],
   'one list-of-ticket-numbers format applies to GitLab CE; GitHub must omit that section and use native links');
+});
+
+// Fixture contracts, not simulated execution of Logging. As with sawdust's
+// evals, a model-assisted run is judged separately; CI needs no model or tracker.
+// Each cases/<name>.json supplies request, configuration, review findings and
+// expected observations. Assertions below validate the evaluation material only.
+const loggingEvalCases = {
+  'no-millyard': [/zero|no tracker writes|nothing created/i, /mill build/i],
+  'approved-github': [/fresh|independent/i, /only after|before.*creat/i, /exact.*reviewed.*body/i,
+    /human.*hours/i, /native.*(?:blocked-by|dependency)/i, /omit|no Blocked by/i],
+  'approved-gitlab': [/fresh|independent/i, /only after|before.*creat/i, /exact.*reviewed.*body/i,
+    /human.*hours/i, /Blocked by/i, /list|one.*per line/i],
+  'two-bounces': [/two|2/i, /repair/i, /human user/i, /draft/i, /findings/i,
+    /zero|no tracker writes|nothing created/i],
+  'missing-harness': [/non-blocking/i, /AC\d/i, /harness/i, /creat/i,
+    /Open questions on:/, /OSC.?8/i, /number.only|number alone/i],
+};
+
+async function loggingEvals() {
+  const skill = await loggingSkill();
+  const folder = join(dirname(skill.path), 'evals');
+  assert.ok(existsSync(folder), 'Logging must ship evals/ fixtures; live model execution is not required');
+  return { ...skill, folder };
+}
+
+for (const [name, observations] of Object.entries(loggingEvalCases)) {
+  test(`Logging ships a well-formed ${name} evaluation case`, async () => {
+    const { folder } = await loggingEvals();
+    const path = join(folder, 'cases', `${name}.json`);
+    assert.ok(existsSync(path), `evals/cases/${name}.json supplies the reviewed scenario`);
+    const fixture = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(fixture.case, name);
+    assert.equal(typeof fixture.request, 'string');
+    assert.ok(fixture.request.trim(), `${name}: a human request is supplied`);
+    assert.ok(fixture.configuration && typeof fixture.configuration === 'object');
+    assert.equal(typeof fixture.configuration.millyard, 'boolean');
+    assert.ok(['github', 'gitlab'].includes(fixture.configuration.tracker));
+    assert.ok(['none', 'docker', 'ddev'].includes(fixture.configuration.test_harness));
+    assert.ok(Array.isArray(fixture.reviews), `${name}: independent review responses are supplied`);
+    for (const review of fixture.reviews) {
+      assert.ok(['pass', 'bounce'].includes(review.outcome));
+      for (const field of ['findings', 'warnings']) {
+        assert.ok(Array.isArray(review[field]));
+        for (const item of review[field]) assert.ok(typeof item === 'string' && item.trim());
+      }
+    }
+    assert.ok(fixture.expected && typeof fixture.expected === 'object');
+    assert.ok(['created', 'refused', 'human-review'].includes(fixture.expected.outcome));
+    assert.ok(Number.isInteger(fixture.expected.createdTickets) && fixture.expected.createdTickets >= 0);
+    assert.ok(Array.isArray(fixture.expected.observations) && fixture.expected.observations.length > 0);
+    for (const observation of fixture.expected.observations) {
+      assert.ok(typeof observation === 'string' && observation.trim(), 'observations are judgeable expectations');
+    }
+    requiresText(fixture.expected.observations.join('\n'), observations, `${name}: expectations cover the reviewed behaviour`);
+    if (name === 'no-millyard') {
+      assert.equal(fixture.configuration.millyard, false);
+      assert.equal(fixture.expected.outcome, 'refused');
+      assert.equal(fixture.expected.createdTickets, 0);
+      assert.equal(fixture.reviews.length, 0, 'preflight refuses before review');
+    } else {
+      assert.equal(fixture.configuration.millyard, true);
+      assert.ok(fixture.reviews.length > 0);
+      if (name === 'two-bounces') {
+        assert.deepEqual(fixture.reviews.map((review: { outcome: string }) => review.outcome), ['bounce', 'bounce', 'bounce']);
+        assert.ok(fixture.reviews.every((review: { findings: string[] }) => review.findings.length > 0));
+        assert.equal(fixture.expected.outcome, 'human-review');
+        assert.equal(fixture.expected.createdTickets, 0);
+      } else {
+        assert.equal(fixture.reviews.at(-1).outcome, 'pass');
+        assert.equal(fixture.reviews.at(-1).findings.length, 0);
+        assert.equal(fixture.expected.outcome, 'created');
+        assert.equal(fixture.expected.createdTickets, 1);
+        assert.ok(fixture.draft && typeof fixture.draft === 'object', 'case supplies the packet to review');
+        assert.equal(typeof fixture.draft.body, 'string');
+        assert.match(fixture.draft.body, /^## Done when\s*$/m);
+        assert.match(fixture.draft.body, /^- \[ \] .+/m);
+        assert.ok(Number.isFinite(fixture.draft.humanEstimateHours) && fixture.draft.humanEstimateHours > 0);
+        assert.ok(typeof fixture.draft.estimateBasis === 'string' && fixture.draft.estimateBasis.trim());
+        assert.match(fixture.draft.estimateBasis, /human/i);
+        assert.ok(Array.isArray(fixture.draft.blockedBy));
+        assert.ok(fixture.draft.blockedBy.every((number: number) => Number.isInteger(number) && number > 0));
+        if (name.startsWith('approved-')) {
+          assert.ok(fixture.draft.blockedBy.length > 0, 'approval case exercises blocked-by representation');
+          if (fixture.configuration.tracker === 'github') {
+            assert.doesNotMatch(fixture.draft.body, /^## Blocked by/m);
+          } else {
+            assert.match(fixture.draft.body, /^## Blocked by\s*$/m);
+            for (const number of fixture.draft.blockedBy) assert.ok(fixture.draft.body.split('\n').includes(`- #${number}`));
+          }
+        }
+        if (name === 'missing-harness') {
+          assert.equal(fixture.configuration.test_harness, 'none');
+          assert.ok(fixture.reviews.at(-1).warnings.length > 0);
+          requiresText(fixture.reviews.at(-1).warnings.join('\n'), [/AC\d/, /harness/i], 'warning names the item and missing harness');
+          assert.match(fixture.request, /question/i, 'scenario raises a question to retain in the ticket');
+        } else {
+          assert.equal(fixture.configuration.tracker, name === 'approved-github' ? 'github' : 'gitlab');
+        }
+      }
+    }
+  });
+}
+
+test('Logging links its packaged evaluation set and names the exact reviewed-packet safeguards', async () => {
+  const { path, body, folder } = await loggingEvals();
+  assert.match(body, /\]\(evals\/README\.md\)/, 'agents can discover how to evaluate Logging');
+  requiresText(body, [/exact reviewed[\s\S]{0,20}body/i, /human-hours basis/i,
+    /(?:fresh subagent|fresh[\s\S]{0,30}subagent)/i, /no context|no context from/i,
+    /No third bounce/i, /OSC.?8/i, /Open questions on:/], 'skill states the evaluated safeguards');
+  const index = await readFile(join(folder, 'README.md'), 'utf8');
+  assert.match(index, /model/i);
+  assert.match(index, /fixture|structure/i, 'evaluation guidance distinguishes fixture checks from model compliance');
+  const wanted = ['README.md', ...Object.keys(loggingEvalCases).map(name => `cases/${name}.json`)];
+  const [packed] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], {
+    cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  const shipped: string[] = packed.files.map((file: { path: string }) => file.path);
+  for (const file of wanted) {
+    if (file !== 'README.md') assert.ok(index.includes(`](${file})`), `evaluation index links ${file}`);
+    assert.ok(shipped.includes(relative(repo, join(folder, file))), `${relative(dirname(path), join(folder, file))} ships with Logging`);
+  }
 });
 
 test('Logging is documented with template pointers and a glossary definition', async () => {
