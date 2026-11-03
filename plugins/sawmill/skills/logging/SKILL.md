@@ -17,8 +17,8 @@ Request: $ARGUMENTS
 
 1. Find the project's millyard: inspect `git worktree list --porcelain` and find
    the single worktree containing `.mill/config.yaml`, just as Mill does from
-   linked worktrees. Read that configuration and the effective house defaults
-   at `~/.config/sawmill/config.yaml`. Use its tracker identity, not a guessed
+   linked worktrees. Read that configuration and the machine configuration
+   at `~/.config/sawmill/config.yaml`. Use the project's tracker identity, not a guessed
    repository, and inspect its `test_harness`, test command and declared checks.
    Read project agent instructions and terminology guidance too.
 2. Without a millyard, fail and explain: "No millyard found; run mill build in
@@ -168,8 +168,9 @@ including self-hosted hosts and subgroups). Never guess a URL or wrap untrusted
 escape characters from a title, body or API error. If a reference cannot be
 resolved, describe the unresolved reference without emitting a bare ticket number.
 
-Encode links as `ESC ] 8 ; ; <ticket-url> ESC \\ #<number> ESC ] 8 ; ; ESC \\`
-(without the illustrative spaces, using real ESC characters). Capture subprocess
+Encode links using the escaped notation
+`\x1b]8;;<ticket-url>\x1b\\#<number>\x1b]8;;\x1b\\`
+(decode `\x1b` to ESC and `\\` to one backslash). Capture subprocess
 output, strip untrusted terminal escapes, and render all ticket references through
 this formatter rather than echoing raw output. Do not rely on optional Mill
 terminal-link settings: this contract applies to Logging's own output always.

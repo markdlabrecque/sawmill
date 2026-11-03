@@ -90,3 +90,30 @@ Glossary checked; no glossary update needed because this repair only preserves i
 The subsequent conflict repair onto integration revision `41af42a` also preserves all ticket #263 completion records alongside the ticket #259 and #262 records. Glossary rechecked; no definitions changed because this resolution only combines independent records, with no conflicting domain claims. No test file was edited during the repair.
 
 Verification against integration revision `5fdaa0e` confirms that all upstream completion records, including ticket #264, remain unchanged alongside the ticket #262 records. The requested rebase reports the branch already up to date. Glossary checked; no update needed because preserving these independent records changes no domain definitions. No test file was edited.
+
+## Ticket #274 completion record
+
+Glossary checked across the Logging skill, packaged ticket template, plugin
+metadata, sawdust handoff and operating/tracker guidance. Added **Logging** as
+the verb for writing and filing a ticket to the template with independent review
+before creation. **Ticket** still means filed work; **Draft** still selects
+already-filed tickets for a run, not the unfiled text used during Logging.
+
+Updated **Reviewer** and **Bounce** to cover pre-filing review and repair to the
+writing agent as well as existing delivery review and repair to the implementer.
+The old delivery-only definitions did not cover the ticket's requested Logging
+review. The skill's fresh-subagent checklist and two-bounce limit establish the
+additional meaning without changing delivery retry policy. Direct creation and
+GitHub body-fallback guidance in `docs/agents/issue-tracker.md` conflicted with
+Logging's supported creation path and native GitHub blocked-by representation;
+that guidance now routes creation through Logging and limits body fallbacks to
+legacy reading. No unresolved terminology conflicts remain.
+
+Evidence: `plugins/sawmill/skills/logging/SKILL.md` and `ticket-template.md`,
+`GLOSSARY.md`, plugin README and `docs/operating-mill.md`. All nine protected
+instruction-contract tests pass, including package dry-run inclusion. Full test
+command: 1244 suite tests and 3 process-permission tests pass, no failures.
+Build, typecheck and `git diff --check` also pass. The first local run exceeded the tool's 240-second timeout; rerunning the unchanged
+suite with sufficient time passed. Tests check shipped guidance, not live agent
+compliance or actual tracker writes. No test files were changed; the later hard
+estimate gate is outside this ticket.
