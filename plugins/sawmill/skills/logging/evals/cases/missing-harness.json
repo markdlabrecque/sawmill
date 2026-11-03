@@ -1,0 +1,54 @@
+{
+  "case": "missing-harness",
+  "request": "File a ticket to download filtered search results as CSV and include a user test case checking the download in a browser. Record this non-blocking open question: should a future version also offer TSV? Related ticket #335 already tracks that format question; this ticket must not add TSV support.",
+  "configuration": {
+    "millyard": true,
+    "tracker": "github",
+    "repository": "example/logging-eval",
+    "test_harness": "none",
+    "tests": "node --test test/search-export.test.js",
+    "activeRun": false,
+    "estimateStorage": { "projectId": "PVT_eval", "fieldId": "PVTF_human_hours", "fieldName": "Human estimate (hours)" }
+  },
+  "draft": {
+    "title": "Download filtered search results as CSV",
+    "body": "## Description\nDownload search results as CSV using active filters. TSV support is outside this ticket.\n\n## Done when\n- [ ] The CSV download contains exactly the results matching the active filters.\n- [ ] The search results page offers a working CSV download, verified by the Filtered download user test case.\n\n## User test cases\n### Filtered download\n1. As a search user, open search results with known matching and nonmatching records.\n2. Apply a filter and activate the CSV download control.\n3. Observe that a CSV file downloads and contains only the matching records.\n\n## Open questions\n- Unresolved, non-blocking: Should a future version also offer TSV? Related ticket #335 records this question; TSV is outside this ticket.\n",
+    "humanEstimateHours": 5,
+    "estimateBasis": "A human developer familiar with search would need two hours for export and download wiring, two hours for filter tests and browser verification, and one hour for review and edge cases. This is human development effort, not agent runtime; the missing site harness is reported separately.",
+    "blockedBy": [],
+    "requirementCoverage": [
+      { "requirement": "CSV respecting active filters", "items": ["AC1"], "check": "Compare parsed CSV rows with a known filtered dataset in an automated test." },
+      { "requirement": "Working browser download with user test case", "items": ["AC2"], "check": "Perform the Filtered download case on a running site; feasible, but requires a site test harness absent from this millyard." }
+    ]
+  },
+  "reviews": [
+    {
+      "outcome": "pass",
+      "findings": [],
+      "warnings": [
+        "AC2 is feasibly testable, but the site test harness required for the Filtered download user test case is missing: test_harness is none. This is non-blocking for Logging; mill run draft will enforce the harness requirement later.",
+        "The future TSV question remains unresolved under Open questions; it does not change this ticket's CSV scope."
+      ],
+      "coverage": "AC1 and AC2 cover the requested feature and user test case, both feasibly testable. The estimate uses separate human-hours metadata, the question is recorded and TSV is not introduced."
+    }
+  ],
+  "tracker": {
+    "existingTickets": [
+      { "number": 335, "url": "https://github.com/example/logging-eval/issues/335", "openQuestions": ["Should a future version also offer TSV?"] }
+    ],
+    "createResponse": { "number": 333, "url": "https://github.com/example/logging-eval/issues/333" }
+  },
+  "expected": {
+    "outcome": "created",
+    "createdTickets": 1,
+    "observations": [
+      "A fresh independent reviewer receives only the request and draft packet plus the template and checklist. Creation is allowed only after the pass despite the non-blocking missing-harness warning.",
+      "Create exactly one ticket using the exact reviewed body, set the Project field to 5 human development hours and verify both by read-back. Preserve AC2 and the user test case rather than removing them or configuring a harness.",
+      "Show the human user a non-blocking warning naming AC2 and the missing site test harness with test_harness: none. Explain that mill run draft, not Logging, makes the later hard harness check.",
+      "Retain the TSV open question under Open questions in the created ticket and show it without adding TSV to scope. Related ticket 335 is a reference, not a blocked-by target.",
+      "Every emitted ticket number, including quoted references in warnings, findings and confirmation, is a number-only OSC 8 terminal link with no title. Capture and format raw tracker output rather than echoing it.",
+      "Before creation, the unfiled draft gets no invented number and the warning block's final line links only existing ticket 335. After creation the warning block ends with exactly the linked Open questions on: line in expected.warningLine, with each number alone and no subsequent output in that block."
+    ],
+    "warningLine": "Open questions on: \u001b]8;;https://github.com/example/logging-eval/issues/333\u001b\\#333\u001b]8;;\u001b\\ \u001b]8;;https://github.com/example/logging-eval/issues/335\u001b\\#335\u001b]8;;\u001b\\"
+  }
+}

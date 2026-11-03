@@ -1,0 +1,52 @@
+{
+  "case": "approved-gitlab",
+  "request": "File one ticket for a CSV download of the current search results, respecting active filters and including a header row. It is blocked by tickets #41 and #42. Estimate human development effort, not agent time.",
+  "configuration": {
+    "millyard": true,
+    "tracker": "gitlab",
+    "host": "https://git.example.invalid",
+    "repository": "example/subgroup/logging-eval",
+    "test_harness": "none",
+    "tests": "node --test test/search-export.test.js",
+    "activeRun": false,
+    "estimateStorage": { "field": "time_stats.time_estimate", "unit": "seconds" }
+  },
+  "draft": {
+    "title": "Download filtered search results as CSV",
+    "body": "## Description\nLet users download the current search results as CSV using the existing search filters.\n\n## Done when\n- [ ] Downloaded CSV contains exactly the results matching the active filters.\n- [ ] The CSV begins with a header row naming its columns.\n\n## Blocked by\n- #41\n- #42\n",
+    "humanEstimateHours": 4,
+    "estimateBasis": "A human developer familiar with search needs two hours for implementation, one hour for filter and CSV tests and one hour for verification. This estimates human development work, not agent time.",
+    "blockedBy": [41, 42],
+    "requirementCoverage": [
+      { "requirement": "CSV of current results respecting active filters", "items": ["AC1"], "check": "Export a known filtered result set and compare parsed CSV rows with matching records." },
+      { "requirement": "Include a header row", "items": ["AC2"], "check": "Assert the first CSV row names each column." }
+    ]
+  },
+  "reviews": [
+    {
+      "outcome": "pass",
+      "findings": [],
+      "warnings": [],
+      "coverage": "AC1 and AC2 cover the full feature request with feasible checks. The estimate is separate human-hours metadata and native estimate storage is available. Both blocked-by targets resolve in the same GitLab project and appear in the canonical list."
+    }
+  ],
+  "tracker": {
+    "existingTickets": [
+      { "number": 41, "url": "https://git.example.invalid/example/subgroup/logging-eval/-/issues/41", "openQuestions": [] },
+      { "number": 42, "url": "https://git.example.invalid/example/subgroup/logging-eval/-/issues/42", "openQuestions": [] }
+    ],
+    "createResponse": { "number": 334, "url": "https://git.example.invalid/example/subgroup/logging-eval/-/issues/334" }
+  },
+  "expected": {
+    "outcome": "created",
+    "createdTickets": 1,
+    "observations": [
+      "A fresh independent reviewer receives only the request and draft packet plus the template and checklist, not the writing-agent conversation or claimed approval.",
+      "Tracker writes happen only after the review passes; there are no writes before approval and any alteration of the approved ticket needs fresh review.",
+      "Creation uses the exact reviewed body in draft.body, including the Blocked by list with one unqualified ticket number per line. GitLab CE uses that body list as the record, not native GitHub dependency writes.",
+      "Write the native time estimate as 14400 seconds for 4 human development hours, on the reviewed human-hours basis, not time spent or agent time. Keep the estimate out of the description.",
+      "Read back and compare the body and estimate with the approved packet before reporting success. No active run is required and none is created.",
+      "Every ticket reference in confirmation or findings is an OSC 8 number-only terminal link using the self-hosted subgroup URL; confirmation shows #334 without its title. The warning block ends with Open questions on: and no numbers."
+    ]
+  }
+}

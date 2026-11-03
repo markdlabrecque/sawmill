@@ -185,3 +185,10 @@ in the warning text, never invent a number, and use `Open questions on:` with no
 numbers if none exist yet. After filing, render the line again with the real link.
 If there are no open questions, use the same line with no numbers. A creation
 confirmation may precede the warning block; it must not hide the warnings.
+
+## Evaluation
+
+The [evaluation guide](evals/README.md) links model-free fixture cases for the
+preflight, approval gate, two-bounce limit and warning/link contract. Automated
+checks validate instructions and fixture structure, not live model compliance;
+no authenticated model or live tracker is required.

@@ -1,0 +1,49 @@
+{
+  "case": "approved-github",
+  "request": "File one ticket for a CSV download of the current search results, respecting active filters and including a header row. It is blocked by ticket #41. Estimate human development effort, not agent time.",
+  "configuration": {
+    "millyard": true,
+    "tracker": "github",
+    "repository": "example/logging-eval",
+    "test_harness": "none",
+    "tests": "node --test test/search-export.test.js",
+    "activeRun": false,
+    "estimateStorage": { "projectId": "PVT_eval", "fieldId": "PVTF_human_hours", "fieldName": "Human estimate (hours)" }
+  },
+  "draft": {
+    "title": "Download filtered search results as CSV",
+    "body": "## Description\nLet users download the current search results as CSV using the existing search filters.\n\n## Done when\n- [ ] Downloaded CSV contains exactly the results matching the active filters.\n- [ ] The CSV begins with a header row naming its columns.\n",
+    "humanEstimateHours": 4,
+    "estimateBasis": "A human developer familiar with search needs two hours for the export endpoint and download control, one hour for filter and CSV tests, and one hour for verification; no agent runtime is included.",
+    "blockedBy": [41],
+    "requirementCoverage": [
+      { "requirement": "CSV of current results respecting active filters", "items": ["AC1"], "check": "Export a known filtered result set and compare parsed CSV rows with the matching records." },
+      { "requirement": "Include a header row", "items": ["AC2"], "check": "Parse exported CSV and assert the first row names each column." }
+    ]
+  },
+  "reviews": [
+    {
+      "outcome": "pass",
+      "findings": [],
+      "warnings": [],
+      "coverage": "AC1 covers filtered results and AC2 covers headers; both have feasible automated checks. The separate estimate is human development hours, storage is available, and the native blocked-by target resolves in this repository."
+    }
+  ],
+  "tracker": {
+    "existingTickets": [{ "number": 41, "databaseId": 1041, "url": "https://github.com/example/logging-eval/issues/41", "openQuestions": [] }],
+    "createResponse": { "number": 333, "url": "https://github.com/example/logging-eval/issues/333" }
+  },
+  "expected": {
+    "outcome": "created",
+    "createdTickets": 1,
+    "observations": [
+      "A fresh independent reviewer receives only the request and complete draft packet plus the template and review checklist, with no writing-agent conversation or claimed approval.",
+      "Tracker writes happen only after review passes; before approval there are zero writes. Any change to the approved title, body or estimate requires fresh review.",
+      "Creation uses the exact reviewed body in draft.body, without adding the review packet or estimate prose to the description.",
+      "The Project numeric Human estimate (hours) field is set to 4 human development hours, on the stated human-hours basis, and read back.",
+      "Create a native dependency blocked-by link to ticket 41 using database ID 1041; omit the Blocked by section from the body. Read back the body, estimate and link before reporting success.",
+      "The absent active run does not prevent creation and no run is started. Confirmation renders only number #333 as an OSC 8 terminal link to the returned URL, not the title; any printed blocker number is also linked.",
+      "The final warning line is Open questions on: with no numbers because neither ticket has open questions."
+    ]
+  }
+}
