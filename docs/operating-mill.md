@@ -2,6 +2,56 @@
 
 These rules are for the person working around a live run. Each rule comes from a hand fix that caused or extended trouble. Use them to unblock tickets without creating new problems.
 
+## Logging tickets before a run
+
+Use `/sawmill:logging <request>` for agent-created tickets. The supported
+workflow is [Logging](../plugins/sawmill/skills/logging/SKILL.md), using the
+packaged [ticket-template.md](../plugins/sawmill/skills/logging/ticket-template.md).
+It requires a millyard (`mill build`) but no active run; without one, it explains
+why and creates nothing. It neither builds the project nor changes a run.
+
+Every requested requirement needs an acceptance item under the required Done
+when heading. A fresh subagent reviews only the request and unfiled ticket
+packet, checking full coverage, feasible tests, format, open questions and a
+separate human-hours estimate. GitHub stores that estimate in the ticket's
+Project numeric field **Human estimate (hours)**; GitLab CE uses the native time
+estimate, converted from hours to seconds. Resolve available field storage
+before filing; never substitute estimate prose in the description. The writer
+states the human-development-effort basis, not agent runtime. A missing field
+mapping needs a human decision, not silent field provisioning.
+
+Creation happens only after review passes. At most two bounces allow repairs;
+if the review after the second repair still fails, show the unfiled ticket and
+unresolved findings to the human user and create nothing. Infeasible acceptance
+items block. A feasible item needing an unavailable harness instead gets a
+non-blocking warning naming the item and missing harness (for example, user test
+cases with `test_harness: none`). Preserve those cases and show the warning;
+the missing-harness hard failure belongs to `mill run draft`. The hard estimate
+existence check at run drafting is follow-up work, not implemented by this skill.
+
+Keep every question raised while writing under Open questions, with answers
+marked rather than removed. Terminal output uses clickable number-only ticket
+links, including findings and creation confirmation. Warnings finish with
+`Open questions on:` and linked numbers for tickets with unresolved questions;
+an unfiled ticket has no number yet. Read back filed fields and links before
+claiming success. If a post-creation write fails, report the existing ticket and
+missing writes and recover that same ticket, never create a duplicate.
+
+For newly logged GitLab CE tickets, the canonical blocked-by representation is:
+
+```markdown
+## Blocked by
+
+- #123
+- #456
+```
+
+Use one unqualified ticket number per line, in the configured project. Logging,
+ticket review, run drafting and graph readers share this format; older inline
+forms remain readable as described below. On GitHub omit the section and write
+native dependency links. Logging is agent guidance, not a new Mill command or a
+replacement for the later run-drafting gates.
+
 ## Before you start a run
 
 - **Bring the integration branch up to date.** Merge `main` into it and push. Workspace preflight refuses tickets when local integration is behind or has diverged from `origin`.
@@ -160,13 +210,9 @@ failed invocation, not two.
 
 ### GitLab CE blocked-by links
 
-When native blocked-by links are unavailable, `mill run draft` reads explicit declarations from the ticket description and comments, including all comment pages. Use unqualified ticket numbers in the configured GitLab project:
+When native blocked-by links are unavailable, `mill run draft` reads explicit declarations from the ticket description and comments, including all comment pages. For new tickets use the canonical `## Blocked by` list shown under Logging above, with unqualified ticket numbers in the configured GitLab project.
 
-```markdown
-Blocked by: #123, #456
-```
-
-A `## Blocked by` heading followed by a list of ticket references also works, as does `**Blocked by**: #123`. Ordinary mentions outside these declarations and fenced code examples do not create links. Declarations across the description and comments are additive, and repeated references create only one link. There is no removal declaration. Edit or delete the source declaration and create a fresh draft to remove a link. Appending does not reparse tickets already in the run, and `mill run refresh` does not change saved links.
+Legacy `Blocked by: #123, #456` and `**Blocked by**: #123` declarations are also read. Ordinary mentions outside these declarations and fenced code examples do not create links. Declarations across the description and comments are additive, and repeated references create only one link. There is no removal declaration. Edit or delete the source declaration and create a fresh draft to remove a link. Appending does not reparse tickets already in the run, and `mill run refresh` does not change saved links.
 
 Explicit numbers, `--label`, `--spec` and appended tickets all use these links for blocked-by order and validation. Open blockers outside the run, cycles and self-blocking refuse the draft without changing the current run; closed outside blockers are already satisfied. Where native blocked-by results are supported, they remain authoritative, even when empty. GitHub's native behavior is unchanged.
 

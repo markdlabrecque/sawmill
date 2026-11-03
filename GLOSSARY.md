@@ -16,6 +16,10 @@ _Avoid_: Operator, owner, admin (as names for this person)
 A feature-sized unit of work filed as an issue in the tracker.
 _Avoid_: Task, job, story
 
+**Logging**:
+To write and file a ticket to the ticket template, with a fresh, independent reviewer check before creation in the tracker. Logging precedes Draft, which selects already-filed tickets for a run.
+_Avoid_: Ticket intake, issue creation, drafting (for writing a ticket)
+
 **Tracker**:
 The issue system (GitHub or GitLab) that holds tickets and pull or merge requests; during a run it mirrors the run file, except for explicit ticket-text refreshes and execution safety checks.
 _Avoid_: Backend, issue tracker, ticket system
@@ -211,7 +215,7 @@ The role that makes the ticket's change and addresses review or gate feedback, w
 _Avoid_: Coder, developer
 
 **Reviewer**:
-The role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
+The independent agent that checks an unfiled ticket during Logging, or the team role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
 
 **Agent runtime**:
 The agent tool a role runs on: Claude Code, Pi, or Codex, with a model and effort per role.
@@ -235,7 +239,7 @@ _Avoid_: Crash, error, failure
 ### Review and merge
 
 **Bounce**:
-The reviewer, or a failed gate, sending work back to the implementer for one more round.
+The reviewer, or a failed gate, sending work back for one more round: to the writing agent during Logging, or to the implementer during delivery.
 _Avoid_: Rejection, fail
 
 **Round**:

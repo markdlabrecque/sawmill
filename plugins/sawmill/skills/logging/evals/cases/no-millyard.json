@@ -1,0 +1,22 @@
+{
+  "case": "no-millyard",
+  "request": "File a ticket to add a downloadable CSV of the current search results. Do not build or configure the project for me.",
+  "configuration": {
+    "millyard": false,
+    "tracker": "github",
+    "test_harness": "none",
+    "worktrees": ["/evaluation/project"],
+    "projectConfig": null,
+    "activeRun": false
+  },
+  "reviews": [],
+  "expected": {
+    "outcome": "refused",
+    "createdTickets": 0,
+    "observations": [
+      "Read-only preflight finds no millyard in any project worktree and explains: No millyard found; run mill build in the intended integration worktree first. Logging created nothing.",
+      "Zero tracker writes occur, including ticket creation, estimate updates and blocked-by links; no review is requested.",
+      "Logging does not run mill build, bootstrap configuration, or change a run, branch, worktree or scheduler state."
+    ]
+  }
+}

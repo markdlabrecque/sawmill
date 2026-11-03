@@ -1,0 +1,68 @@
+{
+  "case": "two-bounces",
+  "request": "File a ticket to show a CSV download control on search results with a clear, readable label. Keep the change limited to that control.",
+  "configuration": {
+    "millyard": true,
+    "tracker": "github",
+    "repository": "example/logging-eval",
+    "test_harness": "docker",
+    "tests": "node --test test/search-export.test.js",
+    "activeRun": false,
+    "estimateStorage": { "projectId": "PVT_eval", "fieldId": "PVTF_human_hours", "fieldName": "Human estimate (hours)" }
+  },
+  "drafts": [
+    {
+      "title": "Show a CSV download control",
+      "body": "## Description\nShow a CSV download control on search results and guarantee that every user is always happy with the export.\n\n## Open questions\n- Unresolved: What observable outcome defines happy for every user?\n",
+      "humanEstimateHours": 3,
+      "estimateBasis": "A human developer would spend one hour adding the control and two hours testing and verifying; this excludes the undefined happiness guarantee.",
+      "blockedBy": []
+    },
+    {
+      "title": "Show a CSV download control",
+      "body": "## Description\nShow a CSV download control on search results.\n\n## Done when\n- [ ] Search results show a CSV download control.\n- [ ] Every user is always happy with the export.\n\n## Open questions\n- Unresolved: What observable outcome defines happy for every user?\n",
+      "humanEstimateHours": 0.25,
+      "estimateBasis": "Agent execution should take fifteen minutes.",
+      "blockedBy": []
+    },
+    {
+      "title": "Show a CSV download control",
+      "body": "## Description\nShow a CSV download control on search results.\n\n## Done when\n- [ ] Search results show a CSV download control.\n- [ ] Every user is always happy with the export.\n\n## Open questions\n- Unresolved: What observable outcome defines happy for every user?\n",
+      "humanEstimateHours": 3,
+      "estimateBasis": "A human developer would spend one hour adding the control and two hours testing and verifying; the happiness guarantee remains undefined and cannot be estimated reliably.",
+      "blockedBy": [],
+      "requirementCoverage": [
+        { "requirement": "Download control on search results", "items": ["AC1"], "check": "Inspect the results page for an accessible CSV download control." },
+        { "requirement": "Every user is always happy", "items": ["AC2"], "check": null }
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "outcome": "bounce",
+      "findings": ["Required Done when section is missing; the draft has no acceptance checklist.", "The draft substitutes an untestable universal happiness guarantee for the requested clear, readable label. Define observable label criteria instead."],
+      "warnings": []
+    },
+    {
+      "outcome": "bounce",
+      "findings": ["The estimate basis is agent time, not human development hours.", "AC2 still cannot feasibly be tested; the happiness definition is unresolved."],
+      "warnings": []
+    },
+    {
+      "outcome": "bounce",
+      "findings": ["AC2 still cannot feasibly be tested. Obtain a measurable outcome from the human user rather than dropping or weakening the requirement."],
+      "warnings": []
+    }
+  ],
+  "expected": {
+    "outcome": "human-review",
+    "createdTickets": 0,
+    "observations": [
+      "Each of the three reviews uses a fresh independent subagent with only the request and that round's draft packet, template and checklist; no writing-agent conversation or prior approval is inherited.",
+      "At most two repair bounces return work to the writing agent. The final bounce response after repair two means stop, not permission for a third repair or a fourth review.",
+      "Raise the final unfiled draft, separate human-hours estimate, recorded open question and unresolved AC2 findings to the human user. No answer is invented and no requirement is waived.",
+      "Zero tracker writes occur and nothing is created. A missing Done when section, agent-time estimate and infeasible acceptance item are blocking findings, not harness warnings.",
+      "Do not reset the bounce count by splitting or restarting Logging. Because this draft has no ticket number, identify it as unfiled rather than inventing a link. The warning block ends with Open questions on: and no numbers."
+    ]
+  }
+}

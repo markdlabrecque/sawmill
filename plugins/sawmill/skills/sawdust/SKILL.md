@@ -161,8 +161,12 @@ Every proposed action must name one owner:
   Sawmill repository, `markdlabrecque/sawmill`. Recommend an upstream issue or
   link the existing owning issue after the search above. File a new issue only
   when the user asks for it or approves that specific proposal; agreeing to a
-  retrospective is not approval to file its findings. Include the smallest
-  scoped, redacted evidence, the proposed change and a measurement plan.
+  retrospective is not approval to file its findings. For any approved new
+  ticket, use the sibling `logging` skill and its ticket template and fresh-reviewer
+  gate; do not create it directly. Run Logging in the owning project with its
+  own millyard, not against this project's tracker for an upstream finding.
+  Include the smallest scoped, redacted evidence, the proposed change and a
+  measurement plan.
   Never patch or modify the installed Sawmill package, a local Sawmill checkout,
   or generated files as a way to adopt a retrospective improvement. Ordinary
   development on a separately requested source ticket remains possible outside

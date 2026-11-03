@@ -1,7 +1,8 @@
 # Sawmill plugin
 
 Requires the Sawmill `mill` CLI on PATH and a configured millyard. The plugin
-contains the user-invoked skills `/sawmill:draft`, `/sawmill:foreman`,
+contains the ticket-writing skill `/sawmill:logging` and the user-invoked skills
+`/sawmill:draft`, `/sawmill:foreman`,
 `/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:sawdust`.
 
 From a repository checkout, register the repository root and install the plugin:
@@ -35,7 +36,29 @@ For a session-only local load, start from the millyard:
 claude --plugin-dir /absolute/path/to/sawmill/plugins/sawmill
 ```
 
-Then request one selection:
+## Logging a ticket
+
+Use `/sawmill:logging <request>` whenever an agent creates a ticket. Logging uses
+the packaged [ticket-template.md](skills/logging/ticket-template.md): required
+Description and Done when headings, optional proof plan, user test cases, open
+questions and GitLab CE blocked-by lists. GitHub uses native blocked-by links
+instead. Every requirement must have an acceptance item.
+
+Logging needs a millyard built with `mill build`, but no run. It sets a separate
+human-development-hours estimate (GitHub Project number field or GitLab native
+time estimate), and sends the unfiled ticket to a fresh subagent. Only a pass
+permits creation. There are at most two repair bounces; a failed final review
+raises the unfiled ticket and findings to the human user. Untestable acceptance
+items block; a feasible item missing its harness only warns here (run drafting
+checks the harness later). Questions stay in the ticket, warnings are visible,
+and terminal ticket references are linked numbers without titles. See the
+[Logging instructions](skills/logging/SKILL.md) for field setup, independent
+review and partial-write recovery. This is shipped agent guidance, not a new
+`mill logging` command; instruction tests do not prove model compliance.
+
+## Drafting a run
+
+After Logging, request one selection:
 
 ```text
 /sawmill:draft all tickets with label sprint ready
