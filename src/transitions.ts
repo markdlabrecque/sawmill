@@ -483,7 +483,10 @@ async function holdMissingLabels(cwd: string, project: ProjectConfig, tracker: T
  * The applied marker and label writes commit together; pending writes gate every replay. */
 export async function startTicketLabels(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, options: MirrorOptions = {}): Promise<boolean> {
   const ticket = readRun(cwd).tickets.find(row => row.number === number)!;
-  if (ticket.team.startLabels?.applied || (ticket.stage !== null && ticket.stage !== 'team-launch') || !tracker.missingLabels) return true;
+  // Manual worktree preparation (including failed setup) precedes the first role.
+  // Only stages beyond preparation count as already started for legacy resumes.
+  const beforeFirstRole = ticket.stage === null || ['team-launch', 'worktree-create', 'worktree-created'].includes(ticket.stage);
+  if (ticket.team.startLabels?.applied || !beforeFirstRole || !tracker.missingLabels) return true;
   try {
     const missing = await tracker.missingLabels(startLabelNames(project));
     if (missing.length) {
