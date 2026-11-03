@@ -8,7 +8,16 @@ const args = process.argv.slice(2);
 const method = args[args.indexOf('--method') + 1];
 const url = new URL('https://fixture.invalid/' + args[1]);
 fs.appendFileSync(process.env.HOSTED_LOG, JSON.stringify({ method, endpoint: args[1] }) + '\n');
-// The first-start state read comes before the ticket branch exists, so answer it before resolving the branch.
+// First-start label and state reads come before the ticket branch exists.
+if (method === 'GET' && url.pathname === '/projects/team%2Ftool/labels') {
+  const labels = ['Ready to do', 'In Progress'].filter(name => !url.searchParams.has('search') || name.includes(url.searchParams.get('search')));
+  const page = Number(url.searchParams.get('page') || '1');
+  const size = Number(url.searchParams.get('per_page') || '100');
+  const end = page * size;
+  process.stdout.write(`HTTP/2.0 200 OK\r\nContent-Type: application/json\r\nX-Total: ${labels.length}\r\nX-Next-Page: ${end < labels.length ? page + 1 : ''}\r\n\r\n`);
+  process.stdout.write(JSON.stringify(labels.slice(end - size, end).map(name => ({ name }))), () => process.exit(0));
+  return;
+}
 if (method === 'GET' && url.pathname === '/projects/team%2Ftool/issues/12') {
   process.stdout.write('HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n');
   process.stdout.write(JSON.stringify({ iid: 12, state: 'opened', web_url: 'https://gitlab.com/team/tool/-/issues/12' }), () => process.exit(0));

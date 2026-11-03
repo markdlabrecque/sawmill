@@ -5,7 +5,14 @@ const cp = require('node:child_process');
 const args = process.argv.slice(2);
 const url = new URL('https://fixture.invalid/' + args[1]);
 fs.appendFileSync(process.env.HOSTED_LOG, JSON.stringify({ endpoint: args[1] }) + '\n');
-// The first-start state read comes before the ticket branch exists, so answer it before resolving the branch.
+// First-start label and state reads come before the ticket branch exists.
+const label = url.pathname.match(/^\/repos\/team\/tool\/labels\/(.+)$/);
+if (args[args.indexOf('--method') + 1] === 'GET' && label) {
+  const name = decodeURIComponent(label[1]);
+  if (!['Ready to do', 'In Progress'].includes(name)) { process.stderr.write('gh: Not Found (HTTP 404)\n'); process.exit(1); }
+  process.stdout.write(JSON.stringify({ name }), () => process.exit(0));
+  return;
+}
 if (args[args.indexOf('--method') + 1] === 'GET' && url.pathname === '/repos/team/tool/issues/12') {
   process.stdout.write(JSON.stringify({ number: 12, state: 'open' }), () => process.exit(0));
   return;

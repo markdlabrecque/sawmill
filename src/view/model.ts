@@ -146,7 +146,7 @@ function viewTickets(run: RunSnapshot, tracker: ProjectConfig['tracker'] | null,
       bounces: ticket.bounces, timeInStageSeconds: ticket.timeInStageSeconds, blockers: ticket.blockers, reason: ticket.reason, stopRequested: ticket.stopRequested,
       picked: Boolean(ticket.state === 'queued' && run.run.pendingPick === ticket.number), appended: Boolean(ticket.appended),
     };
-    const question = ticket.state === 'logjam' && ticket.reason === 'question' ? ticket.team.question?.question ?? null : null;
+    const question = ticket.state === 'logjam' ? ticket.reason === 'question' ? ticket.team.question?.question ?? null : ticket.reason === 'missing-labels' ? ticket.team.startLabels?.question ?? null : null : null;
     return { ...row, lane: laneOf({ ...row, history: ticket.stageHistory }), question: question === null ? null : redact(question),
       blockage: blockage(ticket, pending), actions: ticketActions(ticket, pending, run.run.pendingPick), attempt: attemptOf(ticket),
       diagnosis: ticket.state === 'logjam' ? diagnose(ticket, millyard) : null };

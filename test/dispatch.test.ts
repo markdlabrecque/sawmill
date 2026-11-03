@@ -47,9 +47,10 @@ test('one pass starts independent tickets in stored order, excludes blockers and
   await until(y.status, s => s.tickets.find(row => row.number === 4)?.worker?.status === 'finished');
   assert.deepEqual((await y.starts()).map(row => row.number).sort(), [1, 3, 4]);
   const writes = await readFile(join(y.root, 'tracker.jsonl'), 'utf8');
-  // The only reads are the state rechecks before each ticket's first start.
+  // First-start reads are limited to ticket state rechecks and the configured label definitions.
   const reads = writes.split('\n').filter(Boolean).map(line => JSON.parse(line) as string[]).filter(args => args.includes('GET'));
-  assert.ok(reads.every(args => /^repos\/dispatch\/tool\/issues\/\d+$/.test(args[1]!)));
+  const labelDefinitions = new Set(['Ready to do', 'In Progress'].map(name => `repos/dispatch/tool/labels/${encodeURIComponent(name)}`));
+  assert.ok(reads.every(args => /^repos\/dispatch\/tool\/issues\/\d+$/.test(args[1]!) || labelDefinitions.has(args[1]!)));
 });
 
 test('simultaneous CLI processes in two millyards share two slots without duplicate dispatch', async t => {

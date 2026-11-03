@@ -102,6 +102,7 @@ function causes(ticket: RunTicket, logged: string[]): string[] {
 function evidence(ticket: RunTicket, parts: string[]): string {
   const { question } = ticket.team;
   if (ticket.reason === 'question' && question) return `The ${question.role} asked: ${question.question}`;
+  if (ticket.reason === 'missing-labels' && ticket.team.startLabels?.question) return ticket.team.startLabels.question;
   if (ticket.reason === 'stopped' && !parts.length) return `Stopped${ticket.stage ? ` at ${ticket.stage}` : ''} on request, with its work saved.`;
   return parts.join('\n\n') || `Logjam (${ticket.reason ?? 'unknown'})${ticket.stage ? ` at ${ticket.stage}` : ''}; nothing more is recorded. mill run log ${ticket.number} has every step.`;
 }
@@ -131,6 +132,8 @@ function nextStep(ticket: RunTicket): Diagnosis['next'] {
   if (ticket.team.repair?.source === 'protected-tests' && ticket.reason === 'retry-cap') return { command: `mill run approve-tests ${n}`,
     explanation: `The implementer kept changing the protected tests. If the tests in the worktree are right as they stand, approving them makes them the new baseline; then mill run answer ${n} resumes at review. Otherwise answer with guidance for the implementer.` };
   switch (ticket.reason) {
+    case 'missing-labels':
+      return { command: `mill run answer ${n} "yes"`, explanation: 'Creates only the missing tracker labels with your consent, then requeues the ticket. Answer "no" to leave it in logjam without creating labels. After supplying labels or changing labels.ready/labels.in_progress, answer without text to retry.' };
     case 'question': {
       const role = ticket.team.question?.role ?? 'agent';
       return { command: `mill run answer ${n} "<answer>"`, explanation: `Sends your answer to the ${role} and requeues #${n}; the ${role} resumes on its saved work with your answer.` };

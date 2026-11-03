@@ -10,6 +10,28 @@ export class GitHubWriter implements TicketWriter {
   private async write(number: number, method: string, suffix: string, body?: object): Promise<void> {
     await githubRequest(this.config, this.cwd, method, `repos/${this.config.repo}/issues/${number}${suffix}`, body, { timeoutMs: this.timeoutMs });
   }
+  async missingLabels(names: string[]): Promise<string[]> {
+    const missing: string[] = [];
+    for (const name of new Set(names)) {
+      try {
+        const value = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/labels/${encodeURIComponent(name)}`, undefined, { timeoutMs: this.timeoutMs }) as { name?: unknown } | null;
+        if (value?.name !== name) throw new Error('GitHub returned an invalid label definition.');
+      } catch (error) {
+        if (!(error instanceof GitHubApiError) || error.status !== 404) throw error;
+        missing.push(name);
+      }
+    }
+    return missing;
+  }
+  async createLabel(name: string): Promise<void> {
+    if (!(await this.missingLabels([name])).length) return;
+    try {
+      await githubRequest(this.config, this.cwd, 'POST', `repos/${this.config.repo}/labels`, { name, color: '808080' }, { timeoutMs: this.timeoutMs });
+    } catch (error) {
+      // Reconcile a lost response or concurrent creation before reporting failure.
+      if ((await this.missingLabels([name])).length) throw error;
+    }
+  }
   addLabel(number: number, label: string) { return this.write(number, 'POST', '/labels', { labels: [label] }); }
   async removeLabel(number: number, label: string) {
     try { await this.write(number, 'DELETE', `/labels/${encodeURIComponent(label)}`); }

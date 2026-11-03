@@ -34,6 +34,8 @@ export interface IntegrationProgress {
   localRemoved?: boolean;
 }
 export interface TeamProgress {
+  /** First-start label gate, separate from an agent's question/checkpoint. */
+  startLabels?: { applied?: boolean; missing?: string[]; approved?: string[]; question?: string };
   next?: Role | 'integrate';
   recovery?: { stage: string };
   activeRole?: { role: Role; beforeHead: string; bounces: number; selectionId?: string };

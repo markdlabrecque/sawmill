@@ -609,7 +609,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
   y.git('add', '.'); y.git('commit', '-m', 'Seed implementation'); y.git('push');
   await writeFile(join(y.cwd, '.mill/setup.sh'), 'printf "%s" "$MILL_TICKET" > "$MILL_MILLYARD/.mill/hook-ran"\n');
   assert.equal((await y.cli('run', 'draft', '7')).code, 0);
-  await y.save({ ...y.state, cwd: y.cwd, remote: y.remote, forbidIssueReads: true, allowStateReads: true, pipelines: [pipeline(1, 'success')] });
+  await y.save({ ...y.state, availableLabels: [...y.state.availableLabels, 'Ready to do', 'In Progress'], cwd: y.cwd, remote: y.remote, forbidIssueReads: true, allowStateReads: true, pipelines: [pipeline(1, 'success')] });
   const roles: string[] = []; let red = false, stdout = '';
   const code = await runCli(['team', 'run', '7', '--json'], { cwd: y.cwd, home: y.home, stdout: text => { stdout += text; }, sleep: async () => {}, runtime: {
     async run(request, sink) {

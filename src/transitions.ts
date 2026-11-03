@@ -466,8 +466,83 @@ export async function closeTicket(cwd: string, project: ProjectConfig, tracker: 
   return flushPending(cwd, project, tracker, number, options);
 }
 
+function startLabelNames(project: ProjectConfig): string[] {
+  return [...new Set([project.labels.ready ?? 'Ready to do', project.labels.in_progress ?? 'In Progress'])];
+}
+
+async function holdMissingLabels(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, missing: string[], options: MirrorOptions, declined = false): Promise<void> {
+  const ticket = readRun(cwd).tickets.find(row => row.number === number)!;
+  const host = project.tracker.backend === 'github' ? 'GitHub' : 'GitLab';
+  const question = `${host} labels are missing: ${missing.map(name => JSON.stringify(name)).join(', ')}. ${declined ? 'Creation declined; the ticket cannot start while these labels are missing. ' : ''}Should Mill create them? Answer yes or no with mill run answer ${number}.`;
+  await transition(cwd, project, tracker, number, { state: 'logjam', reason: 'missing-labels',
+    team: { ...ticket.team, startLabels: { ...ticket.team.startLabels, missing, question } },
+    report: { stage: 'aborted', details: question } }, [], options);
+}
+
+/** Called only once work is admitted, never while drafting or scanning a full slot list.
+ * The applied marker and label writes commit together; pending writes gate every replay. */
+export async function startTicketLabels(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, options: MirrorOptions = {}): Promise<boolean> {
+  const ticket = readRun(cwd).tickets.find(row => row.number === number)!;
+  // Manual worktree preparation (including failed setup) precedes the first role.
+  // Only stages beyond preparation count as already started for legacy resumes.
+  const beforeFirstRole = ticket.stage === null || ['team-launch', 'worktree-create', 'worktree-created'].includes(ticket.stage);
+  if (ticket.team.startLabels?.applied || !beforeFirstRole || !tracker.missingLabels) return true;
+  try {
+    const missing = await tracker.missingLabels(startLabelNames(project));
+    if (missing.length) {
+      await holdMissingLabels(cwd, project, tracker, number, missing, options);
+      return false;
+    }
+    return await transition(cwd, project, tracker, number, {
+      team: { ...ticket.team, startLabels: { applied: true } },
+    }, [
+      { kind: 'add-label', payload: { label: project.labels.in_progress ?? 'In Progress' } },
+      { kind: 'remove-label', payload: { label: project.labels.ready ?? 'Ready to do' } },
+    ], options);
+  } catch (error) {
+    holdTrackerFailure(cwd, project, number, error instanceof Error ? error : new Error(String(error)));
+    await flushPending(cwd, project, tracker, number, options);
+    return false;
+  }
+}
+
 export async function answerTicket(cwd: string, project: ProjectConfig, tracker: TicketWriter, number: number, text: string | undefined, options: MirrorOptions & { implementer?: boolean } = {}) {
   checkTracker(cwd, project);
+  const row = readRun(cwd).tickets.find(ticket => ticket.number === number);
+  const labelAnswer = Boolean(row?.team.startLabels?.missing?.length);
+  if (row?.team.startLabels?.missing?.length) {
+    if (row.state !== 'logjam') throw new CliError(`Ticket #${number} is not in logjam.`);
+    if (options.implementer) throw new CliError('--implementer applies only to a not-reproduced ticket.', 2);
+    if (!tracker.missingLabels) throw new CliError('Tracker cannot check label definitions.');
+    let missing = await tracker.missingLabels(startLabelNames(project));
+    const approved = text === undefined ? row.team.startLabels.approved ?? [] : text.trim().toLowerCase() === 'yes' ? missing : [];
+    // Save consent before creation, so a restart only retries approved names.
+    transaction(cwd, db => {
+      const ticket = requireTicket(db, number);
+      if (ticket.state !== 'logjam') throw new CliError(`Ticket #${number} is no longer in logjam.`);
+      const team: TeamProgress = JSON.parse(String(ticket.team));
+      team.startLabels = { ...team.startLabels, approved };
+      update(db, number, { team }, text === undefined ? [] : [{ kind: 'comment', payload: { body: text } }]);
+    });
+    recordSafely(() => recordHumanAction(cwd, number));
+    if (!await flushPending(cwd, project, tracker, number, options)) return false;
+    if (missing.length && missing.every(name => approved.includes(name))) {
+      if (!tracker.createLabel) throw new CliError('Tracker cannot create label definitions.');
+      for (const name of missing) await tracker.createLabel(name);
+      missing = await tracker.missingLabels(startLabelNames(project));
+    }
+    if (missing.length) {
+      await holdMissingLabels(cwd, project, tracker, number, missing, options, text?.trim().toLowerCase() === 'no');
+      return true;
+    }
+    transaction(cwd, db => {
+      const team: TeamProgress = JSON.parse(String(requireTicket(db, number).team));
+      delete team.startLabels;
+      update(db, number, { team });
+    });
+    // The answer is already recorded; ordinary recovery removes logjam and requeues.
+    text = undefined;
+  }
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     // An answer must not clear a request while its active role is still saving.
@@ -481,7 +556,7 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     const retryCap = ticket.state === 'logjam' && ticket.reason === 'retry-cap';
     update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : retryCap ? { bounces: 2 } : {}, writes);
   });
-  recordSafely(() => recordHumanAction(cwd, number));
+  if (!labelAnswer) recordSafely(() => recordHumanAction(cwd, number));
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
