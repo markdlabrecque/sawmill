@@ -27,7 +27,8 @@
     "build": "tsc && node dist/src/stamp-build.js",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test --test-timeout=120000 dist/test/*.test.js && node --test --test-timeout=120000 dist/test/process-permissions.js",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:board:docker": "docker build -f test/docker/Dockerfile -t sawmill-board-test . && docker run --rm sawmill-board-test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
