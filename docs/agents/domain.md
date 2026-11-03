@@ -117,3 +117,14 @@ Build, typecheck and `git diff --check` also pass. The first local run exceeded 
 suite with sufficient time passed. Tests check shipped guidance, not live agent
 compliance or actual tracker writes. No test files were changed; the later hard
 estimate gate is outside this ticket.
+
+Review repair: added five authored Logging evaluation fixtures and linked their
+packaged guide from the skill, as the human clarification requires. The guide
+distinguishes model-free instruction/fixture checks from optional model-assisted
+compliance evaluation; no model execution or live tracker writes were performed.
+Glossary checked; no update needed because the existing Logging, Reviewer, Bounce,
+Acceptance item, Test harness and Blocked-by definitions cover these scenarios.
+No terminology conflicts were found. All 15 protected Logging checks pass,
+including the six previously failing fixture/packaging checks; the full command
+passes 1250 suite tests and 3 process-permission tests. Build and typecheck pass.
+The protected test file is unchanged.
