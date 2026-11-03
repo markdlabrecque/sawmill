@@ -77,6 +77,10 @@ export interface JobLog { text: string; bytes: number; truncated: boolean }
 export type AssignResult = { status: 'assigned' } | { status: 'held'; by: string };
 
 export interface TicketWriter {
+  /** Exact configured names absent from the project's available label definitions. */
+  missingLabels?(names: string[]): Promise<string[]>;
+  /** Explicit human-approved creation; an existing definition is a no-op. */
+  createLabel?(name: string): Promise<void>;
   addLabel(number: number, label: string): Promise<void>;
   removeLabel(number: number, label: string): Promise<void>;
   addComment(number: number, body: string): Promise<void>;

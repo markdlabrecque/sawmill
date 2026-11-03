@@ -38,7 +38,7 @@ export interface ProjectConfig {
   merge_method: 'squash' | 'merge';
   test_harness: 'ddev' | 'docker' | 'none';
   test_url?: string;
-  labels: { logjam: string };
+  labels: { logjam: string; ready?: string; in_progress?: string };
   /** Project-declared release obligations the handoff reports; Mill never performs them. */
   release?: { steps: ReleaseStep[] };
   /** Filled with defaults when loaded; absent only on configs built in code. */
@@ -163,7 +163,7 @@ const projectSchema = object({
   test_url: { ...string, optional: true, check: value => {
     try { return ['http:', 'https:'].includes(new URL(String(value)).protocol); } catch { return false; }
   }, hint: 'expected an absolute HTTP or HTTPS URL' },
-  labels: { ...object({ logjam: { ...string, default: 'logjam' } }), default: {} },
+  labels: { ...object({ logjam: { ...string, default: 'logjam' }, ready: { ...string, default: 'Ready to do' }, in_progress: { ...string, default: 'In Progress' } }), default: {} },
   phase_timeouts: { ...object(Object.fromEntries(Object.entries(phaseDefaults).map(([phase, value]) => [phase, { ...duration, default: value }]))), default: {} },
 });
 const tierMapping = object(Object.fromEntries(['low', 'medium', 'high'].flatMap(model =>

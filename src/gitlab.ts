@@ -148,6 +148,18 @@ export class GitLabTracker implements Tracker {
       throw error;
     }
   }
+  async missingLabels(names: string[]): Promise<string[]> {
+    for (const name of names) this.checkLabel(name);
+    const labels = await this.list('/labels?include_ancestor_groups=true');
+    return [...new Set(names)].filter(name => !labels.some(value => record(value).name === name));
+  }
+  async createLabel(name: string): Promise<void> {
+    if (!(await this.missingLabels([name])).length) return;
+    try { await this.request('POST', '/labels', { name, color: '#808080' }); }
+    catch (error) {
+      if ((await this.missingLabels([name])).length) throw error;
+    }
+  }
   async addLabel(number: number, label: string): Promise<void> {
     this.checkLabel(label);
     // GitLab's add_labels creates absent labels. Check definitions, never issue state.
