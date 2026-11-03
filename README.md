@@ -647,3 +647,5 @@ npm test
 ```
 
 Tests use temporary Git repositories, local bare remotes, SQLite, hooks, and scripted vendor/tracker processes. They require no model authentication. Linux process-permission regressions use Python 3's standard library and run after the main suite to isolate their temporary process-access changes. GitHub Actions runs typecheck and the full test/build sequence on Node 24.
+
+The Board browser tests skip when Chromium is missing. `npm run test:board:docker` runs them inside a Docker image (`test/docker/Dockerfile`) that has Chromium, so none skip.
