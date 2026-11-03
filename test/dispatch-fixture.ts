@@ -44,6 +44,13 @@ const cp = require('node:child_process');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FIXTURE_DIR + '/tracker.jsonl', JSON.stringify(args) + '\\n');
 const method = args[args.indexOf('--method') + 1], url = args[1];
+const label = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/labels\\/(.+)$/) : null;
+if (label) {
+  const name = decodeURIComponent(label[1]);
+  if (!['Ready to do', 'In Progress'].includes(name)) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+  console.log(JSON.stringify({ name }));
+  process.exit(0);
+}
 // A single-issue read is the first-start state recheck: closed-N marks it closed, lookup-fail breaks the tracker.
 const lookup = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)$/) : null;
 if (lookup) {
