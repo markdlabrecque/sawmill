@@ -7,7 +7,8 @@ import { ensureExecutionScheduler, requireSchedulerConfiguration, notifySchedule
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
 import { offerSkills } from './agent-skills.js';
-import { offerGitHubProject } from './github-project.js';
+import { addConfiguredGitHubProjectTicket, offerGitHubProject } from './github-project.js';
+import { requireTypeSafeKey } from './typesafe.js';
 import { createInterface } from 'node:readline/promises';
 import { describeUnresolved, listSlots, unresolvedSlots } from './slots.js';
 import { listMillyards, registerMillyard } from './registry.js';
@@ -64,6 +65,7 @@ export interface CliOptions {
   cwd?: string;
   home?: string;
   stdout?: (text: string) => void;
+  stderr?: (text: string) => void;
   tracker?: TicketReader & Partial<IntegrationTracker>;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -84,7 +86,16 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
   const projectSetup: string[] = [];
-  const emit = (value: object, message: string) => stdout((json ? JSON.stringify({ ...value, ...(projectSetup.length ? { githubProjectSetup: projectSetup } : {}) }) : message) + '\n');
+  const diagnostic = options.stderr ?? (text => process.stderr.write(text));
+  const emit = (value: object, message: string) => {
+    // Keep successful command payloads (including arrays and path-only output)
+    // stable. Errors can carry setup guidance alongside their normal message.
+    const error = 'message' in value;
+    if (projectSetup.length && !error) diagnostic(projectSetup.join('\n') + '\n');
+    stdout((json ? JSON.stringify(error && projectSetup.length ? { ...value, githubProjectSetup: projectSetup } : value)
+      : [...(error ? projectSetup : []), message].join('\n')) + '\n');
+    projectSetup.length = 0;
+  };
   const setupProject = async (cwd: string, project: ProjectConfig) => {
     // Injected tracker adapters own their transport; never contact a live host for them.
     if (options.tracker) return;
@@ -93,7 +104,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       try { return await prompt.question(question); }
       finally { prompt.close(); }
     } : undefined);
-    await offerGitHubProject(cwd, home, project, { ask, report: text => { if (json) projectSetup.push(text); else stdout(text + '\n'); } });
+    await offerGitHubProject(cwd, home, project, { ask, report: text => { projectSetup.push(text); } });
   };
   const current = readBuildIdentity(root);
   // A scheduler loaded from other code than this mill keeps running that code until it restarts.
@@ -207,6 +218,17 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit({ status: 'configuration-error', issues }, issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n'));
         return 2;
       }
+      // Credential rejection precedes any tracker contact, including setup reads.
+      const execution = positional[0] === 'integrate' || (positional[0] === 'team' && ['run', 'review'].includes(positional[1] ?? ''))
+        || (positional[0] === 'run' && (!positional[1] || positional[1].startsWith('--') || positional[1] === 'once'));
+      if (execution) {
+        requireTypeSafeKey(initial.project, cwd);
+        if (positional[0] === 'run') requireSchedulerConfiguration(home, initial.project, cwd);
+      }
+      if (positional[0] === 'run' && positional[1] === 'answer') {
+        try { if (readRun(cwd).run.lifecycle === 'active') requireSchedulerConfiguration(home, initial.project, cwd); }
+        catch (error) { if (error instanceof CliError && error.exitCode === 2) throw error; }
+      }
       await setupProject(cwd, initial.project);
       const config = await loadConfig(cwd, home);
       if (!config.valid) throw new CliError('Configuration changed during GitHub estimate project setup; retry after correcting it.', 2);
@@ -241,6 +263,13 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
           : result.previous !== undefined ? `Cleared pending pick ${ref(result.previous)}.` : 'No pick was pending; nothing to clear.');
         return 0;
       }
+      if (positional[0] === 'tickets' && positional[1] === 'project-add') {
+        if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[2]!) || !Number.isSafeInteger(Number(positional[2]))) throw new CliError(usage('tickets project-add'), 2);
+        const number = Number(positional[2]);
+        const result = await addConfiguredGitHubProjectTicket(cwd, config.project, number);
+        emit({ status: 'ok', ticket: number, ...result }, `${ref(number)} is in ${result.project} (item ${result.item}).`);
+        return 0;
+      }
       if (positional[0] === 'record') {
         const name = `record ${positional[1]}`;
         const words = positional.slice(2);
@@ -249,8 +278,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (positional[1] === 'export') {
           if (words.length) return refuse();
           // The export is JSON with or without --json.
-          const records = exportRecords(cwd);
-          stdout(JSON.stringify({ ...records, ...(projectSetup.length ? { githubProjectSetup: projectSetup } : {}) }) + '\n');
+          if (projectSetup.length) diagnostic(projectSetup.join('\n') + '\n');
+          stdout(JSON.stringify(exportRecords(cwd)) + '\n');
           return 0;
         }
         if (positional[1] === 'report') {

@@ -24,6 +24,10 @@ _Avoid_: Ticket intake, issue creation, drafting (for writing a ticket)
 The issue system (GitHub or GitLab) that holds tickets and pull or merge requests; during a run it mirrors the run file, except for explicit ticket-text refreshes and execution safety checks.
 _Avoid_: Backend, issue tracker, ticket system
 
+**GitHub estimate project**:
+The private GitHub Projects v2 collection that holds a project's tickets and their **Human estimate (hours)** number field, identified by `tracker.project` under the repository's owner. Distinct from the Sawmill Project (the repository and its linked worktrees).
+_Avoid_: Project (for this collection), estimate board, tracker board
+
 **Blocked-by**:
 A link from one ticket to another it depends on.
 _Avoid_: Dependency, prerequisite, parent

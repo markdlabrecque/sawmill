@@ -36,8 +36,11 @@ Request: $ARGUMENTS
    millyard's `.mill/gh-user` account selection for GitHub; do not silently use
    another login. Confirm read access and the estimate storage mapping from the
    template before any write. On GitHub resolve the Project and numeric field;
-   on GitLab confirm native time-estimate support. If unavailable or ambiguous,
-   stop for the human user without creating a ticket or provisioning fields.
+   on GitLab confirm native time-estimate support. For github.com read the numeric
+   `tracker.project` from `.mill/config.yaml`, with the owner inferred from the
+   repository. If unavailable or ambiguous, stop for the human user without
+   creating a ticket or provisioning fields; ask them to run Mill interactively
+   and review its GitHub estimate project setup offer first.
 
 ## 2. Write the unfiled ticket
 
@@ -142,8 +145,13 @@ literal argument arrays (or properly quoted arguments). Pass the exact reviewed
 body as data, not executable shell text. Never print raw tracker command output
 containing bare ticket references; capture and format it as described below.
 
-On GitHub create the issue, add its Project item and populate the numeric
-**Human estimate (hours)** field. On GitLab set the native time estimate to the
+On GitHub create the issue, then use `mill tickets project-add <number> --json`
+from the millyard to obtain its GitHub estimate project item, and populate the numeric
+**Human estimate (hours)** field. Use the returned item ID with the configured
+`tracker.project`; never directly add an unchecked Project item. This command
+shares setup's stable GitHub node-ID upsert, reuses an already-present item,
+and is safe to retry after a lost response or concurrent addition by another
+command or GitHub auto-add, even with auto-add disabled or unavailable. On GitLab set the native time estimate to the
 reviewed hours converted to seconds. Write approved native GitHub blocked-by
 links using the blockers' database IDs, not their display numbers. On GitLab the
 reviewed list in the body is the record. Read back the body, field value and links

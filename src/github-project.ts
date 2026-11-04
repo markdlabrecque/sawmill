@@ -129,9 +129,35 @@ async function saveNumber(cwd: string, number: number): Promise<void> {
   await rename(temporary, path);
 }
 
+async function linked(cwd: string, project: EstimateProject, repo: string): Promise<boolean> {
+  let cursor: string | undefined;
+  do {
+    const data = await graphql<{ node: { repositories: Page<{ nameWithOwner: string }> } | null }>(cwd, `query($id:ID!, $cursor:String) {
+      node(id:$id) { ... on ProjectV2 { repositories(first:100, after:$cursor) {
+        nodes { nameWithOwner } pageInfo { hasNextPage endCursor }
+      } } }
+    }`, { id: project.id, cursor: cursor ?? null });
+    if (!data.node?.repositories) throw new Error(`Cannot verify repository link for ${project.url}.`);
+    if (data.node.repositories.nodes.some(repository => repository.nameWithOwner.toLowerCase() === repo.toLowerCase())) return true;
+    cursor = nextCursor(data.node.repositories);
+  } while (cursor);
+  return false;
+}
+
+/** Logging's only Project-item write path; uses the same upsert as backfill. */
+export async function addConfiguredGitHubProjectTicket(cwd: string, config: ProjectConfig, number: number): Promise<{ item: string; project: string }> {
+  if (config.tracker.backend !== 'github' || (config.tracker.host ?? 'github.com') !== 'github.com' || config.tracker.project === undefined) throw new Error('A github.com tracker.project is required; run Mill interactively to set up the GitHub estimate project first.');
+  const project = (await lookup(cwd, config))[0];
+  if (!project) throw new Error('The configured GitHub estimate project is missing; run Mill interactively to repair it.');
+  const ticket = await githubRequest(config.tracker, cwd, 'GET', `repos/${config.tracker.repo}/issues/${number}`) as { node_id?: string; pull_request?: unknown };
+  if (!ticket?.node_id || ticket.pull_request) throw new Error('GitHub did not return a stable ticket identity (pull requests are not tickets).');
+  return { item: await addGitHubProjectTicket(cwd, project.id, ticket.node_id), project: project.url };
+}
+
 async function complete(cwd: string, config: ProjectConfig, existing: EstimateProject | undefined, report: (text: string) => void): Promise<void> {
   const owner = config.tracker.repo.split('/')[0]!;
   let project = existing;
+  let step = 'create the GitHub estimate project';
   try {
     if (!project) {
       project = await gh(cwd, ['project', 'create', '--owner', owner, '--title', config.name, '--format', 'json']) as EstimateProject;
@@ -140,13 +166,17 @@ async function complete(cwd: string, config: ProjectConfig, existing: EstimatePr
     }
     const number = String(project.number);
     // Recovered title matches are incomplete creations until all steps read back.
-    if (config.tracker.project === undefined || !existing) {
+    if (config.tracker.project !== project.number || !existing) {
+      step = 'set private visibility';
       await gh(cwd, ['project', 'edit', number, '--owner', owner, '--visibility', 'PRIVATE']);
     }
+    step = 'link the repository';
     await gh(cwd, ['project', 'link', number, '--owner', owner, '--repo', config.tracker.repo]);
+    step = 'read or create the Human estimate (hours) number field';
     if (!(await fields(cwd, project)).some(field => field.name === humanEstimateField)) {
       await gh(cwd, ['project', 'field-create', number, '--owner', owner, '--name', humanEstimateField, '--data-type', 'NUMBER', '--format', 'json']);
     }
+    step = 'add existing open tickets';
     const pages = await githubRequest(config.tracker, cwd, 'GET', `repos/${config.tracker.repo}/issues?state=open&per_page=100`, undefined, { paginated: true });
     if (!Array.isArray(pages) || pages.some(page => !Array.isArray(page))) throw new Error('GitHub returned an incomplete open ticket collection.');
     for (const ticket of pages.flat() as { pull_request?: unknown; node_id?: string }[]) {
@@ -156,18 +186,23 @@ async function complete(cwd: string, config: ProjectConfig, existing: EstimatePr
     }
     // GitHub's public schema exposes no Projects workflow/auto-add write API.
     // Verify against the actual schema instead of treating an auth error as absence.
+    step = 'verify auto-add API availability';
     const schema = await graphql<{ __type: { fields: { name: string }[] } }>(cwd, '{ __type(name:"Mutation") { fields { name } } }', {});
     if (!schema.__type?.fields) throw new Error('Cannot verify GitHub auto-add API availability.');
     const workflow = schema.__type.fields.filter(field => /project.*(workflow|autoadd)|(workflow|autoadd).*project/i.test(field.name));
     if (workflow.length) throw new Error(`GitHub now exposes Project workflow mutations (${workflow.map(field => field.name).join(', ')}); review auto-add support before completing setup.`);
     report(`One-time manual step: in ${project.url}, open Workflows → Auto-add to project, select ${config.tracker.repo} with is:issue is:open, and enable it. The public GitHub API has no auto-add configuration mutation; duplicate protection works without it.`);
+    step = 'read back the GitHub estimate project, field and repository link';
     const readback = (await lookup(cwd, { ...config, tracker: { ...config.tracker, project: project.number } }))[0];
     if (!readback || !(await fields(cwd, readback)).some(field => field.name === humanEstimateField)) throw new Error('GitHub Project/estimate-field readback failed.');
-    if ((config.tracker.project === undefined || !existing) && readback.public) throw new Error('GitHub Project is not private.');
+    if (readback.id !== project.id || readback.number !== project.number) throw new Error('GitHub Project identity changed during readback.');
+    if ((config.tracker.project !== project.number || !existing) && (readback.public || readback.title !== config.name)) throw new Error('GitHub Project title or private visibility readback failed.');
+    if (!await linked(cwd, readback, config.tracker.repo)) throw new Error('GitHub Project repository-link readback failed.');
+    step = 'save tracker.project in .mill/config.yaml';
     await saveNumber(cwd, project.number);
     report(`GitHub estimate project ready: ${project.url}; saved tracker.project: ${project.number}.`);
   } catch (error) {
-    throw new Error(`${project?.url ? `GitHub estimate project exists: ${project.url}. ` : ''}${error instanceof Error ? error.message : error} Setup incomplete; fix the failed step and retry the same Mill command to recover it without creating another Project.`);
+    throw new Error(`${project?.url ? `GitHub estimate project exists: ${project.url}. ` : ''}Failed to ${step}: ${error instanceof Error ? error.message : error} Setup incomplete; fix the failed step and retry the same Mill command to recover it without creating another Project.`);
   }
 }
 
@@ -176,15 +211,22 @@ export async function offerGitHubProject(cwd: string, home: string, config: Proj
 }): Promise<void> {
   if (config.tracker.backend !== 'github' || (config.tracker.host ?? 'github.com') !== 'github.com') return;
   const report = options.report;
+  const manual = () => report(`GitHub estimate project setup skipped. In an interactive terminal run this Mill command again, or use gh project create --owner ${config.tracker.repo.split('/')[0]} --title ${config.name} --format json, keep it private, link ${config.tracker.repo}, add the number field "${humanEstimateField}" and open tickets, then set tracker.project to its number in .mill/config.yaml.`);
+  // Non-interactive commands remain usable offline. They cannot consent to any
+  // repair, so explain setup without contacting GitHub or opening a local lock.
+  if (!options.ask) { if (config.tracker.project === undefined) manual(); return; }
   const inspect = async (project: ProjectConfig) => {
-    const matches = await lookup(cwd, project);
+    let matches = await lookup(cwd, project);
+    // A stale configured number can coexist with a partially created replacement
+    // whose number was not saved. Recover by title before offering a new one.
+    if (!matches.length && project.tracker.project !== undefined) matches = await lookup(cwd, { ...project, tracker: { ...project.tracker, project: undefined } });
     if (matches.length > 1) {
       report(`Several GitHub estimate projects match ${project.name}: ${matches.map(item => `${item.number}: ${item.url}`).join(', ')}. Set tracker.project explicitly; nothing was offered.`);
       return { ready: true };
     }
     const existing = matches[0];
     const hasField = existing && (await fields(cwd, existing)).some(field => field.name === humanEstimateField);
-    return { ready: Boolean(project.tracker.project !== undefined && hasField), existing, hasField };
+    return { ready: Boolean(existing && project.tracker.project === existing.number && hasField), existing, hasField };
   };
   try {
     const state = await inspect(config);
@@ -194,7 +236,7 @@ export async function offerGitHubProject(cwd: string, home: string, config: Proj
       ? `Reuse GitHub estimate project ${state.existing.url}${state.hasField ? '' : ` and add the number field ${humanEstimateField}`}; link ${config.tracker.repo}, add existing open tickets once, and record tracker.project? [y/N] `
       : `Create a private GitHub estimate project under ${owner}, titled ${config.name}, linked to ${config.tracker.repo}, with the number field ${humanEstimateField}, add all existing open tickets once, and record tracker.project in .mill/config.yaml? [y/N] `;
     if (!options.ask || !/^y(es)?$/i.test((await options.ask(proposal)).trim())) {
-      report(`GitHub estimate project setup skipped. In an interactive terminal run this Mill command again, or use gh project create --owner ${owner} --title ${config.name} --format json, keep it private, link ${config.tracker.repo}, add the number field "${humanEstimateField}" and open tickets, then set tracker.project to its number in .mill/config.yaml.`);
+      manual();
       return;
     }
     await withGitHubProjectLock(cwd, async () => {
@@ -206,6 +248,6 @@ export async function offerGitHubProject(cwd: string, home: string, config: Proj
       if (!fresh.ready) await complete(cwd, current.project, fresh.existing, report);
     });
   } catch (error) {
-    report(`GitHub estimate project setup: ${error instanceof Error ? error.message : error} Check network access and the selected gh account (gh auth login; gh auth refresh -s project), then retry. No creation is offered after a failed lookup.`);
+    report(`GitHub estimate project setup: ${error instanceof Error ? error.message : error} Check network access and the selected gh account (gh auth login; gh auth refresh -s project), then retry. Failed lookups never authorize creation.`);
   }
 }

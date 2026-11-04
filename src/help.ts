@@ -38,6 +38,7 @@ export const commands: Command[] = [
   { name: 'worktree prepare', usage: 'mill worktree prepare <n> [--json]', summary: "Run .mill/prepare.sh to bring the ticket's site up to date with its current commit, without reseeding, and report its environment, URL and readiness." },
   { name: 'worktree remove', usage: 'mill worktree remove <n> [--json]', summary: 'Run teardown and remove a clean worktree, retaining unmerged branches.' },
   { name: 'worktree gc', usage: 'mill worktree gc [--json]', summary: 'Clean up worktrees for locally done tickets.' },
+  { name: 'tickets project-add', usage: 'mill tickets project-add <n> [--json]', summary: 'Add a filed GitHub ticket to the configured GitHub estimate project, reusing its existing item by stable identity, including on retries or concurrent auto-add. No run is required.' },
   { name: 'tickets comment', usage: 'mill tickets comment <n> <text> [--stage <stage>] [--json]', summary: 'Comment on a ticket in the run; --stage records a stage report.' },
   { name: 'tickets label', usage: 'mill tickets label <n> <label> [--remove] [--json]', summary: 'Add or, with --remove, remove a label on a ticket in the run.' },
   { name: 'board', usage: 'mill board [--port <n>] [--json]', summary: 'Serve a live page of every run on this machine, with controls to stop, answer, reset and close tickets and to start or stop a run; --json prints one snapshot.' },

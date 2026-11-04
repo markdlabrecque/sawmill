@@ -20,6 +20,9 @@ tracker:
   backend: github
   # repo: owner/name
   # host: git.example.com
+  # Optional github.com estimate project number, local to this project.
+  # Mill offers setup interactively. Never put this number in house defaults.
+  # project: 42
 
 # The branch worktrees are cut from and merged into. The millyard must be on
 # this branch, clean, before mill run draft or mill run will start.
