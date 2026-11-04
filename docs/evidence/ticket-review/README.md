@@ -63,6 +63,29 @@ tracker and installation cases remain covered by the protected instruction and
 packaging tests, not by these two model executions. Transport adapters replace
 I/O only; they do not implement the skill or fabricate reviewer outcomes.
 
+## Retained run
+
+At revision `b35319b9f2ba974c527198f8500df1cfe612ba6d`, the explicit evaluation
+command passed **2 scenarios, 0 failures** (181456.869 ms):
+
+- Approval: independent reviewer passed; diff and human approval preceded the
+  sole write; exact body and human-hours estimate (99 → 4) were written and read
+  back. The original comments remained unchanged.
+- Decline: independent reviewer passed and a diff was displayed, but the human
+  declined; zero writes and the complete original record remained unchanged.
+
+The retained JSON files are the actual model/tool observations for that run.
+During runner development, incomplete provider streams were correctly rejected
+as invalid reviews; bounded SDK retries and concise reviewer output allowed
+complete responses. The gate still requires a successful terminal response.
+A transcript-capture bug for string-valued messages was also corrected. No
+protected test or assertion of approval, source preservation or exact writes was
+weakened.
+
+Subsequent full verification: the project's exact clean-test command passes
+1289 suite tests plus 3 process-permission tests, with no failures; build and
+typecheck pass. The opt-in model scenarios are separate from that suite.
+
 Glossary checked; no update needed because Logging, Reviewer, Handoff, Acceptance
 item and Human user already cover this evaluation. The human decision here is
 explicitly simulated, not authority for any real tracker write. No domain
