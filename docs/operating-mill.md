@@ -318,6 +318,26 @@ Every board ticket action carries the attempt the page drew, whatever state the 
 | CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
 | Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
 
+### Protected tests after approval and rebase
+
+`mill run approve-tests <n>` accepts the committed protected test files at the
+worktree's current HEAD; it still records HEAD even when that commit changes
+only documentation. Stop a working ticket and wait for its logjam before making
+or approving a correction, commit the correction, then approve and use
+`mill run answer <n>` to resume. A test correction committed by the test writers
+and accepted by a fresh passing review becomes the protected baseline without
+human approval.
+
+When Mill moves the ticket onto newer integration work, it compares protected
+file content, not whole-commit patch ids. Unchanged approved tests need no second
+approval, including when a documentation-only baseline is rewritten during
+conflict repair or Git drops a saved checkpoint because integration already
+supplies its protected content. A conflict in a protected file must preserve the
+approved test content alongside the new integration content. Actual changes to
+protected tests after approval are still stopped; request a scoped test correction
+or have the human user inspect and approve the committed change. This does not
+authorize manually rebasing a working ticket.
+
 If the tracker ticket changed after drafting, use `mill run refresh <n>` to pick up its latest body and comments without resetting its work, sessions, question or state. It accepts queued, blocked or logjam tickets; stop a working ticket and wait for its logjam first. Removed acceptance items stop being enforced, added items require proof, and human waivers survive only for items whose text is unchanged, even when their AC numbers move. Status and the run log show the refresh and who requested it. It neither answers a question nor activates a run; answer separately when ready to resume. Drafted blocked-by links and the proof plan stay unchanged; changing those needs a re-draft.
 
 To start a ticket over instead, `mill run stop <n>` if it is working, then `mill run reset <n>`. Reset also fetches the latest text and comments and keeps waivers on unchanged items before clearing progress. If the tracker fetch fails, both commands report the failure and leave the saved ticket and work untouched. None of these needs `run.sqlite`.
