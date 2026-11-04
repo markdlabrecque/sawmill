@@ -114,6 +114,18 @@ needed because Outcome, Question, Worktree and Rebase gate already cover these
 mechanics. No terminology conflict found. Verification: all 1289 suite tests and
 3 process-permission tests pass; build and typecheck pass.
 
+Rebase repair onto integration revision `8f465c9`: preserved the integration
+branch's dropped-checkpoint recovery alongside round-start integration pinning.
+The combined helper now resolves the supplied revision directly, accepting both
+a pinned commit and a fully qualified branch ref instead of prepending
+`refs/heads/`. The first post-rebase run exposed 18 failures from that ref
+mismatch; the one-line fix passes all 131 focused regression tests, all 1297
+suite tests and 3 process-permission tests. Build and typecheck pass. No tests
+were edited during this repair; writer patches and upstream tests were retained.
+Glossary checked; no update needed because Rebase gate, Test correction and
+Re-review already cover these compatible checkpoint-validation mechanics.
+No terminology conflict found.
+
 ## Ticket #262 test-writers record
 
 Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
