@@ -23,6 +23,22 @@ For every change, including code, tests, documentation and agent instructions:
 
 ## Completion records
 
+- Ticket #277: Glossary checked across the graph command, tracker writes,
+  headless proposal boundary, ticket-graph skill and plugin/spec guidance. Added
+  **Graph**, with `_Avoid_` alternatives, checked against **Blocked-by**, **Draft**
+  and **Ready ticket**: Graph builds the links, Draft reads them, and readiness
+  still depends on unresolved blocked-by links. Hard requirements and soft
+  ordering are link reasons, not new ticket states. No terminology conflicts
+  were found; draft's native-authoritative read and no-declaration behavior are
+  unchanged. Graph additionally preflights legacy declarations even when native
+  GitHub links exist, as required for its whole-operation outside-blocker refusal.
+  Evidence: `src/graph.ts`, `src/graph-agent.ts`, the tracker adapters, the
+  unchanged protected `test/graph.test.ts` and `test/graph-skill.test.ts`, and
+  `plugins/sawmill/skills/ticket-graph/SKILL.md`. The full test command passed
+  1294 suite tests and 3 process-permission tests, with no failures. All 14
+  protected graph checks, build and typecheck also pass. These are offline transport and
+  instruction checks, not live-model judgment or hosted tracker verification.
+
 - Ticket #258: Glossary checked; no glossary update needed because the existing
   Reviewer, Test correction, Bounce, Handoff and Acceptance checklist definitions
   cover mixed protected and unprotected test findings. `roles/reviewer.md` now

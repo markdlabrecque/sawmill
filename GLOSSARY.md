@@ -28,6 +28,10 @@ _Avoid_: Backend, issue tracker, ticket system
 A link from one ticket to another it depends on.
 _Avoid_: Dependency, prerequisite, parent
 
+**Graph**:
+The set of blocked-by links among a batch of tickets, built by `mill graph` and read by Draft. Links include hard requirements and soft ordering, such as shared files or likely merge clashes; each link is carried by the blocked ticket.
+_Avoid_: Dependency tree, execution plan, DAG (as names for this concept)
+
 **Ready ticket**:
 A queued ticket with no unresolved blocked-by links. A merged blocked-by ticket releases its dependents only once the millyard contains its merged work.
 

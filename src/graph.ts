@@ -72,11 +72,18 @@ export async function graph(numbers: number[], project: ProjectConfig, tracker: 
     seen.add(from);
     return [...links.get(from) ?? []].some(next => reaches(next, target, seen));
   };
+  const additions: GraphLink[] = [];
   for (const link of proposal as GraphLink[]) {
     const blockers = links.get(link.blocked)!;
     if (blockers.has(link.blocker)) continue;
+    if (reaches(link.blocker, link.blocked)) { fail(`Skipped cycle: ${ref(link.blocked)} blocked by ${ref(link.blocker)}.`); continue; }
+    // Count accepted proposals even if a later write loses its response. A
+    // transport failure must not authorize the reverse link and a possible cycle.
+    blockers.add(link.blocker);
+    additions.push(link);
+  }
+  for (const link of additions) {
     const description = `${ref(link.blocked)} blocked by ${ref(link.blocker)}`;
-    if (reaches(link.blocker, link.blocked)) { fail(`Skipped cycle: ${description}.`); continue; }
     const ticket = tickets.find(ticket => ticket.number === link.blocked)!;
     try {
       if (project.tracker.backend === 'github') {
@@ -88,7 +95,6 @@ export async function graph(numbers: number[], project: ProjectConfig, tracker: 
         await tracker.updateBody(link.blocked, body);
         ticket.body = body;
       }
-      blockers.add(link.blocker);
       report.written.push(link);
       report.messages.push(`Wrote ${description}.`);
     } catch { fail(`Failed to write ${description}; earlier successful links were kept. Re-run to add missing links.`); }
