@@ -38,6 +38,22 @@ For every change, including code, tests, documentation and agent instructions:
   1294 suite tests and 3 process-permission tests, with no failures. All 14
   protected graph checks, build and typecheck also pass. These are offline transport and
   instruction checks, not live-model judgment or hosted tracker verification.
+  Review repair: glossary rechecked; no definition changes needed because the
+  existing Graph, Blocked-by and Agent runtime definitions cover isolated
+  prompt-only startup and additive writes after an uncertain tracker response.
+  No terminology conflicts found. `src/codex-runtime.ts` bypasses the repository
+  startup check only for prompt-only proposals; ordinary role checks remain.
+  `src/graph.ts` stops further description updates to a ticket after a failed
+  write response, preserving a possibly applied link while other tickets proceed.
+  New, unprotected `test/graph-boundaries.test.ts` reproduced both defects before
+  repair and now passes all four checks. It exercises the default command's real
+  graph agent, scripted Codex startup/output and real GitHub/GitLab adapters with
+  fake API processes: supplied-only evidence, disabled external tools, malformed
+  or failed proposals writing nothing, GitHub database-ID requests, GitLab
+  description-only writes, lost responses and additive reruns. All 14 protected
+  graph checks remain unchanged. Full suite: 1298 tests plus 3 process-permission
+  tests pass; build and typecheck pass. These are offline transport/argv checks,
+  not live vendor sandbox or hosted tracker verification.
 
 - Ticket #258: Glossary checked; no glossary update needed because the existing
   Reviewer, Test correction, Bounce, Handoff and Acceptance checklist definitions

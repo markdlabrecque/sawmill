@@ -46,6 +46,12 @@ execpolicy rules and pins the OpenAI provider so role model settings cannot
 inherit another configured provider family. Without user test cases, the MCP
 map is empty. Managed requirements may further restrict execution.
 
+`mill graph` uses a prompt-only invocation in a fresh, empty non-Git directory.
+Only this mode supplies `--skip-git-repo-check`; ordinary role execution retains
+the trusted-repository startup check. Shell, patch and image tools are disabled
+in addition to the external tool restrictions above, so graph proposals use
+only the supplied ticket packet. No Git write directories are granted.
+
 Checkpoint commits need explicit native `--add-dir` grants to the checkout's
 Git directory and common Git directory. Without these, a real smoke failed on
 `index.lock`; grants only to objects and ref subdirectories still caused a
