@@ -1,4 +1,14 @@
+import { acceptanceProblems, waiverFor } from './acceptance.js';
 import type { IntegrationProgress, TeamProgress } from './run-store.js';
+
+/** A pass refused only for acceptance proof becomes usable once human waivers settle every open item. */
+export function waiversResolveReview(team: TeamProgress): boolean {
+  const acceptance = team.acceptance, outcome = team.outputs?.reviewer?.outcome;
+  return Boolean(team.repair?.source === 'reviewer' && !team.correction && !team.reportCorrection &&
+    acceptance?.items.length && acceptance.items.some(item => waiverFor(acceptance, item.id)) &&
+    outcome?.outcome === 'bounce' && outcome.feedback.startsWith(`Mill refused this pass: the acceptance checklist (snapshot ${acceptance.snapshot}) is not met.`) &&
+    !acceptanceProblems(acceptance, outcome.acceptance).length);
+}
 
 /** Only an exact reviewed head, or its CLI-owned clean rebase, is approved. */
 export function reviewApprovesHead(team: TeamProgress, integration: IntegrationProgress, head: string): boolean {

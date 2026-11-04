@@ -79,6 +79,53 @@ For every change, including code, tests, documentation and agent instructions:
   compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
   Logjam. The protected account tests are unchanged from the writer commit.
 
+## Ticket #273 completion record
+
+Glossary checked across answer routing, review approval, protected-test evidence,
+conflict repair, reporting and implementer/operating guidance. No glossary update
+needed: the existing Waiver, Acceptance checklist, Re-review, Outcome and Rebase
+gate definitions cover these changes. A waiver settles missing acceptance proof
+from an otherwise passing review; it does not waive review, final tests, required
+checks or CI. Unresolved acceptance items still resume implementation. No domain
+terminology conflict was found.
+
+Evidence: the protected scenarios in `test/team.test.ts` cover last-item waiver
+routing without another role, remaining items, not-reproduced final-test reruns,
+no-change/done without manufactured commits, preserved test content after a hand
+rebase and integration advancing during conflict repair. `src/transitions.ts`,
+`src/team-evidence.ts`, `src/review-approval.ts` and `src/team-runner.ts` implement
+those boundaries; reporter and release handoff retain the original acceptance
+evidence when waivers settle the refusal. Conflict validation uses the persisted
+round-start integration revision. Operating and implementer guidance now explain
+these paths. No tests were changed.
+
+Verification: the full declared test command passes 1287 suite tests and all 3
+process-permission tests; build, typecheck and `git diff --check` pass.
+
+Review repair: an implementer question outside a repair round can also be
+answered after a human hand rebase. `src/team-runner.ts` now recovers rewritten
+writer checkpoints using the existing content checks before validating protected
+tests and implementation work. No-change still requires untouched HEAD and a
+clean worktree; changed protected tests still cannot reach review or merge.
+`test/hand-rebase-answer.test.ts` reproduces the checkpoint-history logjam before
+the fix and covers intact-work delivery and protected-test rejection afterward.
+The protected `test/team.test.ts` is unchanged. Glossary rechecked; no update
+needed because Outcome, Question, Worktree and Rebase gate already cover these
+mechanics. No terminology conflict found. Verification: all 1289 suite tests and
+3 process-permission tests pass; build and typecheck pass.
+
+Rebase repair onto integration revision `8f465c9`: preserved the integration
+branch's dropped-checkpoint recovery alongside round-start integration pinning.
+The combined helper now resolves the supplied revision directly, accepting both
+a pinned commit and a fully qualified branch ref instead of prepending
+`refs/heads/`. The first post-rebase run exposed 18 failures from that ref
+mismatch; the one-line fix passes all 131 focused regression tests, all 1297
+suite tests and 3 process-permission tests. Build and typecheck pass. No tests
+were edited during this repair; writer patches and upstream tests were retained.
+Glossary checked; no update needed because Rebase gate, Test correction and
+Re-review already cover these compatible checkpoint-validation mechanics.
+No terminology conflict found.
+
 ## Ticket #262 test-writers record
 
 Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.

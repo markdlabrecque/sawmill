@@ -1,5 +1,6 @@
 import { acceptanceFor, refreshedAcceptance, type AcceptanceWaiver } from './acceptance.js';
-import { invalidateReview } from './review-approval.js';
+import { invalidateReview, waiversResolveReview } from './review-approval.js';
+import { canResumeWaivedReview } from './team-evidence.js';
 import { recordHumanAction, recordSafely, syncAttempts } from './attempt-record.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout } from 'node:timers/promises';
@@ -146,6 +147,8 @@ function integrateAgain(row: ReturnType<typeof requireTicket>): TeamProgress {
   const integration: IntegrationProgress = row.integration ? JSON.parse(String(row.integration)) : {};
   delete team.repair;
   delete team.activeRole;
+  delete team.question;
+  delete team.stop;
   if (integration.reviewedHead) team.approvedHead = integration.reviewedHead;
   team.next = 'integrate';
   return team;
@@ -543,6 +546,10 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     // The answer is already recorded; ordinary recovery removes logjam and requeues.
     text = undefined;
   }
+  const answered = readRun(cwd).tickets.find(ticket => ticket.number === number);
+  const settledHead = !options.implementer && answered?.state === 'logjam' && answered.worktree &&
+    await canResumeWaivedReview(answered.worktree, answered.team, project.integration, `mill/${number}`)
+    ? answered.team.reviewedHead : undefined;
   transaction(cwd, db => {
     const ticket = requireTicket(db, number);
     // An answer must not clear a request while its active role is still saving.
@@ -554,7 +561,13 @@ export async function answerTicket(cwd: string, project: ProjectConfig, tracker:
     writes.push({ kind: 'remove-label', payload: { label: project.labels.logjam } });
     // A person answering a retry-cap ticket grants it one more round; the repair stays for the implementer.
     const retryCap = ticket.state === 'logjam' && ticket.reason === 'retry-cap';
-    update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : retryCap ? { bounces: 2 } : {}, writes);
+    const team: TeamProgress = ticket.team ? JSON.parse(String(ticket.team)) : {};
+    const settled = settledHead && team.reviewedHead === settledHead && waiversResolveReview(team);
+    if (settled) {
+      const resumed = integrateAgain(ticket);
+      resumed.approvedHead = settledHead;
+      update(db, number, { team: resumed, ...(retryCap ? { bounces: 2 } : {}) }, writes);
+    } else update(db, number, notReproduced && !options.implementer ? { team: integrateAgain(ticket) } : retryCap ? { bounces: 2 } : {}, writes);
   });
   if (!labelAnswer) recordSafely(() => recordHumanAction(cwd, number));
   if (!await flushPending(cwd, project, tracker, number, options)) return false;
