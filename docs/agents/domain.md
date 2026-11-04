@@ -269,6 +269,32 @@ behavior, not live agent compliance or actual tracker writes. Build passes;
 the full test command reports 1280 passing tests and only the nine new tests
 failing because the ticket-review skill is absent. No existing test was changed.
 
+## Ticket #275 test-writers record
+
+Glossary checked across `test/draft-validation.test.ts`: the tests use Draft,
+Ticket, Acceptance checklist, Test harness, Worktree and Run file consistently.
+No glossary update is made at this test-only checkpoint; extending Draft for
+validation and `--check` remains implementation work in this same ticket.
+No terminology conflict was found in the test names or fixtures. No existing
+tests or implementation files were changed.
+
+The tests exercise the existing CLI and real GitLab adapter with an isolated
+read-only tracker executable. They cover native missing/zero/positive estimates,
+acceptance checklist boundaries, browser harness/environment requirements,
+aggregate structured failures, preservation, all three selectors with `--check`,
+existing refusals, and append exemptions. A separate injected-reader case checks
+the GitHub missing-project configuration error; GitHub estimate transport,
+terminal hyperlinks and shipped skill/documentation changes are not covered by
+this checkpoint. No new public seam or dependency was introduced.
+
+Verification: build passed. The full declared test command ran 1436 tests:
+1415 passed and only the 21 new tests failed, for absent validation, absent
+structured failures, unsupported `--check` and missing configuration refusal.
+Full output: `/tmp/pi-bash-ffa91335e003333d.log`. The fixture's assignee and spec
+membership fields were subsequently aligned with the existing GitLab API reader;
+build and all 21 focused tests were rerun and retain the same intended failures,
+without unrelated assignment errors.
+
 ## Ticket #274 completion record
 
 Glossary checked across the Logging skill, packaged ticket template, plugin
