@@ -770,8 +770,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
 }
 
 /** Rebase rewrites SHAs, and a conflict can fold new base lines into a protected file. Find each
- * checkpoint's rebased copy by subject and in order, or its protected content on integration when
- * Git dropped the checkpoint. Compare only protected files, allowing changes explained by the new
+ * checkpoint's rebased copy by subject and in order, or its protected content in integration history
+ * when Git dropped the checkpoint. Compare only protected files, allowing changes explained by the new
  * base. Return the review base before the first non-protected commit, so resolutions folded into
  * implementation commits get reviewed too. */
 async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<string> {
@@ -787,6 +787,7 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   const files = progress.testFiles ?? [];
   if (!files.length) throw rewritten();
   const integrationHead = await git(path, 'rev-parse', `refs/heads/${integration}`);
+  let integrationCheckpoints: string[] | undefined;
   let next = 0;
   for (const original of originals) {
     const wanted = await subject(original);
@@ -794,9 +795,16 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
     while (index < commits.length && await subject(commits[index]!) !== wanted) index++;
     const copy = commits[index];
     if (!copy) {
-      // A checkpoint may be absent from the replay because newer integration already has its tests.
-      // Do not consume later commits or accept HEAD here: post-approval edits must still be caught.
-      if ((await changedFiles(path, original, integrationHead, ...files)).length) throw rewritten();
+      // Integration may have supplied this snapshot and then superseded it with an accepted
+      // correction or further tests. Its tip need not still equal every historical checkpoint.
+      integrationCheckpoints ??= [integrationHead, ...(await git(path, '--literal-pathspecs', 'rev-list', integrationHead, '--', ...files)).split('\n').filter(Boolean)];
+      let supplied = false;
+      for (const checkpoint of integrationCheckpoints) {
+        if (!(await changedFiles(path, original, checkpoint, ...files)).length) { supplied = true; break; }
+      }
+      if (!supplied) throw rewritten();
+      // Use the current integration content, not the superseded snapshot. Never use ticket HEAD:
+      // changedTests must still catch post-approval edits in the repaired work.
       copies.set(original, integrationHead);
       continue;
     }

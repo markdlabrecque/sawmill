@@ -332,7 +332,11 @@ When Mill moves the ticket onto newer integration work, it compares protected
 file content, not whole-commit patch ids. Unchanged approved tests need no second
 approval, including when a documentation-only baseline is rewritten during
 conflict repair or Git drops a saved checkpoint because integration already
-supplies its protected content. A conflict in a protected file must preserve the
+supplied its protected content. Historical checkpoints can be found in integration
+history even when a later accepted correction or additional integration tests
+supersede them; integration HEAD need not match every superseded snapshot.
+The repaired ticket must still preserve the current protected baseline and
+integration's test content. A conflict in a protected file must preserve the
 approved test content alongside the new integration content. Actual changes to
 protected tests after approval are still stopped; request a scoped test correction
 or have the human user inspect and approve the committed change. This does not
