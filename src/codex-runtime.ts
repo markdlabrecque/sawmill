@@ -87,6 +87,7 @@ export class CodexRuntime implements Runtime {
       '-c', 'agents.enabled=false', '-c', `mcp_servers=${mcpServers}`,
       '--disable', 'multi_agent', '--disable', 'apps', '--disable', 'plugins', '--disable', 'hooks',
       '--disable', 'browser_use', '--disable', 'browser_use_external', '--disable', 'in_app_browser'];
+    if (request.promptOnly) args.push('--disable', 'shell_tool', '--disable', 'apply_patch_freeform', '--disable', 'view_image_tool');
     const writeDirectories: string[] = [];
     if (request.role !== 'reviewer') {
       try {

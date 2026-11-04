@@ -52,6 +52,8 @@ export interface RuntimeRequest {
   timeoutMs: number;
   /** Browser case handling is a separate capability; never silently grant it. */
   browser: boolean;
+  /** Bounded proposal: use only the supplied handoff, with all external tools disabled. */
+  promptOnly?: boolean;
   /** Prepared site for a browser-capable reviewer. The browser is confined to its origin. */
   browserUrl?: string;
   /** Exact CLI-selected integration commit, only during implementer conflict repair. */

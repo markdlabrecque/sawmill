@@ -133,6 +133,7 @@ export class GitLabTracker implements Tracker {
     return Promise.all([...new Set(children)].map(number => this.getTicket(number)));
   }
 
+  async updateBody(number: number, body: string): Promise<void> { await this.request('PUT', `/issues/${number}`, { description: body }); }
   async addComment(number: number, body: string): Promise<void> { await this.request('POST', `/issues/${number}/notes`, { body }); }
   async listComments(number: number): Promise<IssueComment[]> {
     return (await this.list(`/issues/${number}/notes?sort=asc&order_by=created_at`)).map(value => {

@@ -77,6 +77,10 @@ export interface JobLog { text: string; bytes: number; truncated: boolean }
 export type AssignResult = { status: 'assigned' } | { status: 'held'; by: string };
 
 export interface TicketWriter {
+  /** Graph writes a native GitHub blocked-by link on the blocked ticket. */
+  addBlockedBy?(blocked: number, blocker: number): Promise<void>;
+  /** Graph appends to the GitLab description's Blocked by section. */
+  updateBody?(number: number, body: string): Promise<void>;
   /** Exact configured names absent from the project's available label definitions. */
   missingLabels?(names: string[]): Promise<string[]>;
   /** Explicit human-approved creation; an existing definition is a no-op. */

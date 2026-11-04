@@ -33,6 +33,8 @@ import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
+import { graph, type GraphAgent } from './graph.js';
+import { graphAgent } from './graph-agent.js';
 import { describeCheckPolicy, resolveCheckPolicy } from './check-policy.js';
 import type { ReportStage } from './reporter.js';
 import { activateRun, answerTicket, closeTicket, flushAssignments, pickTicket, requestStop, stopRun, transition } from './transitions.js';
@@ -53,6 +55,8 @@ export interface CliOptions {
   /** Consent prompt for an explicit skill refresh. */
   ask?: (question: string) => Promise<string>;
   runtime?: Runtime;
+  /** Offline proposal seam; preflight, validation and tracker writes still run normally. */
+  graphAgent?: GraphAgent;
   /** Offline transport seam; selection validation and persistence always run normally. */
   typeSafeChoices?: typeof import('./typesafe.js').typeSafeChoices;
   signal?: AbortSignal;
@@ -195,6 +199,22 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       // Include scheduler and capacity metadata alongside the run snapshot.
       const view = (snapshot: RunSnapshot) => ({ ...snapshot, scheduler: schedulerStatus(home), unresolvedReservations: unresolvedSlots(home) });
+      if (positional[0] === 'graph') {
+        const words = positional.slice(1);
+        if (words.some(word => !/^[1-9]\d*$/.test(word) || !Number.isSafeInteger(Number(word)))) throw new CliError(usage('graph'), 2);
+        const numbers = [...new Set(words.map(Number))];
+        if (numbers.length < 2) throw new CliError('Graph requires at least two distinct ticket numbers.', 2);
+        const reader = options.tracker ?? (config.project.tracker.backend === 'github'
+          ? new GitHubDraftReader(config.project.tracker, githubApi(config.project.tracker, cwd))
+          : new GitLabTracker(config.project.tracker, cwd));
+        const writer = ticketWriter(options, config.project, cwd);
+        const report = await graph(numbers, config.project, {
+          getTicket: number => reader.getTicket(number),
+          addBlockedBy: writer.addBlockedBy?.bind(writer), updateBody: writer.updateBody?.bind(writer),
+        }, options.graphAgent ?? graphAgent(config.project, { ...options, home }), ref);
+        emit(report, report.messages.join('\n'));
+        return report.status === 'ok' ? 0 : 1;
+      }
       if (positional[0] === 'pick') {
         const clear = positional[1] === '--clear';
         if (positional.length !== 2 || (!clear && (!/^[1-9]\d*$/.test(positional[1] ?? '') || !Number.isSafeInteger(Number(positional[1]))))) throw new CliError(usage('pick'), 2);

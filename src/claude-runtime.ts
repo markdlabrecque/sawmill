@@ -37,6 +37,11 @@ export class ClaudeCodeRuntime implements Runtime {
       '--allowedTools', ['Read', 'Glob', 'Grep', ...(writer ? ['Write', 'Edit', 'Bash(git add *)', 'Bash(git rm *)', 'Bash(git mv *)', 'Bash(git commit *)'] : []),
         ...conflictRules, 'Bash(git diff *)', 'Bash(git status *)', 'Bash(git log *)', 'Bash(git show *)', ...(request.testCommand !== undefined ? [`Bash(${request.testCommand})`] : []), ...claudeVerificationRules(request.verification), ...(request.browser ? browserRules : [])].join(','),
       '--disallowedTools', ['mcp__*', ...(request.browser ? [] : [...browserRules, 'Bash(*/chrome-devtools-axi *)'])].join(',')];
+    if (request.promptOnly) {
+      // No read, command, browser or MCP tools: the supplied packet is the entire scope.
+      args[args.indexOf('--tools') + 1] = '';
+      args[args.indexOf('--allowedTools') + 1] = '';
+    }
     let resultText: string | undefined;
     let failure: string | undefined;
     let sessionId: string | undefined;

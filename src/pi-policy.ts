@@ -18,7 +18,7 @@ export default function policy(pi: PiAPI) {
   if (!request.nonce || !request.model || !request.effort || !['reviewer', 'test-writers', 'implementer'].includes(request.role)
     || typeof request.browser !== 'boolean' || (request.testCommand !== undefined && !literalCommand(request.testCommand))) throw new Error('Missing or unsupported Sawmill Pi permission policy/test command.');
   const writer = request.role !== 'reviewer';
-  const tools = ['read', 'grep', 'find', 'ls', 'bash', ...(writer ? ['edit', 'write'] : [])];
+  const tools = request.promptOnly ? [] : ['read', 'grep', 'find', 'ls', 'bash', ...(writer ? ['edit', 'write'] : [])];
   const check = (_event: unknown, ctx: Context) => {
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
     const effort = pi.getThinkingLevel();
