@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isMap, isScalar, parseDocument } from 'yaml';
+import { isMap, isNode, isScalar, parseDocument } from 'yaml';
 import { loadConfig, type ProjectConfig } from './config.js';
 import { githubAccount } from './github-account.js';
 import { githubRequest } from './github-transport.js';
@@ -115,8 +115,13 @@ async function saveNumber(cwd: string, number: number): Promise<void> {
   let saved: string;
   if (isScalar(prior) && prior.range) saved = text.slice(0, prior.range[0]) + number + text.slice(prior.range[1]);
   else if (tracker.flow) {
-    const end = tracker.range[1] - 1;
-    saved = text.slice(0, end) + `${tracker.items.length ? ', ' : ''}project: ${number}` + text.slice(end);
+    // Insert before any trailing comma/comments rather than adding a second
+    // separator at the closing brace (which may also be on an unindented line).
+    const last = tracker.items.at(-1);
+    const node = last?.value ?? last?.key;
+    if (last && (!isNode(node) || !node.range)) throw new Error('Cannot locate the last tracker entry.');
+    const end = isNode(node) && node.range ? node.range[1] : tracker.range[0] + 1;
+    saved = text.slice(0, end) + `${last ? ', ' : ''}project: ${number}` + text.slice(end);
   } else {
     const key = tracker.items[0]?.key;
     if (!isScalar(key) || !key.range) throw new Error('Cannot locate the tracker mapping.');
@@ -124,6 +129,8 @@ async function saveNumber(cwd: string, number: number): Promise<void> {
     const end = tracker.range[1];
     saved = text.slice(0, end) + `${text[end - 1] === '\n' ? '' : '\n'}${' '.repeat(indent)}project: ${number}\n` + text.slice(end);
   }
+  const updated = parseDocument(saved);
+  if (updated.errors.length || updated.getIn(['tracker', 'project']) !== number) throw new Error(`Cannot safely update tracker.project in ${path}; configuration left unchanged.`);
   const temporary = `${path}.project-${process.pid}.tmp`;
   await writeFile(temporary, saved);
   await rename(temporary, path);
