@@ -55,6 +55,51 @@ forms remain readable as described below. On GitHub omit the section and write
 native dependency links. Logging is agent guidance, not a new Mill command or a
 replacement for the later run-drafting gates.
 
+## Retrofitting existing tickets
+
+Use `/sawmill:ticket-review <number> [number...]` for tickets written outside
+Logging, or to independently re-check a logged ticket. This is Logging applied
+to existing tickets, not the reviewer role's code check. The shipped
+[ticket-review skill](../plugins/sawmill/skills/ticket-review/SKILL.md) uses the
+same template linked above and needs a built millyard, not an active run.
+Without one it explains the refusal and makes no tracker write. It refuses
+closed tickets. On GitHub, a missing Project item is a fault to report, not
+permission to add one or provision a field.
+
+Read each ticket's complete body and comments. Preserve every requirement in
+Done when, including requirements found only in comments; never alter the
+comments or invent requirements. Keep both answered and unresolved Open
+questions and record new uncertainties instead of guessing. Preserve browser
+needs as User test cases. Convert legacy blocked-by prose into GitHub native
+links or the GitLab `## Blocked by` list without treating mere mentions as links.
+
+A fresh subagent receives only the original ticket and rewrite packet, plus the
+template/checklist, not the writer's conversation. It checks format, requirement
+coverage, feasible checks for every acceptance item and the estimate basis.
+Untestable items block; feasible items missing a configured harness get a
+non-blocking warning naming the item and harness. Allow at most two repair
+bounces. If the final review still fails, show the rewrite and unresolved
+findings to the human user and write nothing.
+
+Only after review passes, show a diff against the current ticket and obtain the
+human user's approval for the exact edit, estimate overwrite and blocked-by
+changes. Always replace the estimate with human development hours in the
+separate tracker field, never agent time. An already-fitting body gets no edit
+and is reported unchanged; its estimate still needs review and approval.
+Declines or stops write nothing. Edit in place, using tracker revision history
+as the original record. Show review results to the human user, never post them
+to the ticket. Reread before writing: changed source invalidates the approval.
+Read back approved writes; report partial failures and reconcile the same ticket
+before retrying missing writes, since tracker edits are not atomic.
+
+Tickets are independent: continue after one fails and report all outcomes.
+Use number-only terminal links everywhere, including diffs and review findings;
+warnings end with `Open questions on:` followed by linked ticket numbers with
+unresolved questions. The skill ships in the plugin and global skill set;
+after `mill update`, use `mill skills refresh` with consent, then reload the
+skill or start a fresh conversation. Instruction/installation tests do not
+prove live agent compliance or actual tracker writes.
+
 ## Before you start a run
 
 - **Bring the integration branch up to date.** Merge `main` into it and push. Workspace preflight refuses tickets when local integration is behind or has diverged from `origin`.
