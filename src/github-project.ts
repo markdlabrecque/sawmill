@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isMap, isScalar, parseDocument } from 'yaml';
 import { loadConfig, type ProjectConfig } from './config.js';
@@ -154,6 +154,19 @@ export async function addConfiguredGitHubProjectTicket(cwd: string, config: Proj
   return { item: await addGitHubProjectTicket(cwd, project.id, ticket.node_id), project: project.url };
 }
 
+// A saved number and field do not prove that ticket backfill finished. Keep a
+// local recovery marker until every setup step and the config write succeeds.
+const pendingSetup = (cwd: string) => join(cwd, '.mill/github-project-setup.json');
+async function hasPendingSetup(cwd: string, config: ProjectConfig, project: EstimateProject): Promise<boolean> {
+  try {
+    const pending = JSON.parse(await readFile(pendingSetup(cwd), 'utf8'));
+    return pending.repo === config.tracker.repo && pending.id === project.id;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 async function complete(cwd: string, config: ProjectConfig, existing: EstimateProject | undefined, report: (text: string) => void): Promise<void> {
   const owner = config.tracker.repo.split('/')[0]!;
   let project = existing;
@@ -164,6 +177,8 @@ async function complete(cwd: string, config: ProjectConfig, existing: EstimatePr
       if (!project?.id || !Number.isSafeInteger(project.number) || !project.url) throw new Error('GitHub did not return the created Project identity; retry to look it up by title.');
       report(`Created GitHub estimate project: ${project.url}`);
     }
+    step = 'record incomplete setup for recovery';
+    await writeFile(pendingSetup(cwd), JSON.stringify({ repo: config.tracker.repo, id: project.id }));
     const number = String(project.number);
     // Recovered title matches are incomplete creations until all steps read back.
     if (config.tracker.project !== project.number || !existing) {
@@ -200,6 +215,8 @@ async function complete(cwd: string, config: ProjectConfig, existing: EstimatePr
     if (!await linked(cwd, readback, config.tracker.repo)) throw new Error('GitHub Project repository-link readback failed.');
     step = 'save tracker.project in .mill/config.yaml';
     await saveNumber(cwd, project.number);
+    step = 'clear the completed setup recovery marker';
+    await unlink(pendingSetup(cwd));
     report(`GitHub estimate project ready: ${project.url}; saved tracker.project: ${project.number}.`);
   } catch (error) {
     throw new Error(`${project?.url ? `GitHub estimate project exists: ${project.url}. ` : ''}Failed to ${step}: ${error instanceof Error ? error.message : error} Setup incomplete; fix the failed step and retry the same Mill command to recover it without creating another Project.`);
@@ -226,7 +243,8 @@ export async function offerGitHubProject(cwd: string, home: string, config: Proj
     }
     const existing = matches[0];
     const hasField = existing && (await fields(cwd, existing)).some(field => field.name === humanEstimateField);
-    return { ready: Boolean(existing && project.tracker.project === existing.number && hasField), existing, hasField };
+    const pending = existing && await hasPendingSetup(cwd, project, existing);
+    return { ready: Boolean(existing && project.tracker.project === existing.number && hasField && !pending), existing, hasField };
   };
   try {
     const state = await inspect(config);
