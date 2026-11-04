@@ -64,7 +64,7 @@ export interface TeamProgress {
   redBaseline?: { commit: string; results?: import('./test-results.js').StructuredResults };
   outputs?: Partial<Record<Role, import('./runtime.js').RuntimeResult>>;
   reviewedHead?: string;
-  /** Set only for a passing review of this committed head. */
+  /** Set only for a passing review of this committed head, including acceptance refusals settled by human waivers. */
   approvedHead?: string;
   /** Reviewer-only report resubmissions; never spend an implementation bounce. */
   reportCorrection?: import('./acceptance.js').ReportCorrection;

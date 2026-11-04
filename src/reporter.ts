@@ -52,7 +52,8 @@ export async function reportComment(cwd: string, report: StageReport, ticket: Ru
     // Runs from before the checklist have none; nothing is claimed for them.
     const acceptance = ticket.team?.acceptance;
     const review = ticket.team?.outputs?.reviewer?.outcome;
-    if (acceptance?.items.length) parts.push(acceptanceReport(acceptance, review?.outcome === 'pass' ? review.acceptance : []));
+    if (acceptance?.items.length) parts.push(acceptanceReport(acceptance,
+      review?.outcome === 'pass' || (ticket.team.approvedHead && review?.outcome === 'bounce') ? review.acceptance : []));
   }
   const sessions = ['test-writers', 'implementer', 'reviewer'] as const;
   const ids = sessions.flatMap(role => (ticket.sessionIds[role] ?? []).map(id => `${role}: ${id}`));

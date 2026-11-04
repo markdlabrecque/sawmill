@@ -77,7 +77,7 @@ export async function releaseHandoff(cwd: string, project: ProjectConfig, number
 
   const acceptance = acceptanceFor(row);
   const review = row.team.outputs?.reviewer?.outcome;
-  const results = review?.outcome === 'pass' ? review.acceptance ?? [] : [];
+  const results = review?.outcome === 'pass' || (row.team.approvedHead && review?.outcome === 'bounce') ? review.acceptance ?? [] : [];
   const items: ReleaseHandoff['acceptance']['items'] = acceptance.items.map(item => {
     const waiver = waiverFor(acceptance, item.id);
     if (waiver) return { id: item.id, text: item.text, status: 'waived', reason: `${waiver.reason} (waived by ${waiver.by})` };

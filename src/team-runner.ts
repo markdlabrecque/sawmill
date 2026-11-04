@@ -5,6 +5,7 @@ import { exportRecords } from './attempt-record.js';
 import { executionMeasurement, selectModel } from './model-routing.js';
 import { requireBrowserCapability } from './user-testing.js';
 import { invalidateReview, reviewApprovesHead } from './review-approval.js';
+import { canResumeWaivedReview, changedTests, hasImplementation } from './team-evidence.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -664,7 +665,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const apiKey = resolveTypeSafeKey(routingEnabled(project) ? 'all' : 'environment');
           const invoked = await runRole(cwd, project, tracker, number, browser ? caseRuntime(runtime, browser.cases) : runtime, {
             role, cwd: path, home: options.home, ...selected, prompt: prompt + verificationInstructions(verificationFrom(project), role),
-            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${role === 'reviewer' && progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit.` : ''}`,
+            handoff: `Ticket snapshot:\n${JSON.stringify(role === 'reviewer' ? current() : writerTicket(current()))}${role === 'test-writers' ? '' : acceptanceHandoff(acceptance)}\n\nPrior outputs and committed test files:\n${JSON.stringify(role === 'reviewer' ? progress : writerProgress(progress))}${diff}\n\nTest command:\n${project.tests === 'none' ? noTests : project.tests.command}${testRun}${browser?.handoff ?? ''}${role === 'reviewer' && progress.reportCorrection ? `\n\nReport correction:\n${progress.reportCorrection.feedback}` : ''}${conflictBase ? `\nConflict repair: git rebase ${conflictBase}, resolve files, git add, then ${conflictContinueCommand} (exactly this command; it keeps #-prefixed commit messages). Preserve writer patches, then append a separate fix commit if a code repair is needed. If a person already completed the rebase with protected test content and implementation intact, leave HEAD untouched and report no-change.` : ''}`,
             ...(conflictBase ? { conflictBase } : {}),
             ...(project.tests !== 'none' ? { testCommand: project.tests.command } : {}), verification: verificationFrom(project), timeoutMs: Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0), browser: browser?.browser ?? false, browserUrl: browser?.url, signal: options.signal,
           }, options);
@@ -693,14 +694,16 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         // Unmet requirements bounce to code repair; unknown IDs instead return to the reviewer.
         const refused = !reportCorrection && role === 'reviewer' && result.outcome.outcome === 'pass' ? refusePass(acceptance, result.outcome) : undefined;
         if (refused) result.outcome = refused;
-        if (result.outcome.outcome === 'no-change') {
+        const noChange = result.outcome.outcome === 'no-change';
+        const settledReview = role === 'implementer' && await canResumeWaivedReview(path, progress, project.integration, `mill/${number}`);
+        if (noChange) {
           checkStop(cwd, number);
-          // Only an ordinary repair can be left unchanged; a conflict repair must rebase.
-          if (role !== 'implementer' || !progress.repair || progress.repair.source === 'rebase-conflict') return await stop(infrastructure('A no-change outcome is only valid in a repair round.'));
+          if (role !== 'implementer') return await stop(infrastructure('Only the implementer can report no-change.'));
           if (await git(path, 'rev-parse', 'HEAD') !== beforeRole || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('A no-change repair must leave HEAD and the worktree untouched; work retained.');
-          return await stop(result.outcome);
+          // Unresolved repair feedback still needs a human decision. A waived finding does not.
+          if (progress.repair && progress.repair.source !== 'rebase-conflict' && !settledReview) return await stop(result.outcome);
         }
-        if (result.outcome.outcome !== 'bounce' && result.outcome.outcome !== 'test-correction' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
+        if (!noChange && result.outcome.outcome !== 'bounce' && result.outcome.outcome !== 'test-correction' && result.outcome.outcome !== (role === 'reviewer' ? 'pass' : 'done')) { checkStop(cwd, number); return await stop(result.outcome); }
         if (await git(path, 'symbolic-ref', '--short', 'HEAD') !== `mill/${number}`) throw new Error('Role changed the ticket branch; work retained.');
         if (correcting) await checkCorrection(correcting);
         else if (role === 'test-writers') {
@@ -734,15 +737,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           try { await git(path, 'merge-base', '--is-ancestor', progress.checkpointHead ?? progress.testCommit!, 'HEAD'); }
           catch { throw new Error('Role rewrote the test-writer checkpoint history; work retained.'); }
         }
+        if (noChange && !await hasImplementation(path, progress, project.integration)) throw new Error('A no-change outcome requires committed implementation past the test checkpoint; work retained.');
         if (role === 'implementer' && progress.repair && !conflictRepair) {
-          // A repair is the commit range since the bounce: any number of appended commits, or a fix
-          // already committed since the bounce. Only rewritten history or a repair with nothing new is stuck.
+          // Keep prior history, but do not demand a manufactured commit for a waived finding.
           const head = await git(path, 'rev-parse', 'HEAD');
           const ancestor = async (commit: string) => git(path, 'merge-base', '--is-ancestor', commit, 'HEAD').then(() => true, () => false);
           if (!await ancestor(beforeRole) || !await ancestor(progress.repair.baseCommit)) {
             throw new Error('Repair rewrote prior history: the pre-repair HEAD and the review bounce point must remain ancestors of HEAD; prior work retained.');
           }
-          if (result.outcome.outcome !== 'test-correction' && head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
+          if (!settledReview && result.outcome.outcome !== 'test-correction' && head === beforeRole && !await fixedSinceBounce(path, progress.repair.baseCommit)) {
             throw new Error('Repair added no new commits since the review bounce; prior work retained.');
           }
         }
@@ -962,14 +965,3 @@ async function fixedSinceBounce(path: string, base: string): Promise<boolean> {
   return Number(await git(path, 'rev-list', '--count', `${base}..HEAD`)) > 0;
 }
 
-/** Compare the writer baseline, or a committed correction awaiting review, with HEAD, the index, and the working tree. */
-async function changedTests(path: string, progress: TeamProgress): Promise<boolean> {
-  const files = progress.testFiles ?? [];
-  const base = progress.correction?.head ?? progress.testCommit;
-  if (!files.length || !base) return false;
-  for (const target of [['HEAD'], ['--cached'], []]) {
-    const diff = await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--name-only', base, ...target, '--', ...files);
-    if (diff) return true;
-  }
-  return false;
-}
