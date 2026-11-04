@@ -79,6 +79,29 @@ For every change, including code, tests, documentation and agent instructions:
   compatible integration mechanics covered by Rebase gate, CI gate, Tracker and
   Logjam. The protected account tests are unchanged from the writer commit.
 
+## Ticket #273 completion record
+
+Glossary checked across answer routing, review approval, protected-test evidence,
+conflict repair, reporting and implementer/operating guidance. No glossary update
+needed: the existing Waiver, Acceptance checklist, Re-review, Outcome and Rebase
+gate definitions cover these changes. A waiver settles missing acceptance proof
+from an otherwise passing review; it does not waive review, final tests, required
+checks or CI. Unresolved acceptance items still resume implementation. No domain
+terminology conflict was found.
+
+Evidence: the protected scenarios in `test/team.test.ts` cover last-item waiver
+routing without another role, remaining items, not-reproduced final-test reruns,
+no-change/done without manufactured commits, preserved test content after a hand
+rebase and integration advancing during conflict repair. `src/transitions.ts`,
+`src/team-evidence.ts`, `src/review-approval.ts` and `src/team-runner.ts` implement
+those boundaries; reporter and release handoff retain the original acceptance
+evidence when waivers settle the refusal. Conflict validation uses the persisted
+round-start integration revision. Operating and implementer guidance now explain
+these paths. No tests were changed.
+
+Verification: the full declared test command passes 1287 suite tests and all 3
+process-permission tests; build, typecheck and `git diff --check` pass.
+
 ## Ticket #262 test-writers record
 
 Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
