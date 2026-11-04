@@ -1048,6 +1048,100 @@ test('rebase conflict feedback reaches a separate fix and narrow review after re
   assert.equal(y.git('log', '-1', '--format=%s', row.integration.mergedHead), '#12: Fix integration conflict');
 });
 
+// #269: newer work can already contain a writer checkpoint. Git drops that
+// checkpoint while replaying the remaining commits, but its tests stay protected.
+for (const baseline of ['human approval', 'reviewer-passed correction'] as const) {
+  for (const weaken of [false, true]) {
+    test(`${baseline} survives a docs-conflict rebase with a dropped writer checkpoint${weaken ? ' but still stops changed tests' : ''}`, async t => {
+      const y = await fixture(t);
+      await writeFile(join(y.cwd, 'notes.md'), 'Original notes.\n');
+      y.git('add', 'notes.md'); y.git('commit', '-m', 'Seed shared notes'); y.git('push');
+      const originalTests = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1');\n";
+      const correctedTests = originalTests.replace('pass 1', 'pass 1 corrected');
+      let implementations = 0, reviews = 0, writers = 0;
+      let approved = '', rebased = '', repaired = false;
+      y.setScript(async (request, sink) => {
+        const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+        if (request.role === 'test-writers' && ++writers === 2) {
+          await writeFile(join(request.cwd, 'answer.test.cjs'), correctedTests);
+          git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Correct test output');
+          return { outcome: { outcome: 'done', summary: 'Corrected output without changing the answer assertion.' } };
+        }
+        if (request.role === 'implementer') {
+          implementations++;
+          if (implementations > 2) return { outcome: { outcome: 'done', summary: 'Retained the repaired branch.' } };
+          if (implementations === 2) {
+            assert.match(request.handoff, /rebase-conflict: notes.md/);
+            try { git('rebase', 'integration'); } catch { /* Resolve the real docs conflict. */ }
+            assert.match(git('diff', '--name-only', '--diff-filter=U'), /notes.md/);
+            await writeFile(join(request.cwd, 'notes.md'), 'New integration notes.\nTicket notes retained.\n');
+            git('add', 'notes.md');
+            execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
+            rebased = git('rev-parse', 'HEAD');
+            assert.notEqual(rebased, approved, 'the saved baseline was moved onto newer work');
+            assert.equal(git('diff', approved, 'HEAD', '--', 'answer.test.cjs'), '', 'the approved test content survived the rebase exactly');
+            assert.ok(!git('log', '--format=%s', 'integration..HEAD').includes('#12: Specify answer'), 'Git dropped the checkpoint already supplied by integration');
+            if (weaken) {
+              await writeFile(join(request.cwd, 'answer.test.cjs'), "console.log('pass 1 weakened');\n");
+              git('add', 'answer.test.cjs'); git('commit', '-m', '#12: Weaken tests after rebase');
+            }
+            await writeFile(join(request.cwd, 'repair.txt'), 'Resolved notes conflict.\n');
+            git('add', 'repair.txt'); git('commit', '-m', '#12: Record conflict repair');
+            repaired = true;
+            return { outcome: { outcome: 'done', summary: 'Rebased and resolved only the shared notes conflict.' } };
+          }
+          const result = await y.normal(request, sink);
+          await writeFile(join(request.cwd, 'notes.md'), 'Ticket notes retained.\n');
+          git('add', 'notes.md'); git('commit', '-m', '#12: Document answer');
+          return result;
+        }
+        if (request.role === 'reviewer') {
+          reviews++;
+          if (reviews === 1) {
+            if (baseline === 'human approval') return { outcome: { outcome: 'question', question: 'Please approve this committed test baseline.' } };
+            return { outcome: { outcome: 'test-correction', files: ['answer.test.cjs'],
+              mistake: 'The output label needs correction.', preserves: 'The assertion that answer returns 42 remains.' } };
+          }
+          if (reviews === 2) {
+            approved = git('rev-parse', 'HEAD');
+            await writeFile(join(y.cwd, 'answer.test.cjs'), originalTests);
+            y.git('add', 'answer.test.cjs'); y.git('commit', '-m', 'Another ticket supplies the same answer regression');
+            await writeFile(join(y.cwd, 'notes.md'), 'New integration notes.\n');
+            y.git('add', 'notes.md'); y.git('commit', '-m', 'Advance shared notes'); y.git('push');
+          }
+        }
+        return y.normal(request, sink);
+      });
+      let result = await y.cli('team', 'run', '12', '--json');
+      if (baseline === 'human approval') {
+        assert.equal((await y.status()).tickets[0].reason, 'question', result.stdout);
+        approved = y.git('-C', y.path, 'rev-parse', 'HEAD');
+        assert.equal(y.git('-C', y.path, 'diff-tree', '--no-commit-id', '--name-only', '-r', approved), 'notes.md', 'approval is at a non-test HEAD');
+        const approval = await y.cli('run', 'approve-tests', '12', '--json');
+        assert.equal(approval.code, 0, approval.stdout);
+        assert.equal((await y.status()).tickets[0].team.testCommit, approved, 'approve-tests still records HEAD');
+        assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+        result = await y.cli('team', 'run', '12', '--json');
+      }
+      assert.ok(repaired, result.stdout);
+      const row = (await y.status()).tickets[0];
+      if (weaken) {
+        assert.notEqual(result.code, 0, result.stdout);
+        assert.match(JSON.parse(result.stdout).error, /test.writer.*(?:files.*changed|checkpoint history)/i);
+        assert.equal(row.state, 'logjam');
+        assert.equal(y.requests.length, 0);
+        assert.equal(y.ticket.state, 'open');
+      } else {
+        assert.equal(result.code, 0, result.stdout);
+        assert.equal(row.state, 'done');
+        assert.equal(row.completion, 'merged');
+        assert.equal(row.bounces, 1, 'only the real docs conflict spends a bounce; no new test approval is needed');
+        assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), (baseline === 'human approval' ? originalTests : correctedTests).trimEnd());
+      }
+    });
+  }
+}
+
 const sharedTestBase = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\n";
 const sharedTestMerged = `${sharedTestBase}assert.equal(typeof require('./answer.cjs'), 'function');\nconsole.log('pass 1');\n`;
 
