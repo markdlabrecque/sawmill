@@ -102,6 +102,18 @@ these paths. No tests were changed.
 Verification: the full declared test command passes 1287 suite tests and all 3
 process-permission tests; build, typecheck and `git diff --check` pass.
 
+Review repair: an implementer question outside a repair round can also be
+answered after a human hand rebase. `src/team-runner.ts` now recovers rewritten
+writer checkpoints using the existing content checks before validating protected
+tests and implementation work. No-change still requires untouched HEAD and a
+clean worktree; changed protected tests still cannot reach review or merge.
+`test/hand-rebase-answer.test.ts` reproduces the checkpoint-history logjam before
+the fix and covers intact-work delivery and protected-test rejection afterward.
+The protected `test/team.test.ts` is unchanged. Glossary rechecked; no update
+needed because Outcome, Question, Worktree and Rebase gate already cover these
+mechanics. No terminology conflict found. Verification: all 1289 suite tests and
+3 process-permission tests pass; build and typecheck pass.
+
 ## Ticket #262 test-writers record
 
 Glossary checked; no glossary update needed because the skill-freshness regression tests use existing Mill, run state, watcher and conversation concepts without changing their definitions. The tests distinguish installed skill content from instructions already loaded into a conversation. No terminology conflicts were found. Implementation and documentation acceptance remain for the implementer and reviewer.
