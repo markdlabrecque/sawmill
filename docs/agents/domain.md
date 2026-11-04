@@ -143,6 +143,18 @@ files were changed. All 136 focused team/red-gate/correction tests pass.
 Full test command at `b4ff076`: 1290 suite tests and 3 process-permission tests
 pass, with no failures. Build, typecheck and `git diff --check` pass.
 
+Review repair: preserved the initial unfixed-code reference after reviewer or
+human acceptance so later scoped corrections renew their evidence and require
+explicit meaningful-guard acceptance when green. Glossary checked; no update
+needed because the existing Test correction, Reviewer and Required check
+definitions still apply. No terminology conflicts found. Six new end-to-end
+scenarios in `test/accepted-green-correction.test.ts` cover both acceptance paths,
+generic-pass refusal, explicit acceptance and merge, handoff evidence, and failed
+checks. Before the fix, both generic passes incorrectly merged and both explicit
+acceptance handoffs lacked renewed evidence (four failures); all six now pass.
+Protected tests remain unchanged. Full test command at `aad2a9e`: 1296 suite tests
+and 3 process-permission tests pass; build and typecheck pass.
+
 ## Ticket #274 completion record
 
 Glossary checked across the Logging skill, packaged ticket template, plugin
