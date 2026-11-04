@@ -648,8 +648,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         const conflictRepair = role === 'implementer' && progress.repair?.source === 'rebase-conflict';
         if (conflictRepair) {
-          // Rebase rewrites SHAs. Require each protected patch, in order, then compare
-          // the tests against the rebased copies, not the old ones.
+          // Rebase rewrites SHAs and can drop checkpoints already supplied by integration.
+          // Preserve protected content, then compare against the rebased baseline.
           await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
           progress.repair!.baseCommit = await remapRebasedWriters(path, progress, project.integration);
           progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
@@ -770,18 +770,11 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
 }
 
 /** Rebase rewrites SHAs, and a conflict can fold new base lines into a protected file. Find each
- * protected commit's rebased copy, by subject and in order, and make it the new baseline. A copy
- * whose patch changed must differ only by lines the new base brought. Return the review base before
- * the first non-protected commit, so resolutions folded into implementation commits get reviewed too. */
+ * checkpoint's rebased copy by subject and in order, or its protected content on integration when
+ * Git dropped the checkpoint. Compare only protected files, allowing changes explained by the new
+ * base. Return the review base before the first non-protected commit, so resolutions folded into
+ * implementation commits get reviewed too. */
 async function remapRebasedWriters(path: string, progress: TeamProgress, integration: string): Promise<string> {
-  const patchId = async (commit: string) => {
-    const patch = (await execute('git', ['show', '--format=', '--binary', commit, '--'], { cwd: path, maxBuffer: 64 * 1024 * 1024 })).stdout;
-    return new Promise<string>((resolve, reject) => {
-      const child = execFile('git', ['patch-id', '--stable'], { cwd: path }, (error, stdout) => error ? reject(error) : resolve(stdout.split(/\s/)[0]!));
-      child.stdin!.on('error', reject);
-      child.stdin!.end(patch);
-    });
-  };
   const subject = (commit: string) => git(path, 'log', '-1', '--format=%s', commit);
   const rewritten = () => new Error('Role rewrote the test-writer checkpoint history; work retained.');
   const writers = progress.testCommits ?? [];
@@ -791,13 +784,24 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   // A replayed, reviewer-approved test correction can itself be HEAD.
   const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
   const copies = new Map<string, string>();
+  const files = progress.testFiles ?? [];
+  if (!files.length) throw rewritten();
+  const integrationHead = await git(path, 'rev-parse', `refs/heads/${integration}`);
   let next = 0;
   for (const original of originals) {
     const wanted = await subject(original);
-    while (next < commits.length && await subject(commits[next]!) !== wanted) next++;
-    const copy = commits[next++];
-    if (!copy) throw rewritten();
-    if (copy !== original && await patchId(copy) !== await patchId(original) && !await baseExplains(path, original, copy, progress.testFiles ?? [])) throw rewritten();
+    let index = next;
+    while (index < commits.length && await subject(commits[index]!) !== wanted) index++;
+    const copy = commits[index];
+    if (!copy) {
+      // A checkpoint may be absent from the replay because newer integration already has its tests.
+      // Do not consume later commits or accept HEAD here: post-approval edits must still be caught.
+      if ((await changedFiles(path, original, integrationHead, ...files)).length) throw rewritten();
+      copies.set(original, integrationHead);
+      continue;
+    }
+    if ((await changedFiles(path, original, copy, ...files)).length && !await baseExplains(path, original, copy, files)) throw rewritten();
+    next = index + 1;
     copies.set(original, copy);
   }
   progress.testCommits = writers.map(commit => copies.get(commit)!);
