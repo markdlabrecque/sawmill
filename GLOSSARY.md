@@ -17,7 +17,7 @@ A feature-sized unit of work filed as an issue in the tracker.
 _Avoid_: Task, job, story
 
 **Logging**:
-To write and file a ticket to the ticket template, with a fresh, independent reviewer check before creation in the tracker. Logging precedes Draft, which selects already-filed tickets for a run.
+To write and file a ticket to the ticket template, or apply the same process to an existing ticket, with a fresh, independent reviewer check before creation or an approved in-place rewrite in the tracker. Logging precedes Draft, which selects already-filed tickets for a run.
 _Avoid_: Ticket intake, issue creation, drafting (for writing a ticket)
 
 **Tracker**:
@@ -223,7 +223,7 @@ The role that makes the ticket's change and addresses review or gate feedback, w
 _Avoid_: Coder, developer
 
 **Reviewer**:
-The independent agent that checks an unfiled ticket during Logging, or the team role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
+The independent agent that checks a new or existing ticket during Logging, or the team role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
 
 **Agent runtime**:
 The agent tool a role runs on: Claude Code, Pi, or Codex, with a model and effort per role.

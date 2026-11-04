@@ -1,8 +1,9 @@
 # Sawmill plugin
 
 Requires the Sawmill `mill` CLI on PATH and a configured millyard. The plugin
-contains the ticket-writing skill `/sawmill:logging` and the user-invoked skills
-`/sawmill:ticket-graph`, `/sawmill:draft`, `/sawmill:foreman`,
+contains the ticket-writing skill `/sawmill:logging`, the existing-ticket skill
+`/sawmill:ticket-review`, and the user-invoked skills `/sawmill:ticket-graph`,
+`/sawmill:draft`, `/sawmill:foreman`,
 `/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:sawdust`.
 
 From a repository checkout, register the repository root and install the plugin:
@@ -108,6 +109,34 @@ before filling its estimate. This shares setup's stable-identity upsert and is
 safe to retry even when auto-add or another command also adds the ticket. It
 requires no run. Do not replace it with an unchecked Project-item mutation.
 GitLab keeps its native time estimate and GitHub Enterprise is unchanged.
+
+## Reviewing existing tickets
+
+Use `/sawmill:ticket-review <number> [number...]` to apply Logging to existing
+open tickets, including an independent re-check of a ticket Logging created.
+The [ticket-review instructions](skills/ticket-review/SKILL.md) reuse the same
+[ticket template](skills/logging/ticket-template.md); this reviews tickets, not
+code. Requirements come only from each ticket's complete body and comments.
+Comment-only requirements move into Done when, comments remain untouched, and
+answered and unresolved questions stay visible. Browser needs become User test
+cases. Legacy blocked-by prose becomes GitHub native links or GitLab's body list.
+
+A built millyard is required, but no run. Closed tickets are refused; a GitHub
+ticket missing its Project item is stopped without adding it. A fresh subagent
+checks coverage, format, testability and the human-hours estimate basis, with at
+most two repair bounces. Untestable items block; a missing harness only warns.
+After review passes, the human user sees a diff and approves the exact body,
+estimate overwrite and links before any write. The ticket is edited in place;
+its revision history retains the original. Review results stay with the human
+user, not on the ticket. An already-fitting body is unchanged, but its estimate
+is still set with approval. Declines and stops write nothing. Each ticket is
+independent, and the final report lists every outcome with Logging's number-only
+terminal links and final `Open questions on:` warning line.
+
+This skill ships in both the plugin and the global skill set discovered by
+`mill skills refresh`; use the refresh and session-reload instructions above.
+Tests check shipped guidance, packaging and isolated installation, not live
+agent compliance or actual tracker writes.
 
 ## Drafting a run
 
