@@ -54,6 +54,16 @@ type, duplicate-safe addition, partial recovery, or concurrent setup. Those
 acceptance items remain unproved pending a scoped test-writer correction; a
 passing existing suite alone is not evidence for them.
 
+Recovery verification: `npm run build` and `npm run typecheck` pass at source
+revision `5c74787`. The protected setup file reports 52 passing tests, including
+the newly advertised ticket-add command, with no failures. The full declared
+`clean-test.sh` command exceeded 1,000 seconds; its output reported no assertion
+failure before the timeout and is retained at
+`/tmp/pi-bash-0a06c302928738c1.log`. This is not a full-suite pass. The scoped
+request is to complete the protected setup tests' omitted accepted-creation,
+stable-identity addition, concurrent setup and recovery scenarios, retaining
+all existing consent/configuration assertions and renewed red proof.
+
 ## Glossary completion record
 
 Glossary checked across configuration, CLI/setup code, Logging guidance, plugin
