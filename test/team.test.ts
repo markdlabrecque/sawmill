@@ -450,7 +450,7 @@ test('three review bounces persist the last failure and report retry-cap in text
   assert.equal(stopped.bounces, 3); assert.equal(stopped.state, 'logjam'); assert.equal(stopped.reason, 'retry-cap');
 });
 
-test('a pass with an unmet acceptance item bounces every round to retry-cap, and a person waiver resumes it to merge', async t => {
+test('a pass with an unmet acceptance item bounces to retry-cap, and waiving the last item resumes final tests without a role', async t => {
   const y = await fixture(t, 'Return 42 from answer.cjs.\n\n**Done when:**\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the answer in the pilot.\n');
   let implementations = 0, revision = '';
   y.setScript(async (request, sink) => {
@@ -492,9 +492,7 @@ test('a pass with an unmet acceptance item bounces every round to retry-cap, and
   const resumed = await y.cli('team', 'run', '12', '--json');
   assert.equal(resumed.code, 0, resumed.stdout);
   assert.equal(JSON.parse(resumed.stdout).outcome, 'passed');
-  const reviewer = y.inputs.slice(before).filter(r => r.role === 'reviewer');
-  assert.equal(reviewer.length, 1);
-  assert.match(reviewer[0]!.handoff, /AC2: waived by .*Pilot proof is out of scope for this repo\./);
+  assert.deepEqual(y.inputs.slice(before).map(request => request.role), [], 'The human waiver clears the only open item; no agent round is needed.');
   const done = (await y.status()).tickets[0];
   assert.equal(done.state, 'done'); assert.equal(done.completion, 'merged');
   const report = y.ticket.comments.at(-1)!.body;
@@ -2985,4 +2983,195 @@ test('a test command that is not found (exit 127) is an environment problem, not
   const row = (await y.status()).tickets[0];
   assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'environment');
   assert.match(JSON.stringify(row), /not found|127/);
+});
+
+// #273: answering a finished ticket must not demand another implementation commit.
+for (const outcome of ['no-change', 'done'] as const) {
+  test(`a review repair returning ${outcome} needs no new commit after the human user waives its only finding`, async t => {
+    const y = await fixture(t, 'Return 42.\n\n## Done when\n\n- [ ] A person confirms the pilot.\n');
+    await writeFile(join(y.userConfig, 'config.yaml'), 'infrastructure_retries: 0\n');
+    let implementations = 0, reviews = 0;
+    y.setScript(async (request, sink) => {
+      if (request.role === 'implementer' && ++implementations >= 2) {
+        return { outcome: { outcome: implementations === 2 ? 'no-change' : outcome, summary: 'The code works; the pilot needs a human decision, not a code change.' } };
+      }
+      if (request.role === 'reviewer') {
+        return { outcome: { outcome: 'pass', summary: 'Implementation is correct.', acceptance: [
+          ++reviews === 1 ? { id: 'AC1', result: 'unresolved', reason: 'Pilot proof needs a person.' } : { id: 'AC1', result: 'waived' },
+        ] } };
+      }
+      return y.normal(request, sink);
+    });
+    const stopped = await y.cli('team', 'run', '12', '--json');
+    assert.equal(stopped.code, 1, stopped.stdout);
+    assert.equal((await y.status()).tickets[0].reason, 'not-reproduced');
+    const before = y.git('-C', y.path, 'rev-parse', 'HEAD');
+    const waived = await y.cli('run', 'waive', '12', 'AC1', '--reason', 'I ran the pilot by hand and accept it.');
+    assert.equal(waived.code, 0, waived.stdout);
+    assert.equal((await y.cli('run', 'answer', '12', '--implementer', 'Confirm that no further code change is needed.')).code, 0);
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(implementations, 3);
+    const done = (await y.status()).tickets[0];
+    assert.equal(done.completion, 'merged');
+    assert.equal(done.integration.mergedHead, before, 'Accept the existing implementation without a manufactured commit.');
+    assert.equal(y.requests.length, 1);
+  });
+}
+
+async function acceptanceQuestion(t: TestContext, remainingItem = false) {
+  const y = await fixture(t, `Return 42.\n\n## Done when\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the pilot.\n${remainingItem ? '- [ ] Document the API.\n' : ''}`);
+  let implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer' && ++implementations > 1) {
+      return { outcome: { outcome: 'question', question: 'Can the pilot requirement be waived?' } };
+    }
+    if (request.role === 'reviewer') {
+      const revision = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+      return { outcome: { outcome: 'pass', summary: 'Code works; human proof is pending.', acceptance: [
+        { id: 'AC1', result: 'evidenced', evidence: { check: 'node answer.test.cjs', revision } },
+        { id: 'AC2', result: 'unresolved', reason: 'Pilot not available.' },
+        ...(remainingItem ? [{ id: 'AC3', result: 'unresolved' as const, reason: 'API documentation is missing.' }] : []),
+      ] } };
+    }
+    return y.normal(request, sink);
+  });
+  const stopped = await y.cli('team', 'run', '12', '--json');
+  assert.equal(stopped.code, 1, stopped.stdout);
+  assert.equal((await y.status()).tickets[0].reason, 'question', stopped.stdout);
+  assert.equal((await y.cli('run', 'waive', '12', 'AC2', '--reason', 'The human user accepts the pilot result.')).code, 0);
+  return y;
+}
+
+test('answer after the last acceptance waiver runs final tests and merges without any agent round', async t => {
+  const y = await acceptanceQuestion(t);
+  const before = y.inputs.length;
+  assert.equal((await y.cli('run', 'answer', '12', 'The recorded waiver settles the question.')).code, 0);
+  // Any unnecessary round fails immediately instead of manufacturing a new commit.
+  y.setScript(async () => ({ outcome: { outcome: 'infrastructure', error: 'No agent round should be needed.' } }));
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(y.inputs.length, before);
+  assert.equal((await y.status()).tickets[0].completion, 'merged');
+  assert.equal(y.requests.length, 1);
+});
+
+test('a waiver with an acceptance item still open sends answer back to the implementer', async t => {
+  const y = await acceptanceQuestion(t, true);
+  const before = y.inputs.length;
+  y.setScript(async request => {
+    if (request.role === 'implementer') {
+      assert.match(request.handoff, /Document the API/);
+      await writeFile(join(request.cwd, 'API.md'), 'answer() returns 42.\n');
+      y.git('-C', request.cwd, 'add', 'API.md');
+      y.git('-C', request.cwd, 'commit', '-m', '#12: Document the API');
+      return { outcome: { outcome: 'done', summary: 'Documented the remaining acceptance item.' } };
+    }
+    const revision = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+    return { outcome: { outcome: 'pass', summary: 'All remaining items verified.', acceptance: [
+      { id: 'AC1', result: 'evidenced', evidence: { check: 'node answer.test.cjs', revision } },
+      { id: 'AC2', result: 'waived' },
+      { id: 'AC3', result: 'evidenced', evidence: { check: 'Read API.md', revision } },
+    ] } };
+  });
+  assert.equal((await y.cli('run', 'answer', '12', 'Please document the remaining API item.')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.slice(before).map(request => request.role), ['implementer', 'reviewer']);
+  assert.equal((await y.status()).tickets[0].completion, 'merged');
+});
+
+test('no-change outside a repair round accepts committed implementation work and proceeds to merge', async t => {
+  const y = await fixture(t);
+  let implementations = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'implementer') {
+      if (++implementations === 1) {
+        await y.normal(request, sink);
+        return { outcome: { outcome: 'question', question: 'May the already committed implementation proceed?' } };
+      }
+      return { outcome: { outcome: 'no-change', summary: 'The committed implementation already returns 42.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const stopped = await y.cli('team', 'run', '12', '--json');
+  assert.equal(stopped.code, 1, stopped.stdout);
+  assert.equal((await y.status()).tickets[0].reason, 'question');
+  assert.equal((await y.cli('run', 'answer', '12', 'Yes, proceed with the committed work.')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(implementations, 2);
+  assert.equal((await y.status()).tickets[0].completion, 'merged');
+  assert.equal(y.git('show', 'integration:answer.cjs'), 'module.exports = () => 42;');
+});
+
+test('a hand-rebased conflict repair accepts no-change when protected test content and implementation survive', async t => {
+  const y = await fixture(t);
+  let implementations = 0, reviews = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
+      y.git('add', 'answer.cjs'); y.git('commit', '-m', 'Conflicting integration update'); y.git('push');
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      return { outcome: { outcome: 'question', question: 'Please resolve the rebase conflict by hand.' } };
+    }
+    if (request.role === 'implementer' && implementations > 2) {
+      return { outcome: { outcome: 'no-change', summary: 'The human rebase preserved the tests and the working implementation.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const stopped = await y.cli('team', 'run', '12', '--json');
+  assert.equal(stopped.code, 1, stopped.stdout);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.reason, 'question');
+  assert.equal(row.team.repair.source, 'rebase-conflict');
+  const git = (...args: string[]) => y.git('-C', y.path, ...args);
+  const protectedContent = git('show', `${row.team.testCommit}:answer.test.cjs`);
+  try { git('rebase', 'integration'); } catch { /* Resolve the implementation conflict by hand. */ }
+  await writeFile(join(y.path, 'answer.cjs'), 'module.exports = () => 42;\n');
+  git('add', 'answer.cjs');
+  execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: y.path, stdio: 'pipe' });
+  assert.equal(git('show', 'HEAD:answer.test.cjs'), protectedContent);
+  assert.notEqual(git('rev-parse', 'HEAD^'), row.team.testCommit, 'The writer SHA changed during the hand rebase.');
+  assert.equal(git('rev-list', '--count', 'integration..HEAD'), '2', 'Both writer and implementation work survived.');
+  assert.equal((await y.cli('run', 'answer', '12', 'Rebased by hand; protected tests are unchanged.')).code, 0);
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(implementations, 3, 'The resumed implementer reported no-change.');
+  const done = (await y.status()).tickets[0];
+  assert.equal(done.completion, 'merged');
+  assert.equal(y.git('show', `${done.integration.mergedHead}:answer.test.cjs`), protectedContent);
+});
+
+test('conflict repair uses the integration revision at round start when another ticket advances it meanwhile', async t => {
+  const y = await fixture(t);
+  let implementations = 0, reviews = 0;
+  y.setScript(async (request, sink) => {
+    const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
+      y.git('add', 'answer.cjs'); y.git('commit', '-m', 'Conflicting integration update'); y.git('push');
+    }
+    if (request.role === 'implementer' && ++implementations === 2) {
+      try { git('rebase', 'integration'); } catch { /* Resolve onto the integration revision at round start. */ }
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 1;\n');
+      git('add', 'answer.cjs');
+      execFileSync('/bin/sh', ['-c', await continueCommand()], { cwd: request.cwd, stdio: 'pipe' });
+      await writeFile(join(request.cwd, 'answer.cjs'), 'module.exports = () => 42;\n');
+      git('add', 'answer.cjs'); git('commit', '-m', '#12: Repair the conflict');
+      // Another ticket lands only after this repair has rebased onto its starting revision.
+      await writeFile(join(y.cwd, 'other-ticket.txt'), 'Independent merged work.\n');
+      y.git('add', 'other-ticket.txt'); y.git('commit', '-m', 'Another ticket advances integration'); y.git('push');
+      return { outcome: { outcome: 'done', summary: 'Resolved against the integration revision supplied at round start.' } };
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(implementations, 2, 'Advancing integration does not force another repair round.');
+  const done = (await y.status()).tickets[0];
+  assert.equal(done.completion, 'merged');
+  assert.equal(y.git('show', 'integration:other-ticket.txt'), 'Independent merged work.');
+  assert.equal(y.git('show', 'integration:answer.cjs'), 'module.exports = () => 42;');
 });
