@@ -91,6 +91,19 @@ The subsequent conflict repair onto integration revision `41af42a` also preserve
 
 Verification against integration revision `5fdaa0e` confirms that all upstream completion records, including ticket #264, remain unchanged alongside the ticket #262 records. The requested rebase reports the branch already up to date. Glossary checked; no update needed because preserving these independent records changes no domain definitions. No test file was edited.
 
+## Ticket #269 test-writers record
+
+Glossary checked; no glossary update needed because the existing Test correction,
+Rebase gate, Worktree, Bounce and Human user definitions cover these regression
+scenarios. No terminology conflicts found. The new CLI-level tests in
+`test/team.test.ts` move a human-approved non-test HEAD and a reviewer-passed
+correction onto newer integration work, resolve a real notes conflict, and check
+both unchanged protected tests and actual weakening. The reproduction includes
+integration independently supplying the original writer checkpoint: Git drops
+that checkpoint during rebase, leaving the saved checkpoint list stale even
+though the protected file content survives unchanged. Documentation of the
+implemented approval behaviour remains for the implementer.
+
 ## Ticket #280 implementation record
 
 Glossary checked across configuration, tracker adapters, first-start transitions,
