@@ -82,8 +82,13 @@ export async function graph(numbers: number[], project: ProjectConfig, tracker: 
     blockers.add(link.blocker);
     additions.push(link);
   }
+  const uncertainDescriptions = new Set<number>();
   for (const link of additions) {
     const description = `${ref(link.blocked)} blocked by ${ref(link.blocker)}`;
+    if (uncertainDescriptions.has(link.blocked)) {
+      fail(`Skipped ${description}: an earlier description write has an uncertain result. Re-run to add missing links.`);
+      continue;
+    }
     const ticket = tickets.find(ticket => ticket.number === link.blocked)!;
     try {
       if (project.tracker.backend === 'github') {
@@ -97,7 +102,12 @@ export async function graph(numbers: number[], project: ProjectConfig, tracker: 
       }
       report.written.push(link);
       report.messages.push(`Wrote ${description}.`);
-    } catch { fail(`Failed to write ${description}; earlier successful links were kept. Re-run to add missing links.`); }
+    } catch {
+      // A failed response may follow an applied update. Never build another
+      // description from stale text and remove that possibly successful link.
+      if (project.tracker.backend === 'gitlab') uncertainDescriptions.add(link.blocked);
+      fail(`Failed to write ${description}; earlier successful links were kept. Re-run to add missing links.`);
+    }
   }
   if (!proposal.length) report.messages.push('The agent proposed no blocked-by links.');
   else if (!report.messages.length) report.messages.push('All proposed blocked-by links were already present; nothing to add.');
