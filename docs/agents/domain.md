@@ -140,6 +140,8 @@ The protected scenarios in `test/team.test.ts`, `test/red-gate.test.ts` and
 `test/test-correction.test.ts` cover both cap causes, human recovery, meaningful
 and meaningless guards, correction promotion, and failed verification. No test
 files were changed. All 136 focused team/red-gate/correction tests pass.
+Full test command at `b4ff076`: 1290 suite tests and 3 process-permission tests
+pass, with no failures. Build, typecheck and `git diff --check` pass.
 
 ## Ticket #274 completion record
 
