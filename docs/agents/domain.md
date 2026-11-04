@@ -183,6 +183,29 @@ that checkpoint during rebase, leaving the saved checkpoint list stale even
 though the protected file content survives unchanged. Documentation of the
 implemented approval behaviour remains for the implementer.
 
+## Ticket #282 test-writers record
+
+Glossary checked across `test/github-project-setup.test.ts`. Existing Mill,
+Tracker, Project, Millyard and Ticket definitions are used unchanged. The tests
+use the literal GitHub API name “GitHub Project” rather than redefining Project;
+the distinct domain term and documentation required by the ticket remain for
+the implementer in this same ticket. No existing definition is changed by this
+test-only checkpoint and no terminology conflict was found.
+
+The tests use the existing `runCli`, consent and configuration seams, with an
+isolated, read-only `gh` executable. They cover every advertised command's setup
+eligibility, exclusions, creation proposal, declining and repeated offers,
+non-interactive/JSON safety, lookup errors, optional numeric configuration and
+build re-seeding. Creation, duplicate-safe ticket addition, concurrent setup,
+partial recovery and live GitHub API verification are not covered by this
+checkpoint. No implementation or existing tests were changed.
+
+Verification: build passed. The full declared test command ran 1339 tests:
+1298 passed and 41 failed, all in the new file, for missing setup offers,
+missing manual guidance/error reporting, unrecognized `tracker.project`, and
+build dropping/replacing the local number. The full output is retained at
+`/tmp/pi-bash-b287cd07f81232a1.log` for this test-writers session.
+
 ## Ticket #280 implementation record
 
 Glossary checked across configuration, tracker adapters, first-start transitions,

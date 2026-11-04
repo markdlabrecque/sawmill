@@ -18,7 +18,10 @@ Project numeric field **Human estimate (hours)**; GitLab CE uses the native time
 estimate, converted from hours to seconds. Resolve available field storage
 before filing; never substitute estimate prose in the description. The writer
 states the human-development-effort basis, not agent runtime. A missing field
-mapping needs a human decision, not silent field provisioning.
+mapping needs a human decision, not silent field provisioning. For github.com,
+run a Mill command interactively to review its explicit GitHub estimate project
+setup offer before continuing Logging; Logging itself does not silently create
+collections or fields.
 
 Creation happens only after review passes. At most two bounces allow repairs;
 if the review after the second repair still fails, show the unfiled ticket and
@@ -60,6 +63,74 @@ replacement for the later run-drafting gates.
 - **Set `TYPESAFE_API_KEY` only for opted-in Jev operations.** Build/install and ordinary execution need no key. A project's `jev.routing.enabled: true` in `.mill/config.yaml` (with the [machine routing policy](model-routing.md#turning-it-on)) requires a nonblank value before `mill run`, foreground/one-shot work, direct teams/reviews, integration or Board start/resume actions. Put it in the [shared settings file](#shared-typesafe-key) through your approved credential workflow, or export it in the execution environment. This is a local presence check, not an authentication request. Missing configuration exits the CLI with code 2 before activation, dispatch or retries; fix it and retry the same run, without a reset. Each `jev.{draft,acceptance,ci,learn}.enabled` opt-in in the millyard's `.mill/config.yaml` checks credentials only when that screen is invoked and reports missing configuration there; it does not gate unrelated execution. The CLI, Board and shared scheduler reread the same settings file, so adding or changing its key needs no restart. A key set only in your current shell cannot authorize a scheduler that lacks it: use the shared file instead. For environment-only configuration, wait until it is safe to stop the shared service, run `mill scheduler stop`, then `mill run` from the configured environment. A keyless scheduler continues serving projects without routing enabled. Mill never restarts it automatically. Help, status, logs, stops and inactive drafting remain usable without a key. Never put the key in project configuration, SQLite or command arguments.
 - **Check the Git identity and remote.** A push from the wrong GitHub account is rejected.
 - **Free port 4444.** An old `mill board` left running blocks the new one. If you started it as a user service, run `systemctl --user stop mill-board`.
+
+### GitHub estimate project setup
+
+A **GitHub estimate project** is the private GitHub Projects v2 collection for
+tickets and their numeric **Human estimate (hours)** field; it is not Sawmill's
+Project (the repository and its worktrees). `.mill/config.yaml` optionally records
+its positive numeric number:
+
+```yaml
+tracker:
+  backend: github
+  repo: team/tool
+  project: 42
+```
+
+The owner is inferred from `tracker.repo`; the title for a new collection is the
+configured `name`. Do not put a Project number in machine defaults. Re-seeding
+with `mill build --force` preserves the local number instead of taking a machine
+number. Setup changes only this YAML entry, preserving other keys and comments.
+
+Every project-scoped Mill command that loads tracker configuration, including
+`mill build`, checks setup interactively before its normal operation. Help,
+version, skills and update are excluded, as are the machine-wide Board and
+scheduler commands. Only github.com is supported; GitLab native estimates and
+GitHub Enterprise are unchanged. The proposal states the private visibility,
+owner, title, repository link, exact number field, existing open-ticket backfill
+and saved setting before asking. No default yes is assumed. Declining changes
+nothing and asks again next command. JSON/non-terminal invocations do not contact
+GitHub for optional setup, acquire its lock or change files: they explain manual
+setup when no number is configured and otherwise leave setup for an interactive
+terminal. Diagnostic guidance goes to stderr for successful machine payloads;
+error JSON includes `githubProjectSetup` without corrupting JSON output.
+
+Use an account with repository access and the `project` scope (`gh auth refresh
+-s project`); setup honors [the millyard's selected account](#per-project-github-account).
+Failed network/auth/permission lookups are reported, never treated as absence.
+With a configured, existing collection and number field, no offer is made.
+Missing collections get a creation offer; missing fields get a field offer.
+Without a saved number, exactly one exact-title match is reused after consent;
+several matches are reported with links and require an explicit `tracker.project`.
+
+Local accepted setups serialize on `.mill/github-project-setup.sqlite`,
+independently of any run. They re-read configuration and GitHub state inside the
+lock. Its transaction is released by process exit, even after a crash; do not
+hand-delete a live lock. A partial failure reports the existing collection's
+link and failed step. Fix permissions/network/configuration, then repeat the
+same Mill command interactively: it finds the collection by number or title,
+reuses the field, and repeats duplicate-safe ticket addition rather than creating
+a second collection. The number is saved only after setup and readback succeed.
+The completed collection and field are read back and its link reported.
+
+GitHub's public GraphQL schema has no Projects workflow/auto-add configuration
+mutation. Setup verifies this via schema introspection and prints the one-time
+manual step: open the collection's **Workflows → Auto-add to project**, select
+this repository, use `is:issue is:open`, and enable the workflow. A failed schema
+lookup is an error, not proof that the API is unavailable. If GitHub introduces
+a workflow mutation, setup stops for API support review instead of guessing.
+See [the API decision record](adr/github-estimate-project.md) for the contract
+and verification boundaries.
+
+Auto-add is optional: setup adds existing open tickets using their stable GitHub
+node IDs. Logging must call `mill tickets project-add <n>` for each newly filed
+ticket before writing its estimate, including retries after a lost response.
+That command uses the same `addProjectV2ItemById` upsert as backfill: GitHub returns
+the existing item for the same content ID. Mill repeats the operation and verifies
+the same item ID, never relies on a title/bare-number check-then-add, and never
+needs auto-add enabled. The command requires no run and does not create a ticket.
+Read the returned item to write and verify the approved numeric estimate.
 
 ### Per-project GitHub account
 

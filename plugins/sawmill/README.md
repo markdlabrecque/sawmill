@@ -84,6 +84,31 @@ and relays non-zero messages unchanged. Terminal references are clickable
 numbers without titles; piped output and `--json` use plain `#<number>`.
 Draft reads the existing graph; it does not propose or edit links.
 
+## GitHub estimate project setup
+
+On github.com, Mill offers to create a **GitHub estimate project** whenever a
+project-scoped command loads tracker configuration (including `mill build`).
+Help, version, skills, update, Board and scheduler commands are excluded. It
+states the proposal before asking: a private Projects v2 collection under the
+repository's owner, titled with the configured `name`, linked to the repository,
+with a number field named **Human estimate (hours)** and every existing open
+ticket added once. It records the numeric `tracker.project` in `.mill/config.yaml`
+without rewriting other keys or comments; `mill build --force` preserves it.
+
+Declining asks again next time. JSON and non-terminal invocations never perform
+setup writes; they print manual guidance and remain usable offline. Setup uses
+`.mill/gh-user`, serializes local acceptance, repeats lookup after locking, and
+recovers a partial creation by number or an exact title match. Lookup errors and
+ambiguous titles never authorize creation. See the
+[operating guide](../../docs/operating-mill.md#github-estimate-project-setup) for
+permissions, recovery and the one-time manual auto-add step.
+
+Logging adds a newly filed GitHub ticket using `mill tickets project-add <n>`
+before filling its estimate. This shares setup's stable-identity upsert and is
+safe to retry even when auto-add or another command also adds the ticket. It
+requires no run. Do not replace it with an unchecked Project-item mutation.
+GitLab keeps its native time estimate and GitHub Enterprise is unchanged.
+
 ## Drafting a run
 
 After Logging, request one selection:
