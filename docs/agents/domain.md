@@ -257,6 +257,18 @@ acceptance handoffs lacked renewed evidence (four failures); all six now pass.
 Protected tests remain unchanged. Full test command at `aad2a9e`: 1296 suite tests
 and 3 process-permission tests pass; build and typecheck pass.
 
+## Ticket #276 test-writers record
+
+Glossary checked; these instruction-contract tests use the existing Logging,
+Reviewer, Bounce, Acceptance item, Test harness and Blocked-by concepts. No new
+verb is introduced. The current Logging definition covers only creation, while
+this ticket requires applying it to existing tickets; the new test explicitly
+requires that extension. Updating the definition and related guidance remains
+implementation work. Tests check shipped instructions and isolated skill-refresh
+behavior, not live agent compliance or actual tracker writes. Build passes;
+the full test command reports 1280 passing tests and only the nine new tests
+failing because the ticket-review skill is absent. No existing test was changed.
+
 ## Ticket #274 completion record
 
 Glossary checked across the Logging skill, packaged ticket template, plugin
