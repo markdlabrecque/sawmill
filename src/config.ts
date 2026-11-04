@@ -14,7 +14,7 @@ export interface JevScreenConfig { enabled: boolean; timeout: string; max_eviden
 export type JevScreen = 'draft' | 'acceptance' | 'ci' | 'learn';
 export interface ProjectConfig {
   name: string;
-  tracker: { backend: 'github' | 'gitlab'; repo: string; host?: string };
+  tracker: { backend: 'github' | 'gitlab'; repo: string; host?: string; project?: number };
   integration: string;
   runtime: 'claude-code' | 'pi' | 'codex';
   /** Effective optional extension allowlist, resolved from project or machine config. */
@@ -112,7 +112,7 @@ const literal: Rule = { type: 'string', check: value => simpleCommand.test(Strin
 const names: Rule = { type: 'list', hint: 'expected a non-empty list of distinct check names' };
 const role = object({ model: string, effort: choice('low', 'medium', 'high', 'max') });
 const piSchema: Rule = { ...object({ extensions: { type: 'list', items: string, optional: true } }), optional: true };
-const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true } });
+const trackerSchema = object({ backend: choice('github', 'gitlab'), repo: { ...string, check: value => /^[^/\s:]+(?:\/[^/\s:]+)+$/.test(String(value)) && String(value).split('/').every(part => part !== '.' && part !== '..'), hint: 'expected owner/repo or group/subgroup/repo' }, host: { ...string, optional: true }, project: { type: 'number', optional: true, check: value => Number.isSafeInteger(value) && Number(value) > 0, hint: 'expected a positive GitHub Project number' } });
 const jevScreenSchema: Rule = { ...object({
   enabled: { type: 'boolean', default: false },
   timeout: { ...duration, default: '10s', check: value => /^[1-9]\d*(s|m|h)$/.test(String(value)) && milliseconds(String(value)) <= 60000, hint: 'expected a positive duration up to 60s (1m)' },

@@ -7,6 +7,7 @@ import { ensureExecutionScheduler, requireSchedulerConfiguration, notifySchedule
 import { describeBuild, packageRoot, readBuildIdentity } from './build-identity.js';
 import { updateMill, type Exec } from './update.js';
 import { offerSkills } from './agent-skills.js';
+import { offerGitHubProject } from './github-project.js';
 import { createInterface } from 'node:readline/promises';
 import { describeUnresolved, listSlots, unresolvedSlots } from './slots.js';
 import { listMillyards, registerMillyard } from './registry.js';
@@ -52,7 +53,7 @@ export interface CliOptions {
   root?: string;
   /** Runs the installer steps of mill update. */
   exec?: Exec;
-  /** Consent prompt for an explicit skill refresh. */
+  /** Consent prompt for skill refresh or GitHub estimate project setup. */
   ask?: (question: string) => Promise<string>;
   runtime?: Runtime;
   /** Offline proposal seam; preflight, validation and tracker writes still run normally. */
@@ -82,7 +83,18 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const json = args.includes('--json');
   // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
-  const emit = (value: object, message: string) => stdout((json ? JSON.stringify(value) : message) + '\n');
+  const projectSetup: string[] = [];
+  const emit = (value: object, message: string) => stdout((json ? JSON.stringify({ ...value, ...(projectSetup.length ? { githubProjectSetup: projectSetup } : {}) }) : message) + '\n');
+  const setupProject = async (cwd: string, project: ProjectConfig) => {
+    // Injected tracker adapters own their transport; never contact a live host for them.
+    if (options.tracker) return;
+    const ask = json ? undefined : options.ask ?? (!options.stdout && process.stdin.isTTY ? async (question: string) => {
+      const prompt = createInterface({ input: process.stdin, output: process.stdout });
+      try { return await prompt.question(question); }
+      finally { prompt.close(); }
+    } : undefined);
+    await offerGitHubProject(cwd, home, project, { ask, report: text => { if (json) projectSetup.push(text); else stdout(text + '\n'); } });
+  };
   const current = readBuildIdentity(root);
   // A scheduler loaded from other code than this mill keeps running that code until it restarts.
   const mismatch = (scheduler: SchedulerStatus) => scheduler.available && current && scheduler.build !== current.id
@@ -189,12 +201,15 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     }
     const cwd = positional[0] === 'build' ? invokedIn : resolveMillyard(invokedIn);
     if (positional[0] !== 'build') {
-      const config = await loadConfig(cwd, home);
-      const { issues } = config;
-      if (!config.valid) {
+      const initial = await loadConfig(cwd, home);
+      const { issues } = initial;
+      if (!initial.valid) {
         emit({ status: 'configuration-error', issues }, issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n'));
         return 2;
       }
+      await setupProject(cwd, initial.project);
+      const config = await loadConfig(cwd, home);
+      if (!config.valid) throw new CliError('Configuration changed during GitHub estimate project setup; retry after correcting it.', 2);
       const ref = (number: number) => ticketRef(config.project.tracker, number, links);
       const table = (snapshot: RunSnapshot) => formatRun(snapshot, { tracker: config.project.tracker, links });
       // Include scheduler and capacity metadata alongside the run snapshot.
@@ -234,7 +249,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (positional[1] === 'export') {
           if (words.length) return refuse();
           // The export is JSON with or without --json.
-          stdout(JSON.stringify(exportRecords(cwd)) + '\n');
+          const records = exportRecords(cwd);
+          stdout(JSON.stringify({ ...records, ...(projectSetup.length ? { githubProjectSetup: projectSetup } : {}) }) + '\n');
           return 0;
         }
         if (positional[1] === 'report') {
@@ -542,13 +558,17 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         emit(moved, moved.message);
         return 1;
       }
+      const movedConfig = await loadConfig(cwd, home);
+      if (movedConfig.valid) await setupProject(cwd, movedConfig.project);
       emit(moved, [`Moved the millyard from ${moved.from} to ${moved.to}.`, ...moved.notes].join('\n'));
       return 0;
     }
     const built = await build(cwd, home, args.includes('--force'));
     if (!built.written) {
       // An existing config is checked, never overwritten: a valid one passes and a wrong value is a configuration error.
-      const { issues } = await loadConfig(cwd, home);
+      const config = await loadConfig(cwd, home);
+      const { issues } = config;
+      if (config.valid) await setupProject(cwd, config.project);
       if (!issues.length) {
         emit({ status: 'unchanged', issues, notes: [] }, 'Project config already exists and is valid; use --force to overwrite it.');
         return 0;
@@ -561,7 +581,9 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
       emit({ status: 'refused', message }, message);
       return 1;
     }
-    const { issues } = await loadConfig(cwd, home);
+    const config = await loadConfig(cwd, home);
+    const { issues } = config;
+    if (config.valid) await setupProject(cwd, config.project);
     const message = issues.length ? 'Still needs filling in:\n' + issues.map(issue => `${issue.source}: ${issue.key}: ${issue.message}`).join('\n') : 'Built .mill/config.yaml';
     emit({ status: issues.length ? 'needs-configuration' : 'built', issues, notes: built.notes }, [message, ...built.notes].join('\n'));
     return issues.length ? 2 : 0;

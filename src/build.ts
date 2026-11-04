@@ -8,6 +8,7 @@ import { CliError } from './errors.js';
 import { registerMillyard } from './registry.js';
 import { readRun, runPath } from './run-store.js';
 import { listSlots } from './slots.js';
+import { withGitHubProjectLock } from './github-project-lock.js';
 
 export const templates = new URL('../../templates/', import.meta.url);
 
@@ -50,7 +51,19 @@ export async function build(cwd: string, home: string, force: boolean): Promise<
     // Keep malformed defaults intact so validation can report their errors.
     if (!doc.errors.length && isMap(doc.contents)) { doc.set('test_harness', harness); text = doc.toString(); }
   }
-  await writeFile(join(cwd, '.mill/config.yaml'), text);
+  await withGitHubProjectLock(cwd, async () => {
+    const path = join(cwd, '.mill/config.yaml');
+    const previous = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return ''; });
+    const local = parseDocument(previous);
+    const defaults = parseDocument(text);
+    if (!local.errors.length && !defaults.errors.length && isMap(defaults.get('tracker'))) {
+      // A GitHub Project number belongs to this project, never the machine template.
+      const project = local.getIn(['tracker', 'project'], true);
+      if (project !== undefined) { defaults.setIn(['tracker', 'project'], project); text = defaults.toString(); }
+      else if (defaults.hasIn(['tracker', 'project'])) { defaults.deleteIn(['tracker', 'project']); text = defaults.toString(); }
+    }
+    await writeFile(path, text);
+  });
   await registerMillyard(home, cwd);
   const notes: string[] = [];
   const config = parseDocument(text);
