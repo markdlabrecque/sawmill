@@ -23,6 +23,8 @@ export interface Ticket {
 
 export interface TicketReader {
   getTicket(number: number): Promise<Ticket>;
+  /** Native human-effort field: positive values pass draft, null/zero mean missing. Read errors must throw. */
+  getEstimate?(number: number): Promise<number | null>;
   /** Return all matching tickets, including closed tickets, with complete threads; draft skips the closed ones. */
   listByLabel?(label: string): Promise<Ticket[]>;
   /** Return all direct children, with complete threads; do not include the parent. */

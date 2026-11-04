@@ -35,6 +35,7 @@ import { GitHubDraftReader, githubApi } from './github.js';
 import { GitHubWriter } from './github-writes.js';
 import { GitLabTracker } from './gitlab.js';
 import { draft } from './draft.js';
+import { DraftValidationError } from './draft-validation.js';
 import { graph, type GraphAgent } from './graph.js';
 import { graphAgent } from './graph-agent.js';
 import { describeCheckPolicy, resolveCheckPolicy } from './check-policy.js';
@@ -86,6 +87,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   // Terminal hyperlinks only for a real terminal; NO_HYPERLINK opts out for terminals that misprint them.
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
   const projectSetup: string[] = [];
+  let draftTracker: ProjectConfig['tracker'] | undefined;
+  const draftText = (message: string) => !draftTracker || json ? message : message.replace(/#([1-9]\d*)\b/g, (_, number: string) => ticketRef(draftTracker!, Number(number), true));
   const diagnostic = options.stderr ?? (text => process.stderr.write(text));
   const emit = (value: object, message: string) => {
     // Keep successful command payloads (including arrays and path-only output)
@@ -93,7 +96,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     const error = 'message' in value;
     if (projectSetup.length && !error) diagnostic(projectSetup.join('\n') + '\n');
     stdout((json ? JSON.stringify(error && projectSetup.length ? { ...value, githubProjectSetup: projectSetup } : value)
-      : [...(error ? projectSetup : []), message].join('\n')) + '\n');
+      : [...(error ? projectSetup : []), draftText(message)].join('\n')) + '\n');
     projectSetup.length = 0;
   };
   const setupProject = async (cwd: string, project: ProjectConfig) => {
@@ -540,6 +543,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         return ok ? 0 : 1;
       }
       if (positional[0] === 'run' && positional[1] === 'draft') {
+        draftTracker = config.project.tracker;
         const parsed = parseDraftArgs(positional.slice(2));
         if (!parsed) {
           const message = `Choose exactly one non-empty selector. ${usage('run draft')}`;
@@ -560,14 +564,19 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         };
         // Injected trackers without assignSelf draft without assignment.
         const writer = !options.tracker || options.tracker.assignSelf ? ticketWriter(options, config.project, cwd) : undefined;
-        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle, config.machine);
+        const drafted = await draft(cwd, home, config.project,parsed.selection, tracker, parsed.replace, Boolean(writer), parsed.includeClosed, settle, config.machine, parsed.check);
+        if (drafted.checked) {
+          emit({ status: 'ok', checked: true, selected: drafted.added, alreadyPresent: drafted.alreadyPresent, failures: [], warnings: drafted.warnings },
+            [`Validation passed: ${[...drafted.added, ...drafted.alreadyPresent].map(number => `#${number}`).join(', ')}. No run was built or changed.`, ...drafted.warnings.map(warning => `Warning: ${warning}`)].join('\n'));
+          return 0;
+        }
         if (writer && drafted.added.length) await flushAssignments(cwd, config.project, writer, { ...options, tickets: drafted.added });
         const snapshot = readRun(cwd);
         if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);
         const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
-        const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick ${ref(drafted.clearedPick)} because the run was replaced.`];
-        emit({ ...view(snapshot), ...(drafted.warnings.length ? { warnings: drafted.warnings } : {}), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [table(snapshot), ...drafted.warnings.map(warning => `Warning: ${warning}`), ...cleared, ...policy,
-          ...drafted.alreadyPresent.map(number => `${ref(number)} is already present; left unchanged.`),
+        const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick #${drafted.clearedPick} because the run was replaced.`];
+        emit({ ...view(snapshot), ...(drafted.warnings.length ? { warnings: drafted.warnings } : {}), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [`${snapshot.run.lifecycle === 'inactive' ? 'Draft' : 'Run'}: ${snapshot.tickets.map(ticket => `#${ticket.number}`).join(', ')}`, ...drafted.warnings.map(warning => `Warning: ${warning}`), ...cleared, ...policy,
+          ...drafted.alreadyPresent.map(number => `#${number} is already present; left unchanged.`),
           snapshot.run.lifecycle === 'inactive' ? 'The run is inactive; inspect it with mill run status, then start it with mill run.' : `The run remains ${snapshot.run.lifecycle}.`].join('\n'));
         return 0;
       }
@@ -619,7 +628,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   } catch (error) {
     const code = error instanceof CliError ? error.exitCode : 1;
     const message = error instanceof Error ? error.message : String(error);
-    emit({ status: code === 2 ? 'configuration-error' : 'error', message }, message);
+    emit({ status: code === 2 ? 'configuration-error' : 'error', message, ...(error instanceof DraftValidationError ? { failures: error.failures } : {}) }, message);
     return code;
   }
 }

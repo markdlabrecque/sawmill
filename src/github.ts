@@ -1,4 +1,5 @@
 import { githubRequest } from './github-transport.js';
+import { humanEstimateField } from './github-project.js';
 import { GitHubApiError } from './github-error.js';
 export { GitHubApiError } from './github-error.js';
 import { CliError } from './errors.js';
@@ -17,6 +18,7 @@ export interface GitHubIssue {
 export interface GitHubComment { body: string; user: { login: string } | null; created_at: string }
 export interface GitHubApi {
   getIssue(number: number): Promise<GitHubIssue>;
+  getEstimate?(number: number): Promise<number | null>;
   getComments(number: number): Promise<GitHubComment[]>;
   getBlockers(number: number): Promise<GitHubIssue[]>;
   listByLabel?(label: string): Promise<GitHubIssue[]>;
@@ -25,6 +27,10 @@ export interface GitHubApi {
 
 export class GitHubDraftReader implements TicketReader {
   constructor(private readonly config: ProjectConfig['tracker'], private readonly api: GitHubApi = githubApi(config)) {}
+  async getEstimate(number: number): Promise<number | null> {
+    if (!this.api.getEstimate) throw new Error('The GitHub transport cannot read human estimates.');
+    return this.api.getEstimate(number);
+  }
   async listByLabel(label: string): Promise<Ticket[]> {
     if (!this.api.listByLabel) throw new CliError('GitHub API does not support label selection; use explicit ticket numbers.', 2);
     const issues = await this.api.listByLabel(label);
@@ -81,6 +87,43 @@ export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd())
     return value;
   }
   return {
+    getEstimate: async number => {
+      if (!config.project) throw new CliError('GitHub draft requires tracker.project in .mill/config.yaml; run Mill interactively to review setup, or configure the GitHub estimate project manually.', 2);
+      const [owner, name] = config.repo.split('/');
+      let cursor: string | null = null;
+      do {
+        const query = `query($owner:String!, $name:String!, $number:Int!, $project:Int!, $cursor:String) {
+          repository(owner:$owner,name:$name) {
+            owner { ... on User { projectV2(number:$project) { id } } ... on Organization { projectV2(number:$project) { id } } }
+            issue(number:$number) { projectItems(first:100,after:$cursor) {
+              nodes { project { number } fieldValueByName(name:"${humanEstimateField}") { ... on ProjectV2ItemFieldNumberValue { number } } }
+              pageInfo { hasNextPage endCursor }
+            } }
+          }
+        }`;
+        type Page = { nodes: { project: { number: number }; fieldValueByName: { number?: number } | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+        const result = await githubRequest(config, cwd, 'POST', 'graphql', { query, variables: { owner, name, number, project: config.project, cursor } }) as {
+          errors?: { message: string }[]; data?: { repository: { owner: { projectV2: { id: string } | null }; issue: { projectItems: Page } | null } | null };
+        };
+        if (result.errors?.length) throw new Error(result.errors.map(error => error.message).join('; '));
+        const repository = result.data?.repository;
+        if (!repository?.issue || !repository.owner) throw new Error('GitHub returned unreadable estimate data.');
+        if (!repository.owner.projectV2) throw new CliError('Configured tracker.project does not exist or is not visible; repair the GitHub estimate project configuration.', 2);
+        const page: Page = repository.issue.projectItems;
+        if (!Array.isArray(page?.nodes) || !page.pageInfo) throw new Error('GitHub returned incomplete estimate data.');
+        const item = page.nodes.find(item => item.project.number === config.project);
+        if (item) {
+          const value = item.fieldValueByName?.number;
+          if (value == null) return null;
+          if (typeof value !== 'number') throw new Error('GitHub returned an unreadable human estimate.');
+          return value;
+        }
+        if (!page.pageInfo.hasNextPage) return null;
+        if (!page.pageInfo.endCursor || page.pageInfo.endCursor === cursor) throw new Error('GitHub omitted the estimate pagination cursor.');
+        cursor = page.pageInfo.endCursor;
+      } while (cursor);
+      return null;
+    },
     listByLabel: async label => await request(`${prefix}?state=all&labels=${encodeURIComponent(label)}&per_page=100`, true) as GitHubIssue[],
     listChildren: async number => await request(`${prefix}/${number}/sub_issues?per_page=100`, true) as GitHubIssue[],
     getIssue: async number => await request(`${prefix}/${number}`) as GitHubIssue,

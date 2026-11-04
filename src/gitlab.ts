@@ -106,6 +106,15 @@ export class GitLabTracker implements Tracker {
       state: issue.state === 'closed' ? 'closed' : 'open', comments, blockedBy: null };
   }
 
+  async getEstimate(number: number): Promise<number | null> {
+    const issue = record((await this.request('GET', `/issues/${number}`)).value);
+    if (this.issueNumber(issue) !== number) throw new Error('GitLab returned a different ticket for the estimate.');
+    const value = issue.time_stats == null ? null : record(issue.time_stats).time_estimate;
+    if (value == null) return null;
+    if (typeof value !== 'number') throw new Error('GitLab returned an unreadable native time estimate.');
+    return value;
+  }
+
   async listByLabel(label: string): Promise<Ticket[]> {
     this.checkLabel(label);
     if (['any', 'none', 'no+label'].includes(label.toLowerCase())) throw new Error('Any, None and No+Label are reserved GitLab label query operators; use explicit issue numbers for these labels.');
