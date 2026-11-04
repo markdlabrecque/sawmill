@@ -793,7 +793,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
             if (!latest?.observed || !healthyGreen(latest.observed.run)) return await stop(infrastructure(`tests-failed: accepting missing red proof cannot accept a failing test command.\n${latest?.handoff ?? ''}`));
             progress.passingTests.acceptedBy = 'reviewer';
             delete progress.redPending; delete progress.redFeedback; delete progress.redChecks;
-            delete progress.redHead; delete progress.redScenarios; delete progress.approvedHead;
+            // Keep the unfixed-code reference for any later scoped correction.
+            progress.redHead = progress.passingTests.head;
+            delete progress.redScenarios; delete progress.approvedHead;
             delete progress.activeRole;
             resume = progress.next = 'reviewer';
             await save({ report: { stage: 'passing-tests-accepted', details: `Reviewer accepted meaningful passing tests at ${beforeRole}.\n${JSON.stringify(result.outcome.passingTests)}`, reachedStage: role, round: result.round } });

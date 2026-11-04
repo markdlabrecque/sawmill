@@ -56,7 +56,7 @@ export interface TeamProgress {
   redFeedback?: string;
   /** Candidate at the red-check cap, or a passing guard explicitly accepted for direct review. */
   passingTests?: { head: string; redOutput?: string; acceptedBy?: 'reviewer' | 'person' };
-  /** The unfixed code the red check accepted: the tests at this commit fail. A correction renews its proof here. */
+  /** Unfixed code for renewed correction evidence: the original red run or explicitly accepted passing guard. */
   redHead?: string;
   /** Scenarios the red check accepted as failing for the intended reason; each must pass before merge. */
   redScenarios?: string[];

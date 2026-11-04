@@ -585,8 +585,9 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     const passing = ticket.reason === 'tests-not-red' || Boolean(team.passingTests);
     delete team.redPending; delete team.redChecks; delete team.redFeedback;
     if (passing) {
+      // Approval changes protection, not the unfixed code used to renew correction evidence.
+      team.redHead ??= team.passingTests?.head ?? commit;
       team.passingTests = { ...team.passingTests, head: commit, acceptedBy: 'person' };
-      delete team.redHead;
     }
     team.testCommit = commit;
     if (commits.length) team.testCommits = commits;
