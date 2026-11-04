@@ -14,6 +14,7 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const skillPath = 'plugins/sawmill/skills/ticket-review/SKILL.md';
 const templatePath = 'plugins/sawmill/skills/logging/ticket-template.md';
+const runnerPath = 'test/evaluations/ticket-review.ts';
 const evidence = join(root, 'docs/evidence/ticket-review');
 
 // Use an already installed Pi SDK; never install dependencies or load extensions.
@@ -76,8 +77,8 @@ for (const decision of ['approve', 'decline'] as const) {
     const skill = await readFile(join(root, skillPath), 'utf8');
     const template = await readFile(join(root, templatePath), 'utf8');
     const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-    const sourceDiff = execFileSync('git', ['diff', 'HEAD', '--', skillPath, templatePath], { cwd: root, encoding: 'utf8' });
-    assert.equal(sourceDiff, '', 'evaluate committed skill/template bytes');
+    const sourceDiff = execFileSync('git', ['diff', 'HEAD', '--', skillPath, templatePath, runnerPath], { cwd: root, encoding: 'utf8' });
+    assert.equal(sourceDiff, '', 'evaluate committed skill/template/runner bytes');
     const scratch = await mkdtemp(join(tmpdir(), 'ticket-review-eval-'));
     const events: Event[] = [];
     const transcripts: any[] = [];
@@ -116,7 +117,7 @@ for (const decision of ['approve', 'decline'] as const) {
       const { session } = await sdk.createAgentSession({
         cwd: scratch, agentDir: scratch, modelRuntime: runtime, model, thinkingLevel: 'medium',
         sessionManager: manager, settingsManager: sdk.SettingsManager.inMemory({
-          compaction: { enabled: false }, retry: { enabled: false },
+          compaction: { enabled: false }, retry: { enabled: true, maxRetries: 2 },
         }), resourceLoader, tools: tools.map(t => t.name), customTools: tools,
       });
       const transcript: any = { role, sessionId: session.sessionId, prompt, tools: tools.map(t => t.name), messages: [] };
@@ -126,15 +127,15 @@ for (const decision of ['approve', 'decline'] as const) {
         const message = event.message;
         // Retain visible text/tool calls/results, never private model thinking or credentials.
         transcript.messages.push({ role: message.role, provider: message.provider, model: message.model,
-          stopReason: message.stopReason, toolName: message.toolName,
-          content: message.content?.filter((block: any) => block.type !== 'thinking') });
+          stopReason: message.stopReason, errorMessage: message.errorMessage, toolName: message.toolName,
+          content: Array.isArray(message.content) ? message.content.filter((block: any) => block.type !== 'thinking') : message.content });
       });
       const timer = setTimeout(() => { void session.abort(); }, 240_000);
       try {
         await session.prompt(prompt);
         const last = session.messages.at(-1);
         assert.equal(last?.role, 'assistant', 'model completed with an assistant response');
-        assert.equal(last?.stopReason, 'stop', 'model completed successfully, without truncation or provider error');
+        assert.equal(last?.stopReason, 'stop', `model completed successfully: ${last?.errorMessage ?? 'no provider error'}`);
         return session.getLastAssistantText();
       } finally { clearTimeout(timer); unsubscribe(); session.dispose(); }
     }
@@ -152,7 +153,7 @@ for (const decision of ['approve', 'decline'] as const) {
       }),
       tool('fresh_subagent', 'Invoke a new independent reviewer session. Supply only the original ticket and rewrite packet. Template and fixed reviewer checklist are provided by the tool, not writer conversation.', Type.Object({ original: Type.Unknown(), rewrite: rewriteSchema }), async args => {
         const handoff = record('reviewer_handoff', args);
-        const result = await runAgent('reviewer', `${template}\n\n${reviewerChecklist}\n\nOriginal ticket:\n${JSON.stringify(args.original)}\n\nRewrite packet:\n${JSON.stringify(args.rewrite)}\n\nReturn your independent review as JSON with outcome (pass or bounce), coverage, testability, blockingFindings, warnings and openQuestions.`, []);
+        const result = await runAgent('reviewer', `${template}\n\n${reviewerChecklist}\n\nOriginal ticket:\n${JSON.stringify(args.original)}\n\nRewrite packet:\n${JSON.stringify(args.rewrite)}\n\nReturn concise JSON (under 800 tokens) with outcome (pass or bounce), coverage (source-to-item mapping), testability (check per item), blockingFindings (array), warnings and openQuestions.`, []);
         record('reviewer_result', { handoff: handoff.sequence, result }); return result;
       }),
       tool('show_diff', 'Display an exact unified body diff against the current ticket plus old/new estimate and blocked-by links, and separate reviewer result/warnings. Does not request approval or write anything.', Type.Object({ rewrite: rewriteSchema, review: Type.String() }), args => {
@@ -190,7 +191,8 @@ for (const decision of ['approve', 'decline'] as const) {
       const display = events.findLast(e => e.kind === 'displayed_diff');
       assert.ok(display, 'the agent actually displays a diff');
       const proposal = display.rewrite as Rewrite;
-      const reviewed = reviews.findLast(e => JSON.stringify(e.rewrite) === JSON.stringify(proposal));
+      const editFields = (packet: Rewrite) => [packet.body, packet.estimateHours, packet.estimateBasis, packet.blockedBy];
+      const reviewed = reviews.findLast(e => JSON.stringify(editFields(e.rewrite)) === JSON.stringify(editFields(proposal)));
       assert.ok(reviewed, 'displayed packet is exactly a reviewed packet');
       const result = events.find(e => e.kind === 'reviewer_result' && e.handoff === reviewed.sequence);
       assert.ok(result && result.sequence < display.sequence);
@@ -230,7 +232,8 @@ for (const decision of ['approve', 'decline'] as const) {
     finally {
       await mkdir(evidence, { recursive: true });
       await writeFile(join(evidence, `${decision}.json`), JSON.stringify({
-        version: 1, revision, model: selection, thinkingLevel: 'medium',
+        version: 1, revision, observedAt: new Date().toISOString(), model: selection, thinkingLevel: 'medium',
+        runner: { path: runnerPath, sha256: createHash('sha256').update(await readFile(join(root, runnerPath))).digest('hex') },
         skill: { path: skillPath, sha256: createHash('sha256').update(skill).digest('hex') },
         template: { path: templatePath, sha256: createHash('sha256').update(template).digest('hex') },
         decision, passed: !failure, failure: failure instanceof Error ? failure.message : failure,

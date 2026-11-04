@@ -98,7 +98,11 @@ warnings end with `Open questions on:` followed by linked ticket numbers with
 unresolved questions. The skill ships in the plugin and global skill set;
 after `mill update`, use `mill skills refresh` with consent, then reload the
 skill or start a fresh conversation. Instruction/installation tests do not
-prove live agent compliance or actual tracker writes.
+prove live agent compliance or actual tracker writes. The opt-in
+[model-assisted evaluation](evidence/ticket-review/README.md) runs the shipped
+skill with independent reviewer sessions, a recording fake tracker and simulated
+human approval/decline; retained observations prove those isolated scenarios,
+not live tracker integration.
 
 ## Before you start a run
 
