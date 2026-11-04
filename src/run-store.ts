@@ -55,7 +55,7 @@ export interface TeamProgress {
   /** Send-back note for the next test-writers run; cleared once the tests are red. */
   redFeedback?: string;
   /** Candidate at the red-check cap, or a passing guard explicitly accepted for direct review. */
-  passingTests?: { head: string; acceptedBy?: 'reviewer' | 'person' };
+  passingTests?: { head: string; redOutput?: string; acceptedBy?: 'reviewer' | 'person' };
   /** The unfixed code the red check accepted: the tests at this commit fail. A correction renews its proof here. */
   redHead?: string;
   /** Scenarios the red check accepted as failing for the intended reason; each must pass before merge. */

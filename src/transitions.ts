@@ -585,7 +585,7 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     const passing = ticket.reason === 'tests-not-red' || Boolean(team.passingTests);
     delete team.redPending; delete team.redChecks; delete team.redFeedback;
     if (passing) {
-      team.passingTests = { head: commit, acceptedBy: 'person' };
+      team.passingTests = { ...team.passingTests, head: commit, acceptedBy: 'person' };
       delete team.redHead;
     }
     team.testCommit = commit;

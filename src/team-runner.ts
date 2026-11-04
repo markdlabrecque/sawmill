@@ -407,7 +407,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const checks = progress.redChecks ?? 0;
         progress.redFeedback = feedback;
         if (checks >= redCheckCap) {
-          progress.passingTests = { head };
+          progress.passingTests = { head, redOutput: `${report.handoff}\nRed-check output:\n${tail(tested.output)}` };
           resume = progress.next = 'reviewer';
           await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nRed-check cap reached; requesting reviewer judgment of each test's behaviour and regression protection.\n\n${tested.output}`, reachedStage: stage, round: checks + 1 } });
           return false;
@@ -443,7 +443,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         checkStop(cwd, number);
         if (await git(path, 'rev-parse', 'HEAD') !== correction.head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
         const report = await reportTestRun(cwd, number, config.command, run, config.timeout);
-        correction.redOutput = report.handoff;
+        correction.redOutput = `${report.handoff}\nRenewed red-check output:\n${tail(run.output)}`;
         correction.green = healthyGreen(run);
         const at = `The corrected tests on the unfixed code at ${redHead}`;
         const failed = (problem: string): Evidence => ({ valid: false, scenarios: [], problem });
@@ -541,7 +541,9 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const sources: string[] = [];
         for (const file of tracked) {
           if (files.includes(file) || /(^|\/)(?:test|tests|__tests__|node_modules)\/|\.(?:test|spec)\./.test(file) || !/\.(?:[cm]?[jt]sx?|py|php|rs|go|java|rb|vue|svelte)$/.test(file)) continue;
-          if (!references.includes(file) && !references.includes(basename(file))) continue;
+          // TypeScript projects commonly import the emitted .js path from .ts tests.
+          if (!references.includes(file) && !references.includes(basename(file)) &&
+              !references.includes(basename(file).replace(/\.tsx?$/, '.js'))) continue;
           const source = await git(path, 'show', `${head}:${file}`);
           const excerpt = source.slice(0, Math.min(64 * 1024, remaining));
           sources.push(`${file} at ${head}:\n${excerpt}${excerpt.length < source.length ? '\n[truncated; inspect the file for the rest]' : ''}`);
@@ -563,7 +565,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           `A green run alone does not make weaker tests acceptable. Pass accepts valid renewed red proof; healthy green proof also requires explicit passingTests acceptance under the meaningful-guard checklist.\n${request}\n\n${correction.tests ?? ''}\n\n` +
           (correction.red ? `Renewed red proof on the unfixed code at ${progress.redHead}: ${correction.red.valid
             ? `the corrected tests still fail${correction.red.scenarios.length ? ` (${correction.red.scenarios.join(', ')})` : ''}.`
-            : `${correction.red.problem} ${correction.green ? 'Explicitly judge whether each test protects real behaviour; a generic pass is not acceptance.' : 'Mill will not accept this correction on a pass.'}`}\n\n${correction.redOutput ?? ''}\n\n` : '') +
+            : `${correction.red.problem} Mill will not accept this correction on a pass.${correction.green ? ' A generic pass is insufficient: to accept this healthy green proof instead, explicitly judge each test as a meaningful guard using passingTests evidence.' : ''}`}\n\n${correction.redOutput ?? ''}\n\n` : '') +
           `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}` +
           (correction.green ? await guardEvidence(correction.files) : '');
       };
@@ -627,7 +629,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
         const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
         const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site +
-          (role === 'reviewer' && progress.passingTests ? `\n\nPassing tests at the red-check cap: ${progress.redFeedback ?? 'A person accepted the passing guard.'}\n` + await guardEvidence(progress.testFiles ?? []) : '');
+          (role === 'reviewer' && progress.passingTests ? `\n\nPassing tests at the red-check cap: ${progress.redFeedback ?? 'A person accepted the passing guard.'}\n${progress.passingTests.redOutput ?? ''}\n` + await guardEvidence(progress.testFiles ?? []) : '');
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces,
           ...(entry?.role === role && entry.bounces === current().bounces && entry.selectionId ? { selectionId: entry.selectionId } : {}) };

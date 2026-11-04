@@ -120,6 +120,27 @@ fixtures), then exceeded 600 seconds while their callers timed out waiting for
 roles. Those fixtures need test-writer attention before full-suite green can be
 claimed; bypassing definition checks would violate the missing-label requirement.
 
+## Ticket #272 completion record
+
+Glossary checked across the team runner, runtime outcomes, human approval,
+review handoffs and role/watch guidance. Updated **Test writers** to include
+meaningful passing guards explicitly accepted when the required behaviour already
+exists. The old definition and `docs/specs/sawmill.md` claimed that green tests
+proved nothing and always stopped at the cap; the human-approved ticket and the
+protected guard scenarios establish reviewer judgment instead. README, spec,
+operating guide and roles now describe that exception consistently. Existing
+Reviewer, Test correction, Logjam and Required check definitions still apply;
+no unresolved terminology conflict remains.
+
+Evidence: `src/team-runner.ts` retains the candidate baseline through judgment,
+accepts explicit per-test behaviour/regression evidence, runs verification before
+final review, and promotes meaningful green corrections only after fresh review.
+`src/transitions.ts` records human acceptance and resets red-check state.
+The protected scenarios in `test/team.test.ts`, `test/red-gate.test.ts` and
+`test/test-correction.test.ts` cover both cap causes, human recovery, meaningful
+and meaningless guards, correction promotion, and failed verification. No test
+files were changed. All 136 focused team/red-gate/correction tests pass.
+
 ## Ticket #274 completion record
 
 Glossary checked across the Logging skill, packaged ticket template, plugin

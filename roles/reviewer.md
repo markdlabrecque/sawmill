@@ -44,11 +44,23 @@ The CLI rejects reports citing IDs outside the saved checklist and asks you to r
 
 The CLI refuses a pass with an unresolved, missing or unevidenced item and sends it back as a bounce, on every round alike. When an item needs proof only a person can give, say so in its reason; a person can waive it with `mill run waive`.
 
+## Meaningful passing guards
+
+At the red-check cap, Mill asks you to judge tests that already pass or did not fail meaningfully. Use the saved acceptance checklist, test diff, relevant implementation and red-check output. For each test, identify the behaviour its assertions actually exercise and explain a concrete regression that would make it fail. Reject tautologies, assertions disconnected from the requirement, missing required coverage and weakened tests. Do not demand a new implementation when the required behaviour already exists.
+
+A meaningful passing guard needs explicit acceptance on a pass, in addition to the usual acceptance evidence:
+
+```json
+{"passingTests":{"decision":"accept","tests":[{"file":"tests/answer.test.ts","behaviour":"answer() returns 0 synchronously","regression":"Returning 42, undefined or a Promise fails the strict equality assertion."}]}}
+```
+
+Name every test in the candidate files, with its behaviour and regression; a generic pass is insufficient. Acceptance bypasses only proof of missing behaviour, never failing tests or declared checks. Mill then skips the implementer, runs tests and declared checks, and requests final review. Bounce meaningless initial tests to the test writers with actionable feedback. If the evidence needs a person, ask a question; Mill retains the protected baseline for `approve-tests` followed by `answer`.
+
 ## Test corrections
 
 The handoff's saved `testFiles` list identifies the protected files. Other tests are not protected merely because they are tests. Send repairs to unprotected tests to the implementer through an ordinary bounce; name only saved protected files in a `test-correction` request. Mill refuses a request containing any unprotected file.
 
-The implementer cannot change the test writers' protected tests. When one of them is wrong (it asserts something the ticket never promised, or it targets the wrong fixture), do not bounce. Request a `test-correction` instead: name the protected test files, the mistake, and how the corrected tests still cover what the ticket requires. The CLI sends the request to the test writers, who may change only those files. You then review the correction: it must fix only the named mistake, keep every requirement covered, and leave the implementation meeting the ticket. A green run is not evidence that the correction is valid. Where it applies, check that the corrected test still fails against the unfixed behaviour. Pass accepts it as the new protected baseline. Another `test-correction` sends it back. After two attempts, a further request stops the ticket for a person. If the ticket is unclear or contradicts itself, ask a question instead.
+The implementer cannot change the test writers' protected tests. When one of them is wrong (it asserts something the ticket never promised, or it targets the wrong fixture), do not bounce. Request a `test-correction` instead: name the protected test files, the mistake, and how the corrected tests still cover what the ticket requires. The CLI sends the request to the test writers, who may change only those files. You then review the correction: it must fix only the named mistake, keep every requirement covered, and leave the implementation meeting the ticket. A green run is not evidence that the correction is valid. Where it applies, check that the corrected test still fails against the unfixed behaviour. If Mill reports healthy passing tests on the unfixed code, you may instead explicitly accept them as meaningful guards using the same checklist and `passingTests` evidence above. Review both the scoped correction and the implementation afresh, preserve every required behaviour, and require passing current tests and declared checks. A generic pass alone does not accept green renewed proof; timeouts, killed runs, infrastructure problems and failed checks are not green proof. An explicit acceptance promotes the corrected protected baseline and continues through normal integration without asking or notifying a person solely because renewed proof was green. Otherwise, pass accepts valid renewed red proof as the new protected baseline. Another `test-correction` sends it back. After two attempts, a further request stops the ticket for a person. If the ticket is unclear or contradicts itself, ask a question instead.
 
 ### Findings involving both kinds of test
 
