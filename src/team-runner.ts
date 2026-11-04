@@ -631,13 +631,14 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site +
           (role === 'reviewer' && progress.passingTests ? `\n\nPassing tests at the red-check cap: ${progress.redFeedback ?? 'A person accepted the passing guard.'}\n${progress.passingTests.redOutput ?? ''}\n` + await guardEvidence(progress.testFiles ?? []) : '');
         const duration = project.role_timeout;
-        progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces,
+        const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict'
+          ? entry?.conflictBase ?? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
+        progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces, ...(conflictBase ? { conflictBase } : {}),
           ...(entry?.role === role && entry.bounces === current().bounces && entry.selectionId ? { selectionId: entry.selectionId } : {}) };
         await save({});
         const result = await retryInfrastructure(async () => {
           const browser = role === 'reviewer' ? await browserHandoff(project, ticket.body, path, number, options.home, options.signal, progress.userTesting, progress.site) : undefined;
           checkStop(cwd, number);
-          const conflictBase = role === 'implementer' && progress.repair?.source === 'rebase-conflict' ? await git(cwd, 'rev-parse', `refs/heads/${project.integration}`) : undefined;
           const original = progress.selections?.find(event => event.id === progress.activeRole?.selectionId);
           // A later retry can reject a choice that the first invocation merely failed to run.
           // Consult the whole persisted decision chain, including when resuming older runs.
@@ -718,8 +719,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (conflictRepair) {
           // Rebase rewrites SHAs and can drop checkpoints already supplied by integration.
           // Preserve protected content, then compare against the rebased baseline.
-          await git(path, 'merge-base', '--is-ancestor', project.integration, 'HEAD^');
-          progress.repair!.baseCommit = await remapRebasedWriters(path, progress, project.integration);
+          await git(path, 'merge-base', '--is-ancestor', conflictBase!, 'HEAD^');
+          progress.repair!.baseCommit = await remapRebasedWriters(path, progress, conflictBase!);
           progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
         }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
@@ -891,7 +892,7 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   // An approved baseline that is not itself a writer commit comes after them in history.
   const originals = progress.testCommit && !writers.includes(progress.testCommit) ? [...writers, progress.testCommit] : writers;
   // A replayed, reviewer-approved test correction can itself be HEAD.
-  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^refs/heads/${integration}`)).split('\n').filter(Boolean);
+  const commits = (await git(path, 'rev-list', '--reverse', '--no-merges', 'HEAD', `^${integration}`)).split('\n').filter(Boolean);
   const copies = new Map<string, string>();
   const files = progress.testFiles ?? [];
   if (!files.length) throw rewritten();

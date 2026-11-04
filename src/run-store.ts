@@ -38,7 +38,7 @@ export interface TeamProgress {
   startLabels?: { applied?: boolean; missing?: string[]; approved?: string[]; question?: string };
   next?: Role | 'integrate';
   recovery?: { stage: string };
-  activeRole?: { role: Role; beforeHead: string; bounces: number; selectionId?: string };
+  activeRole?: { role: Role; beforeHead: string; bounces: number; selectionId?: string; conflictBase?: string };
   /** Selection snapshots are retained for every invocation, including failures and reused decisions. */
   selections?: import('./model-routing.js').ModelSelection[];
   invocations?: { role: Role; round: number; selectionId?: string; execution: import('./model-routing.js').ExecutionMeasurement }[];
