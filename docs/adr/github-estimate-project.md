@@ -76,3 +76,21 @@ explicit setup proposal. No unresolved terminology conflict was found.
 
 The protected `docs/agents/domain.md` is unchanged; this decision/review record
 supplies the same-ticket completion record required by its procedure.
+
+## Rebase repair record
+
+Rebased onto integration revision `403341f`. The plugin README conflict was two
+independent additions: integration's **Building the graph** guidance and this
+ticket's **GitHub estimate project setup** guidance. Both sections and the
+integration branch's ticket-graph skill listing are preserved. No implementation
+or test changes were needed; the setup and YAML regression tests match the
+reviewed revision `4abf29c` byte for byte.
+
+Verification at rebased revision `d5a81ab`: the full declared test command passes
+1406 suite tests and 3 process-permission tests, with no failures; build and
+typecheck pass. Full output: `/tmp/pi-bash-12151879412d484c.log`.
+
+Glossary checked; no glossary update needed because the existing GitHub estimate
+project, Blocked-by, Logging and Draft definitions cover both preserved sections.
+The conflict was overlapping documentation placement, not conflicting domain
+claims.
