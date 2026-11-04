@@ -2,7 +2,7 @@
 
 Requires the Sawmill `mill` CLI on PATH and a configured millyard. The plugin
 contains the ticket-writing skill `/sawmill:logging` and the user-invoked skills
-`/sawmill:draft`, `/sawmill:foreman`,
+`/sawmill:ticket-graph`, `/sawmill:draft`, `/sawmill:foreman`,
 `/sawmill:nightwatch`, `/sawmill:mill-report` and `/sawmill:sawdust`.
 
 From a repository checkout, register the repository root and install the plugin:
@@ -55,6 +55,34 @@ and terminal ticket references are linked numbers without titles. See the
 [Logging instructions](skills/logging/SKILL.md) for field setup, independent
 review and partial-write recovery. This is shipped agent guidance, not a new
 `mill logging` command; instruction tests do not prove model compliance.
+
+## Building the graph
+
+Use `/sawmill:ticket-graph <ticket numbers...>` or `mill graph <ticket numbers...>`
+with the full set of tickets to consider (at least two distinct numbers). The
+command reads only those tickets, including closed ones, and runs one headless,
+tool-free agent using the configured reviewer model and effort. The agent
+proposes hard blocked-by links and soft ordering, such as shared files or likely
+merge clashes; Mill checks and adds links without confirmation. No run is needed.
+
+Existing outside blockers refuse the **entire operation**, even if other tickets
+in the batch are independent: include the blockers in the supplied set or correct
+the existing links before trying again. Preflight reports every affected ticket
+and outside blocker, with no outside-ticket reads, agent invocation or writes.
+
+GitHub uses native issue dependencies, with no description changes. GitLab CE
+adds only to the description's `## Blocked by` list from the shared template.
+Existing links, including legacy inline declarations, are preserved and skipped;
+a rerun adds no duplicates. Cyclic links are skipped and reported, counting
+existing and proposed links; other links still get written. Missing/unreadable
+tickets or unusable agent output write nothing. Partial tracker failures keep
+successful links and name failures; rerun to add only missing links. Cycles and
+operational failures exit non-zero. No proposed links is a successful result.
+
+The [ticket-graph skill](skills/ticket-graph/SKILL.md) reports each link written
+and relays non-zero messages unchanged. Terminal references are clickable
+numbers without titles; piped output and `--json` use plain `#<number>`.
+Draft reads the existing graph; it does not propose or edit links.
 
 ## Drafting a run
 

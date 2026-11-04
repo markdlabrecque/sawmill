@@ -40,6 +40,12 @@ export class GitHubWriter implements TicketWriter {
       throw error;
     }
   }
+  async addBlockedBy(blocked: number, blocker: number): Promise<void> {
+    // The dependency endpoint takes the issue's database id, not its number.
+    const issue = await githubRequest(this.config, this.cwd, 'GET', `repos/${this.config.repo}/issues/${blocker}`, undefined, { timeoutMs: this.timeoutMs }) as { id?: unknown; number?: unknown } | null;
+    if (issue?.number !== blocker || !Number.isSafeInteger(issue.id) || Number(issue.id) <= 0) throw new Error(`Invalid GitHub issue identity for #${blocker}.`);
+    await this.write(blocked, 'POST', '/dependencies/blocked_by', { issue_id: issue.id });
+  }
   addComment(number: number, body: string) { return this.write(number, 'POST', '/comments', { body }); }
   closeTicket(number: number) { return this.write(number, 'PATCH', '', { state: 'closed' }); }
   async ticketState(number: number): Promise<'open' | 'closed'> {

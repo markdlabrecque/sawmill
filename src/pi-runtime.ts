@@ -64,7 +64,7 @@ export class PiRuntime implements Runtime {
     const tools = request.role === 'reviewer' ? 'read,grep,find,ls,bash' : 'read,grep,find,ls,bash,edit,write';
     const nonce = randomUUID();
     const args = ['--print', '--mode', 'json', '--model', request.model, '--thinking', request.effort,
-      '--tools', tools, ...resourceFlags, ...extensionArgs(request.piExtensions),
+      ...(request.promptOnly ? ['--no-tools'] : ['--tools', tools]), ...resourceFlags, ...extensionArgs(request.piExtensions),
       '--extension', fileURLToPath(new URL('./pi-policy.js', import.meta.url))];
     let failure: string | undefined;
     let sessionId: string | undefined;
@@ -174,7 +174,7 @@ export class PiRuntime implements Runtime {
       } catch { stop('Invalid Pi permission policy readiness record.'); }
     };
     const child = await directChild(request, sink, { executable: this.options.executable ?? 'pi', args,
-      env: { ...env, SAWMILL_PI_POLICY: JSON.stringify({ nonce, role: request.role, model: request.model, effort: request.effort, testCommand: request.testCommand, verification: request.verification, browser: request.browser, browserExecutable, conflictBase: request.conflictBase }) }, label: 'Pi', deadline, stdoutLine: record, stderrLine: errorLine });
+      env: { ...env, SAWMILL_PI_POLICY: JSON.stringify({ nonce, role: request.role, model: request.model, effort: request.effort, testCommand: request.testCommand, verification: request.verification, browser: request.browser, browserExecutable, conflictBase: request.conflictBase, promptOnly: request.promptOnly }) }, label: 'Pi', deadline, stdoutLine: record, stderrLine: errorLine });
     const { code, signal, stderr } = child;
     failure ??= child.failure;
     if (code !== 0) failure ??= `Pi ${!ready && !sessionId ? 'startup failed' : 'process failure'} ${code ?? signal}: ${stderr.trim()}`;

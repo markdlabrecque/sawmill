@@ -127,7 +127,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   return { snapshot: readRun(cwd), added: ordered.map(ticket => ticket.number), alreadyPresent, warnings, ...(clearedPick === undefined ? {} : { clearedPick }) };
 }
 
-function bodyBlockers(body: string): number[] {
+export function bodyBlockers(body: string): number[] {
   const sections: string[] = [];
   let inSection = false;
   let fence: string | undefined;

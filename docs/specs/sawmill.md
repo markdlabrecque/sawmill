@@ -12,6 +12,34 @@ Sawmill: a run is a batch of tickets in blocked-by order, executed from a millya
 
 ## User Stories
 
+### Building the graph
+
+`mill graph <ticket numbers...> [--json]` builds the blocked-by graph before draft.
+It deduplicates the supplied numbers (at least two distinct tickets), reads only
+that set including closed tickets, and refuses missing or unreadable tickets.
+Any existing blocker outside the set refuses the whole operation before agent
+execution or writes; diagnostics name every affected ticket and outside blocker
+and say to include the blocker or correct the existing link. No outside ticket
+is read. This includes native, legacy inline and GitLab section declarations.
+
+One tool-free headless agent proposes hard requirements and soft ordering, such
+as shared files or likely merge clashes. Mill validates the entire proposal and
+adds links without confirmation, on each blocked ticket: GitHub native issue
+dependencies, GitLab CE `## Blocked by` lists using the Logging template. Existing
+declarations are never rewritten, removed or duplicated. Each link is checked
+for cycles against existing links and accepted additions; only a cyclic link is
+skipped, other links are written, and the command exits non-zero. Agent failure
+or unusable output writes nothing; no links is success. Partial tracker failures
+keep successful writes, name failures and exit non-zero; reruns add only missing
+links. Terminal references are linked numbers, plain `#<number>` when piped or
+with `--json`. The ticket-graph skill runs the command and relays its messages,
+including non-zero messages unchanged.
+
+Ticket-text and blocked-by edits come only from Logging, ticket-review and
+ticket-graph, never from draft. This does not change run assignment or delivery
+reporting writes. Draft reads the graph as found; no declaration means no
+blocked-by links.
+
 ### Drafting a run
 
 1. As the human user, I want `mill run draft` to take a label, a spec issue, or a list of ticket numbers, look the tickets up in the tracker, order them by their blocked-by links, and write the run file, so that I line up a batch in one command.
