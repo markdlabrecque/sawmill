@@ -725,6 +725,16 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           await git(path, 'merge-base', '--is-ancestor', conflictBase!, 'HEAD^');
           progress.repair!.baseCommit = await remapRebasedWriters(path, progress, conflictBase!);
           progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+        } else if (noChange && !progress.repair && progress.testCommit) {
+          // A person can rebase while an ordinary implementer question is stopped,
+          // too. No-change already guarantees the role did not rewrite HEAD. Recover
+          // the writer copies by content before checking protected tests and work.
+          const checkpoint = progress.checkpointHead ?? progress.testCommit;
+          const intactHistory = await git(path, 'merge-base', '--is-ancestor', checkpoint, 'HEAD').then(() => true, () => false);
+          if (!intactHistory) {
+            await remapRebasedWriters(path, progress, `refs/heads/${project.integration}`);
+            progress.checkpointHead = await git(path, 'rev-parse', 'HEAD');
+          }
         }
         if (role !== 'test-writers' && await changedTests(path, progress)) {
           const stopped = await bounce(tampered, 'protected-tests');
