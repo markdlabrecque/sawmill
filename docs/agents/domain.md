@@ -306,3 +306,22 @@ No terminology conflicts were found. All 15 protected Logging checks pass,
 including the six previously failing fixture/packaging checks; the full command
 passes 1250 suite tests and 3 process-permission tests. Build and typecheck pass.
 The protected test file is unchanged.
+
+## Ticket #293 test-writers record
+
+Glossary checked; no glossary update needed because the existing Draft, Ticket,
+Acceptance checklist and GitHub estimate project definitions cover fixture
+validity. No terminology conflicts found. Three new guards in
+`test/draft-fixture-validity.test.ts` exercise dispatch fixture defaults without
+per-test repairs: drafted acceptance checklists, configured `tracker.project`
+and positive injected-tracker estimates. The estimate guard needs one small
+test-only observation seam: return the existing injected tracker from
+`test/dispatch-fixture.ts` as `tracker`; no shipped API change is required.
+Other fake trackers and fake gh/glab transports still need the ticket's fixture
+and reviewer-evidence implementation work; these guards do not claim complete
+transport coverage. Existing tests and implementation files are unchanged.
+
+Verification: the full declared test command built successfully and ran 1421
+tests: 1418 passed and only the three new guards failed, for absent checklist,
+absent project configuration and absent observable estimate provider. No tests
+were skipped or retired. Output: `/tmp/pi-bash-b3a8f406556a3282.log`.
