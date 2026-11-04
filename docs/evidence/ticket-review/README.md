@@ -108,3 +108,19 @@ tests and 3 process-permission tests, with no failures; build and typecheck pass
 Glossary checked; no update needed because preserving completion records and
 combining plugin descriptions changes no domain definitions. Logging, Reviewer
 and Blocked-by still cover the documented skills; no terminology conflict found.
+
+## Subsequent integration rebase repair
+
+Rebased onto integration revision `e3236315da692055895a2e4e9b4493beabb16cf3`.
+Resolved the overlapping additions in `plugins/sawmill/README.md` by keeping both
+GitHub estimate project setup and existing-ticket review sections unchanged.
+These document separate workflows: Logging can add newly filed tickets to the
+Project, while ticket-review still refuses a missing Project item. The protected
+writer patches, ticket-review skill, evaluation runner and retained model
+observations are preserved; the model evaluation was not rerun or relabeled.
+
+Verification: the exact clean-test command passes 1415 suite tests and 3
+process-permission tests, with no failures; build and typecheck pass.
+Glossary checked; no update needed because retaining both documentation sections
+changes no definitions. Logging, Reviewer and Tracker already cover these
+workflows; no terminology conflict found.
