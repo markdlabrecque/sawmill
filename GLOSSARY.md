@@ -59,7 +59,7 @@ A batch of tickets worked in blocked-by order, with at most one current run per 
 _Avoid_: Batch, job, session
 
 **Draft**:
-The selection of tickets for a run and their order from the blocked-by graph. A draft can create an inactive run or append tickets to an unfinished run.
+The validation and selection of filed tickets for a run, ordered by the blocked-by graph. Draft checks estimates, the acceptance checklist and configured test harness needs before creating an inactive run or appending to an unfinished run; `--check` validates without building or changing a run.
 _Avoid_: Plan, queue up
 
 **Project**:

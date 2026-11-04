@@ -575,7 +575,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
         if (snapshot.run.lifecycle === 'active' && drafted.added.length) notifyScheduler(home);
         const policy = settled.policy ? [describeCheckPolicy(settled.policy)] : settled.host?.gaps.length ? [`Merge settings not verified: ${settled.host.gaps.join('; ')}`] : [];
         const cleared = drafted.clearedPick === undefined ? [] : [`Cleared pending pick #${drafted.clearedPick} because the run was replaced.`];
-        emit({ ...view(snapshot), ...(drafted.warnings.length ? { warnings: drafted.warnings } : {}), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [`${snapshot.run.lifecycle === 'inactive' ? 'Draft' : 'Run'}: ${snapshot.tickets.map(ticket => `#${ticket.number}`).join(', ')}`, ...drafted.warnings.map(warning => `Warning: ${warning}`), ...cleared, ...policy,
+        emit({ ...view(snapshot), ...(drafted.warnings.length ? { warnings: drafted.warnings } : {}), ...(drafted.clearedPick === undefined ? {} : { clearedPick: drafted.clearedPick }) }, [formatRun(snapshot, { tracker: config.project.tracker, titles: false }), ...drafted.warnings.map(warning => `Warning: ${warning}`), ...cleared, ...policy,
           ...drafted.alreadyPresent.map(number => `#${number} is already present; left unchanged.`),
           snapshot.run.lifecycle === 'inactive' ? 'The run is inactive; inspect it with mill run status, then start it with mill run.' : `The run remains ${snapshot.run.lifecycle}.`].join('\n'));
         return 0;

@@ -32,7 +32,12 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     }
   };
   // The millyard guard still precedes tracker contact.
-  await checkMillyard(cwd, project.integration);
+  try { await checkMillyard(cwd, project.integration); }
+  catch (error) {
+    if (!(error instanceof CliError) || error.exitCode === 2) throw error;
+    fail(null, 'millyard', error.message);
+    throw new DraftValidationError(failures);
+  }
   let previous: ReturnType<typeof checkDraftable>;
   await collect(null, 'run-state', () => { previous = checkDraftable(cwd, replace); });
   const existing = previous && previous.run.lifecycle !== 'completed' && !replace ? previous : undefined;
@@ -43,7 +48,8 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     await execute('git', ['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${project.integration}`], { cwd, timeout: 60000 });
   } catch (error) {
     if ((error as { code?: unknown }).code === 2) {
-      throw new CliError(`Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.`);
+      throw new DraftValidationError([{ ticket: null, rule: 'integration-branch', item: project.integration,
+        message: `Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.` }]);
     }
     throw new CliError(`Cannot check integration branch ${project.integration} on remote origin; verify remote access and retry drafting.\n${error instanceof Error ? error.message : String(error)}`);
   }

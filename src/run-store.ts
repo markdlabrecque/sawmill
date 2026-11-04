@@ -453,7 +453,7 @@ export function readRunDatabase(db: DatabaseSync): RunSnapshot {
       ...(run.pending_pick ? { pendingPick: Number(run.pending_pick) } : {}) }, tickets, edges, pendingWrites };
 }
 
-export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectConfig['tracker']; links?: boolean } = {}): string {
+export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectConfig['tracker']; links?: boolean; titles?: boolean } = {}): string {
   const ref = (number: number) => ticketRef(options.tracker ?? snapshot.run.tracker, number, options.links ?? false);
   // Linked cells replace their plain text only after cleaning and padding, so widths stay visible-width.
   const linked: (string | undefined)[][] = [[]];
@@ -468,13 +468,13 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
       const wait = `waiting on ${ticket.wait.phase} (${ticket.wait.reason}) for ${Math.floor((ticket.wait.elapsedMs ?? 0) / 1000)}s of ${ticket.wait.deadline}`;
       detail = detail ? `${detail}; ${wait}` : wait;
     }
-    linked.push([ref(ticket.number), undefined, undefined, linkedDetail]);
-    return [`#${ticket.number}`, ticket.title, ticket.state, detail];
+    linked.push([ref(ticket.number), ...(options.titles === false ? [] : [undefined]), undefined, linkedDetail]);
+    return [`#${ticket.number}`, ...(options.titles === false ? [] : [ticket.title]), ticket.state, detail];
   });
-  const table = [['Ticket', 'Title', 'State', 'Detail'], ...rows].map(row => row.map(cell => cell.replace(/[\r\n\t\x1b]/g, ' ')));
-  const widths = [0, 1, 2].map(index => Math.max(...table.map(row => row[index]!.length)));
+  const table = [['Ticket', ...(options.titles === false ? [] : ['Title']), 'State', 'Detail'], ...rows].map(row => row.map(cell => cell.replace(/[\r\n\t\x1b]/g, ' ')));
+  const widths = table[0]!.slice(0, -1).map((_, index) => Math.max(...table.map(row => row[index]!.length)));
   const render = (cell: string, row: number, index: number) => {
-    const padded = index < 3 ? cell.padEnd(widths[index]!) : cell;
+    const padded = index < widths.length ? cell.padEnd(widths[index]!) : cell;
     const link = linked[row]![index];
     return link === undefined ? padded : link + padded.slice(cell.length);
   };

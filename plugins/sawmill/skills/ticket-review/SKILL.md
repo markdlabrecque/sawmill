@@ -74,7 +74,9 @@ and pending writes per ticket. Never borrow another ticket's approval.
   Requirements cannot remain only in prose or be dropped to fit existing tests.
   Browser-testing needs go under `## User test cases`, with uniquely named cases,
   numbered steps, persona, starting condition and expected observations as the
-  template specifies. Do not delete cases merely because a harness is missing.
+  template specifies. `mill run draft` detects browser-testing needs only in
+  this section, not in acceptance item text; keep the required outcome in Done
+  when too. Do not delete cases merely because a harness is missing.
 - Preserve all existing Open questions, answered and unresolved alike, including
   questions in comments, retaining their answers and distinguishing their status.
   Record new uncertainties arising during rewriting there too. Uncertainty that

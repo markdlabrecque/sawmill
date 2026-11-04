@@ -29,8 +29,10 @@ unresolved findings to the human user and create nothing. Infeasible acceptance
 items block. A feasible item needing an unavailable harness instead gets a
 non-blocking warning naming the item and missing harness (for example, user test
 cases with `test_harness: none`). Preserve those cases and show the warning;
-the missing-harness hard failure belongs to `mill run draft`. The hard estimate
-existence check at run drafting is follow-up work, not implemented by this skill.
+the missing-harness hard failure belongs to `mill run draft`. Its hard estimate
+existence check reads the tracker field, never estimate prose in the description.
+Put browser-testing needs under the exact `## User test cases` heading: draft
+only detects them there, not in acceptance item text.
 
 Keep every question raised while writing under Open questions, with answers
 marked rather than removed. Terminal output uses clickable number-only ticket
@@ -103,6 +105,43 @@ prove live agent compliance or actual tracker writes. The opt-in
 skill with independent reviewer sessions, a recording fake tracker and simulated
 human approval/decline; retained observations prove those isolated scenarios,
 not live tracker integration.
+
+## Validate tickets and draft a run
+
+`mill run draft` checks all new selections before saving anything. It requires:
+
+- A human-effort estimate greater than zero in the tracker field: GitHub's
+  **Human estimate (hours)** in the configured `tracker.project`, or GitLab's
+  native time estimate. Body prose is not a substitute, and zero is missing.
+- Checkbox items (`- [ ]` or `- [x]`) under `## Done when`.
+- A test harness and web environment for `## User test cases`: `ddev` with
+  `.ddev/config.yaml`, or `docker` with `test_url`. No running site is required
+  just to draft; browser needs only in acceptance text are not detected.
+
+Use the same selector with `--check` when you only want validation:
+
+```sh
+mill run draft --label 'sprint ready' --check --json
+mill run draft --spec 40 --check --json
+mill run draft 12 14 15 --check --json
+```
+
+Check mode builds no run, creates or changes no run file and assigns no tickets.
+It includes the existing closed-ticket, worktree collision, outside blocker,
+cycle, proof-plan and replacement refusals. Normal draft does not partially save
+on failure: the previous draft/run remains unchanged. All ticket failures appear
+together; `--json` exposes a `failures` array of `ticket`, `rule`, `item` and
+`message` records. Text output uses linked ticket numbers without titles.
+
+Validation failure exits 1; usage/configuration errors exit 2. GitHub draft
+requires `tracker.project` after the optional setup offer; declining or being
+unable to answer is a configuration error. A tracker outage or permission error
+reading estimates exits 1 with a plain error, not false missing-estimate findings.
+Fix access and retry. Missing estimates are not grandfathered. Already-present
+members of an unfinished run are not revalidated when appending or after a
+harness change. Draft does not judge wording or scope, and validation refusal
+adds no new watcher play. Use Logging/ticket-review to repair ticket content,
+or correct the millyard configuration, then repeat draft/check.
 
 ## Before you start a run
 

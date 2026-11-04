@@ -55,6 +55,9 @@ separate; do not invent new behaviour that existing checks cannot prove.
 2. Perform a concrete action.
 3. Observe the expected result.
 
+Put all browser-testing needs in this exact `## User test cases` section:
+`mill run draft` detects them only here, not in acceptance item text. Keep the
+required outcome in Done when too; the case supplies its browser procedure.
 Give each case a unique heading and numbered steps with observable results.
 Preserve cases even if the millyard currently lacks their test harness; Logging
 warns, while run drafting enforces that requirement later.

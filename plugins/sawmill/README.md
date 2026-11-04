@@ -148,8 +148,25 @@ After Logging, request one selection:
 /sawmill:draft #12 #14 #15
 ```
 
-The skill calls `mill run draft --json`, explains validation failures, proposes
-scope changes when needed, and displays `mill run status`. It saves a draft,
+The skill calls `mill run draft --json`, reports every structured validation
+failure with linked ticket numbers, proposes scope changes when needed, and
+reports the saved run from `mill run status --json`. Ask it to “only validate”
+to use `mill run draft --check --json` with the same label, spec or numbers;
+that checks without creating or changing a run file or assigning tickets.
+
+Draft requires a positive human-effort estimate in the tracker field (GitHub:
+**Human estimate (hours)** in `tracker.project`; GitLab: native time estimate),
+checkbox items under `## Done when`, and a configured DDEV/Docker web environment
+for browser cases under `## User test cases`. Zero estimates count as missing;
+body estimate prose does not count. Browser needs stated only in acceptance text
+are not detected, so Logging and ticket-review place them in User test cases.
+Existing draft refusals also run in check mode. All ticket failures are returned
+in `failures` records (`ticket`, `rule`, `item`, `message`), with exit 1 and no
+partial draft. Usage/configuration errors exit 2, including unresolved GitHub
+`tracker.project`; estimate read/permission errors exit 1 as plain errors, not
+missing-estimate findings. Existing members of an unfinished run are not
+revalidated when appending, even after harness changes. Mill does not judge
+wording or scope. On success without `--check`, it saves a draft,
 which stays inactive. Starting the run is a separate, explicit action: run
 `mill run` once after inspecting the draft, and the shared scheduler keeps it
 moving from there.

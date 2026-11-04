@@ -94,7 +94,7 @@ export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd())
       do {
         const query = `query($owner:String!, $name:String!, $number:Int!, $project:Int!, $cursor:String) {
           repository(owner:$owner,name:$name) {
-            owner { ... on User { projectV2(number:$project) { id } } ... on Organization { projectV2(number:$project) { id } } }
+            owner { ... on User { projectV2(number:$project) { id field(name:"${humanEstimateField}") { ... on ProjectV2Field { dataType } } } } ... on Organization { projectV2(number:$project) { id field(name:"${humanEstimateField}") { ... on ProjectV2Field { dataType } } } } }
             issue(number:$number) { projectItems(first:100,after:$cursor) {
               nodes { project { number } fieldValueByName(name:"${humanEstimateField}") { ... on ProjectV2ItemFieldNumberValue { number } } }
               pageInfo { hasNextPage endCursor }
@@ -103,12 +103,13 @@ export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd())
         }`;
         type Page = { nodes: { project: { number: number }; fieldValueByName: { number?: number } | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
         const result = await githubRequest(config, cwd, 'POST', 'graphql', { query, variables: { owner, name, number, project: config.project, cursor } }) as {
-          errors?: { message: string }[]; data?: { repository: { owner: { projectV2: { id: string } | null }; issue: { projectItems: Page } | null } | null };
+          errors?: { message: string }[]; data?: { repository: { owner: { projectV2: { id: string; field: { dataType?: string } | null } | null }; issue: { projectItems: Page } | null } | null };
         };
         if (result.errors?.length) throw new Error(result.errors.map(error => error.message).join('; '));
         const repository = result.data?.repository;
         if (!repository?.issue || !repository.owner) throw new Error('GitHub returned unreadable estimate data.');
-        if (!repository.owner.projectV2) throw new CliError('Configured tracker.project does not exist or is not visible; repair the GitHub estimate project configuration.', 2);
+        if (!repository.owner.projectV2) throw new Error('Cannot read the configured GitHub estimate project; verify tracker.project and Project permissions.');
+        if (repository.owner.projectV2.field?.dataType !== 'NUMBER') throw new CliError(`Configured tracker.project needs the ${humanEstimateField} number field; run Mill interactively to review setup.`, 2);
         const page: Page = repository.issue.projectItems;
         if (!Array.isArray(page?.nodes) || !page.pageInfo) throw new Error('GitHub returned incomplete estimate data.');
         const item = page.nodes.find(item => item.project.number === config.project);
