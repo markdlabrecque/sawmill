@@ -909,7 +909,7 @@ async function remapRebasedWriters(path: string, progress: TeamProgress, integra
   const copies = new Map<string, string>();
   const files = progress.testFiles ?? [];
   if (!files.length) throw rewritten();
-  const integrationHead = await git(path, 'rev-parse', `refs/heads/${integration}`);
+  const integrationHead = await git(path, 'rev-parse', integration);
   let integrationCheckpoints: string[] | undefined;
   let next = 0;
   for (const original of originals) {
