@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import type { TestContext } from 'node:test';
 import { readRun } from '../src/run-store.js';
 import { stopScheduler } from '../src/scheduler.js';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureEstimate, fixtureProject, millyard } from './helpers.js';
 
 const execute = promisify(execFile);
 const bin = fileURLToPath(new URL('../src/bin.js', import.meta.url));
@@ -22,14 +22,14 @@ export async function until<T>(read: () => Promise<T>, ready: (value: T) => bool
 }
 
 export async function fixture(t: TestContext, numbers = [1], success = false) {
-  const tracker = { async getTicket(number: number) {
-    return { number, title: `Ticket ${number}`, body: 'Same shared file for every ticket.', state: 'open' as const, labels: [], comments: [], blockedBy: number === 2 ? [1] : [] };
+  const tracker = { getEstimate: fixtureEstimate, async getTicket(number: number) {
+    return { number, title: `Ticket ${number}`, body: fixtureBody('Same shared file for every ticket.'), state: 'open' as const, labels: [], comments: [], blockedBy: number === 2 ? [1] : [] };
   } };
   let cleanup!: () => Promise<void>;
   const y = await millyard({ after(fn: () => Promise<void>) { cleanup = fn; } } as TestContext, { tracker }, 'sawmill-dispatch-');
   await y.cli('build');
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
-    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: dispatch/tool')
+    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', `repo: dispatch/tool\n  project: ${fixtureProject}`)
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', 'test_harness: none')
     .replace('command: npm test', 'command: node --test'));
   await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 0;\n');
@@ -42,6 +42,10 @@ export async function fixture(t: TestContext, numbers = [1], success = false) {
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
+if (args[0] === 'api' && args[1] === 'graphql') {
+  console.log(JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [{ project: { number: ${fixtureProject} }, fieldValueByName: { number: 1 } }], pageInfo: { hasNextPage: false } } } } } }));
+  process.exit(0);
+}
 fs.appendFileSync(process.env.FIXTURE_DIR + '/tracker.jsonl', JSON.stringify(args) + '\\n');
 const method = args[args.indexOf('--method') + 1], url = args[1];
 const label = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/labels\\/(.+)$/) : null;
@@ -55,7 +59,7 @@ if (label) {
 const lookup = args.includes('--method') && method === 'GET' ? url.match(/^repos\\/dispatch\\/tool\\/issues\\/(\\d+)$/) : null;
 if (lookup) {
   if (fs.existsSync(process.env.FIXTURE_DIR + '/lookup-fail')) { console.error('Fixture tracker outage'); process.exit(75); }
-  console.log(JSON.stringify({ number: Number(lookup[1]), title: 'Ticket ' + lookup[1], body: 'Same shared file for every ticket.', labels: [],
+  console.log(JSON.stringify({ number: Number(lookup[1]), title: 'Ticket ' + lookup[1], body: ${JSON.stringify(fixtureBody('Same shared file for every ticket.'))}, labels: [],
     state: fs.existsSync(process.env.FIXTURE_DIR + '/closed-' + lookup[1]) ? 'closed' : 'open' }));
   process.exit(0);
 }
@@ -160,6 +164,10 @@ process.stdin.on('end', async () => {
       git('add', '.'); git('commit', '-m', 'Return answer');
     }
     outcome = {outcome:row.stage === 'reviewer' ? 'pass' : 'done', summary:'Fixture role complete'};
+    if (row.stage === 'reviewer') {
+      cp.execFileSync(process.execPath, ['--test', tests], {stdio:'pipe'});
+      outcome.acceptance = [{id:'AC1', result:'evidenced', evidence:{check:'node --test ' + tests, revision:git('rev-parse', 'HEAD').toString().trim()}}];
+    }
     if (row.stage === 'reviewer' && row.bounces === 0 && fs.existsSync(root + '/repair-crash')) outcome = {outcome:'bounce', feedback:'Add the repair checkpoint'};
   }
   console.log(JSON.stringify({type:'result', subtype:'success', is_error:false, result:'\`\`\`mill-outcome\\n' + JSON.stringify(outcome) + '\\n\`\`\`'}));
@@ -189,5 +197,5 @@ process.stdin.on('end', async () => {
     await until(status, s => s.tickets.every(row => !row.worker || row.worker.status === 'finished'));
     await cleanup();
   });
-  return { ...y, env, status, starts, once, command, release: () => writeFile(join(y.root, 'release'), 'yes') };
+  return { ...y, tracker, env, status, starts, once, command, release: () => writeFile(join(y.root, 'release'), 'yes') };
 }

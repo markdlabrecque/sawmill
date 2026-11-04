@@ -5,6 +5,14 @@ import { join } from 'node:path';
 import type { TestContext } from 'node:test';
 import { runCli, type CliOptions } from '../src/cli.js';
 import { stopScheduler } from '../src/scheduler.js';
+import { acceptanceChecklist } from '../src/acceptance.js';
+
+// Valid draft inputs, shared by injected trackers and scripted hosting transports.
+export const fixtureProject = 1;
+export const fixtureEstimate = async (_number: number): Promise<number> => 1;
+export function fixtureBody(body: string): string {
+  return acceptanceChecklist(body).length ? body : `${body}\n\n## Done when\n- [ ] The requested change passes the fixture's checks.\n`;
+}
 
 // Execution-success fixtures require local configuration, never a real credential.
 // Missing-key scenarios explicitly remove or blank this in their execution environment.
