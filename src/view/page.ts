@@ -8,7 +8,7 @@ export const page = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>${boardStyles}</style></head><body>
 <a class="skip" href="#main">Skip to runs</a>
 <header class="topbar"><div class="topbar-inner wrap">
-<a class="brand" href="#main" aria-label="Sawmill Board home"><img src="${boardWordmark}" width="174" height="53" alt="Sawmill"></a>
+<a class="brand" href="https://markdlabrecque.github.io/sawmill/" target="_blank" rel="noopener noreferrer" aria-label="Sawmill marketing site (opens in a new tab)"><img src="${boardWordmark}" width="174" height="53" alt="Sawmill"></a>
 <div class="connection" role="status"><span class="live" id="live" aria-hidden="true"></span><span id="connection">Connecting</span></div>
 </div></header>
 <div class="connection-note" id="connection-note" role="status" hidden><div class="wrap" id="connection-message"></div></div>
