@@ -17,8 +17,8 @@ const correction = (files = ['answer.test.cjs']) => ({ outcome: 'test-correction
 const CORRECTED = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 42);\nconsole.log('pass 1 corrected');\n";
 const WEAKENED = "console.log('pass 1 weakened');\n";
 
-async function fixture(t: TestContext, extra = '') {
-  const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.', labels: [], state: 'open', comments: [], blockedBy: [] };
+async function fixture(t: TestContext, extra = '', body = 'Return 42 from answer.cjs.') {
+  const ticket: Ticket = { number: 12, title: 'Return the answer', body, labels: [], state: 'open', comments: [], blockedBy: [] };
   const requests: ChangeRequest[] = [];
   const tracker = {
     async getTicket() { return structuredClone(ticket); },
@@ -216,7 +216,7 @@ test('implementer-requested corrections keep the normal file scope and clean-com
   }
 });
 
-test('implementer-requested corrections must still prove missing behaviour even when a reviewer passes them', async t => {
+test('a generic reviewer pass cannot promote an implementer-requested correction that removes the required assertion', async t => {
   const y = await fixture(t);
   let baseline = '';
   y.setScript(async (request, sink) => {
@@ -368,6 +368,80 @@ test('a correction survives a writer question and a restart, and still gets a fr
   assert.ok(y.inputs[before]!.handoff.includes(MISTAKE), 'Resumed writer still sees the reviewer request');
   assert.equal((await y.status()).tickets[0].state, 'done');
 });
+
+// #272: the original test mistakenly demands new behaviour; the corrected
+// assertion protects the behaviour the ticket actually asks to retain.
+const EXISTING_GUARD = "const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 0);\nconsole.log('pass 1 meaningful guard');\n";
+for (const mode of ['meaningful', 'generic-pass', 'meaningless', 'failed-check', 'failed-tests'] as const) {
+  test(`#272 implementer-requested green correction: ${mode}`, async t => {
+    const y = await fixture(t, mode === 'failed-check' ? '\nrequired_checks:\n  lint: node -e "process.exit(1)"\n' : '',
+      'Keep answer.cjs synchronous and returning 0.\n\n## Done when\n- [ ] answer() returns 0 synchronously.\n');
+    let baseline = '', corrected = '', reviews = 0;
+    let freshReview: RuntimeRequest | undefined, baselineAtReview: string | undefined;
+    y.setScript(async (request, sink) => {
+      if (request.role === 'implementer') {
+        baseline ||= (await y.status()).tickets[0].team.testCommit;
+        return { outcome: { outcome: 'test-correction', files: ['answer.test.cjs'],
+          mistake: 'The test demands 42 but the ticket explicitly preserves 0.',
+          preserves: 'Keep the assertion invoking answer() and verifying its synchronous result is 0.' } };
+      }
+      if (request.role === 'test-writers' && y.inputs.filter(r => r.role === 'test-writers').length > 1) {
+        if (corrected) return { outcome: { outcome: 'question', question: 'Rejected correction needs a human decision.' } };
+        await commitTest(y, request, mode === 'meaningless' ? WEAKENED
+          : mode === 'failed-tests' ? EXISTING_GUARD + "assert.fail('guard is genuinely failing');\n" : EXISTING_GUARD);
+        corrected = y.git('-C', request.cwd, 'rev-parse', 'HEAD');
+        return { outcome: { outcome: 'done', summary: 'Corrected only the mistaken expected value; retained the public API assertion.' } };
+      }
+      if (request.role === 'reviewer') {
+        reviews++;
+        freshReview = request;
+        baselineAtReview = (await y.status()).tickets[0].team.testCommit;
+        if (mode === 'meaningless') return { outcome: { outcome: 'test-correction', files: ['answer.test.cjs'],
+          mistake: 'console.log never exercises answer(), so a wrong return value would not fail this test.',
+          preserves: 'Restore the strict assertion that answer() returns 0 synchronously.' } };
+        const summary = mode === 'generic-pass' ? 'Scenario exercised and correct.'
+          : 'Explicitly accept the corrected passing test as a meaningful guard: answer.test.cjs calls answer() and asserts its synchronous return is 0. Returning 42, undefined or a Promise is a regression that fails this assertion. The correction fixes only the mistaken expected value, preserves required coverage, and the unchanged implementation meets AC1.';
+        const explicit = mode === 'generic-pass' ? {} : { passingTests: { decision: 'accept', tests: [{
+          file: 'answer.test.cjs', behaviour: 'answer() returns 0 synchronously',
+          regression: 'Returning 42, undefined or a Promise fails the strict equality assertion.',
+        }] } };
+        return { outcome: { outcome: 'pass', summary, ...explicit, acceptance: [{ id: 'AC1', result: 'evidenced', evidence: {
+          check: 'node answer.test.cjs', revision: corrected,
+        } }] } };
+      }
+      return y.normal(request, sink);
+    });
+    const result = await y.cli('team', 'run', '12', '--json');
+    const row = (await y.status()).tickets[0];
+    assert.ok(corrected, 'implementer request must reach a scoped writer correction');
+    if (mode !== 'failed-check') assert.ok(reviews >= 1, 'a fresh reviewer must judge the correction and implementation');
+    if (freshReview) assert.equal(baselineAtReview, baseline, 'a fresh review, not the writers, promotes the baseline');
+    if (mode === 'meaningful') {
+      assert.match(freshReview!.handoff, /AC1: answer\(\) returns 0 synchronously/);
+      assert.match(freshReview!.handoff, /Correction diff against the protected tests/);
+      assert.match(freshReview!.handoff, /module.exports = \(\) => 0/, 'reviewer sees the relevant unchanged implementation');
+      assert.match(freshReview!.handoff, /unfixed code/i);
+      assert.match(freshReview!.handoff, /pass 1 meaningful guard/);
+      assert.match(freshReview!.prompt + freshReview!.handoff, /regression/i);
+      assert.equal(result.code, 0, result.stdout);
+      assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'implementer', 'test-writers', 'reviewer']);
+      assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+      assert.equal(row.team.testCommit, corrected);
+      assert.ok(row.team.testCommits.includes(baseline));
+      assert.equal(y.git('show', `${row.integration.mergedHead}:answer.test.cjs`), EXISTING_GUARD.trimEnd());
+      assert.equal(row.team.question, undefined);
+      assert.ok(!y.ticket.comments.some(c => /\[sawmill:(?:question|tests-not-red|logjam)\]/.test(c.body)), 'green renewed proof alone must not notify a person');
+      assert.equal(y.requests.length, 1);
+    } else {
+      assert.equal(result.code, 1, 'no generic review pass, meaningless assertion or failed verification can use the accepted-green path');
+      assert.notEqual(row.state, 'done');
+      assert.equal(y.requests.length, 0);
+      if (mode === 'meaningless' || mode === 'generic-pass') assert.equal(row.team.testCommit, baseline);
+      if (mode === 'failed-check') assert.match(result.stdout + (await y.cli('run', 'log', '12')).stdout, /lint|checks-failed/);
+      if (mode === 'failed-tests') assert.match(result.stdout + (await y.cli('run', 'log', '12')).stdout, /guard is genuinely failing|tests-failed/);
+    }
+  });
+}
 
 /** Lint fails on any TODO in the ticket's files and prints each finding as `file:line:text`. */
 const lint = "\nrequired_checks:\n  lint: '! grep -Hn TODO answer.cjs answer.test.cjs'\n";

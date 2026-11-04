@@ -8,6 +8,7 @@ import { invalidateReview, reviewApprovesHead } from './review-approval.js';
 import { checkpointQuestion, preserveQuestion } from './question-checkpoint.js';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createRuntime } from './runtime-factory.js';
@@ -15,7 +16,7 @@ import { checkStop, StopRequested, stopAtBoundary } from './cooperative-stop.js'
 import { routingEnabled, type MachineConfig, type ProjectConfig, type Role } from './config.js';
 import { CliError, FinalError } from './errors.js';
 import { GitHubAccountError } from './github-account.js';
-import { integrate, tests, type IntegrationResult } from './integrate.js';
+import { command, integrate, tests, type IntegrationResult } from './integrate.js';
 import { greenProblem, noTests, readResults, redEvidence, reportTestRun, testRunProblem, type Evidence, type StructuredResults } from './test-results.js';
 import { recordChild } from './process-ownership.js';
 import { processStart } from './slots.js';
@@ -25,12 +26,12 @@ import { preserveWip } from './preserve-wip.js';
 import { runRole, withRoleLock } from './role-runner.js';
 import { checkFirstStart } from './first-start.js';
 import { alreadyClosed, readRun, type InfrastructureAttempt, type TeamProgress, type TestCorrection } from './run-store.js';
-import { conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
+import { acceptsPassingTests, conflictContinueCommand, infrastructure, type Runtime, type Outcome } from './runtime.js';
 import { fullReviewDiff } from './team-review.js';
 import { holdTrackerFailure, startTicketLabels, transition, type MirrorOptions, type Transition } from './transitions.js';
 import type { IntegrationTracker } from './tracker.js';
 import { createWorktree, preparedSite, prepareSite, siteHandoff } from './worktrees.js';
-import { verificationFrom, verificationInstructions } from './verification.js';
+import { requiredCheckNames, verificationFrom, verificationInstructions } from './verification.js';
 import { reportComment } from './reporter.js';
 import { browserHandoff, caseRuntime, userTestingResult, userTestingComment, writerProgress, writerTicket } from './user-testing.js';
 
@@ -40,6 +41,12 @@ const notRed = 'Your tests all pass without any new code. Write tests that fail 
 const notMeaningful = 'Write new tests that fail an assertion, or a declared compile diagnostic, until the ticket is built.';
 const redCheckCap = 2;
 const correctionCap = 2;
+/** Exit zero alone cannot make malformed, empty or failed structured results green. */
+const healthyGreen = (run: import('./test-results.js').TestRun) => {
+  if (run.code !== 0 || run.timedOut) return false;
+  const read = readResults(run.output);
+  return !read || (read.ok && read.results.status === 'ok' && read.results.collected > 0 && !read.results.scenarios.some(test => test.status === 'fail'));
+};
 const git = async (cwd: string, ...args: string[]) => (await execute('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 /** Of `files`, those a check's output names as a whole path, whether relative or at the end of an absolute one. */
 const namedFiles = (output: string, files: string[]) => files.filter(file =>
@@ -348,7 +355,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         if (!results || (results.status === 'ok' && !results.scenarios.some(s => s.status === 'fail'))) progress.redBaseline = { commit: base, ...(results ? { results } : {}) };
         return { ...(results ? { results } : {}) };
       };
-      /** Tests that already pass guard nothing. True sends the work back to the test-writers. */
+      /** True sends the work back; at the cap, retain the candidate for independent reviewer judgment. */
       const redCheck = async (): Promise<TeamResult | boolean> => {
         const config = project.tests;
         // No tests is a choice, not a mistake: there is no run to read as "not red".
@@ -399,17 +406,15 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const feedback = evidence?.problem ? `${evidence.problem} ${notMeaningful}` : notRed;
         const checks = progress.redChecks ?? 0;
         progress.redFeedback = feedback;
-        // The rerun records a fresh baseline, so a legitimate rewrite is not tampering.
+        if (checks >= redCheckCap) {
+          progress.passingTests = { head, redOutput: `${report.handoff}\nRed-check output:\n${tail(tested.output)}` };
+          resume = progress.next = 'reviewer';
+          await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nRed-check cap reached; requesting reviewer judgment of each test's behaviour and regression protection.\n\n${tested.output}`, reachedStage: stage, round: checks + 1 } });
+          return false;
+        }
+        // Clear protection only when the tests are actually sent back for rewriting.
         delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
         resume = progress.next = 'test-writers';
-        if (checks >= redCheckCap) {
-          const details = `${evidence?.problem ? `The tests did not fail meaningfully (${evidence.problem})` : 'The tests passed without any new code'} after ${checks} send-backs to the test-writers. A person must decide how to proceed.\n\n${tested.output}`;
-          if (!await transition(cwd, project, tracker, number, {
-            state: 'logjam', reason: 'tests-not-red', stage, team: progress,
-            report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage, round: checks + 1 },
-          }, [], options)) throw new Error('Tracker mirror failed; pending writes retained.');
-          return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
-        }
         progress.redChecks = checks + 1;
         await save({ report: { stage: 'tests-not-red', details: `${feedback}\n\nSent back to the test-writers (${progress.redChecks}/${redCheckCap}).`, reachedStage: stage, round: progress.redChecks } });
         return true;
@@ -430,13 +435,16 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           ...(!status ? { observed: { revision: head, run, artifact: report.file } } : {}) };
         return `\n\n${latest.handoff}`;
       };
-      /** The corrected tests against the unfixed code the red check accepted: they must still fail there, for the intended reason. */
+      /** Renew red proof, retaining healthy green evidence for explicit reviewer acceptance instead. */
       const renewRed = async (correction: TestCorrection): Promise<Evidence | undefined> => {
         const config = project.tests, redHead = progress.redHead;
         if (config === 'none' || !redHead) return undefined;
         const run = await testsAt(redHead, { from: correction.head!, files: correction.files });
         checkStop(cwd, number);
         if (await git(path, 'rev-parse', 'HEAD') !== correction.head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Tests changed the ticket worktree or HEAD; work retained.');
+        const report = await reportTestRun(cwd, number, config.command, run, config.timeout);
+        correction.redOutput = `${report.handoff}\nRenewed red-check output:\n${tail(run.output)}`;
+        correction.green = healthyGreen(run);
         const at = `The corrected tests on the unfixed code at ${redHead}`;
         const failed = (problem: string): Evidence => ({ valid: false, scenarios: [], problem });
         if (run.timedOut || run.code === null) return failed(`${at} ${run.timedOut ? `timed out after ${config.timeout}` : 'were killed'}.`);
@@ -475,7 +483,7 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           await git(path, 'commit', '-m', `#${number}: Revert rejected test correction`);
           (correction.commits ??= []).push(await git(path, 'rev-parse', 'HEAD'));
         }
-        delete correction.head; delete correction.tests;
+        delete correction.head; delete correction.tests; delete correction.green; delete correction.redOutput;
         correction.from = await git(path, 'rev-parse', 'HEAD');
       };
       /** The CLI, not the role's claim, holds a correction to its approved files and to appended commits. */
@@ -493,6 +501,57 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         const red = await renewRed(correction);
         if (red) correction.red = red; else delete correction.red;
       };
+      let guardChecksReport = '';
+      /** Checks normally performed by the skipped implementer, still required before final review. */
+      const verifyGuard = async (retest: boolean): Promise<string | undefined> => {
+        const head = await git(path, 'rev-parse', 'HEAD');
+        if (retest && project.tests !== 'none') {
+          const run = await runTests();
+          checkStop(cwd, number);
+          const report = await reportTestRun(cwd, number, project.tests.command, run, project.tests.timeout);
+          latest = { head, handoff: report.handoff, observed: { revision: head, run, artifact: report.file } };
+          if (!healthyGreen(run)) return `tests-failed: accepted passing guards still require passing tests.\n${report.handoff}`;
+        }
+        const required = project.required_checks;
+        const checks = [
+          ...requiredCheckNames.flatMap(name => required?.[name] === undefined ? [] : [[name, required[name]!] as const]),
+          ...Object.entries(project.checks ?? {}),
+        ];
+        const ran = new Set<string>();
+        guardChecksReport = '';
+        for (const [name, script] of checks) {
+          if (ran.has(script)) continue;
+          checkStop(cwd, number);
+          const run = await command(path, script, required?.timeout ?? (project.tests === 'none' ? '30m' : project.tests.timeout), options.home,
+            pid => recordChild(cwd, number, { pid, processStart: processStart(pid), group: true }));
+          checkStop(cwd, number);
+          guardChecksReport += `\nDeclared check ${name}: ${script}, exit ${run.code}\n${run.output}`;
+          if (run.code !== 0 || run.timedOut) return `checks-failed: declared check ${name}${run.timedOut ? ' timed out' : ` failed (exit ${run.code})`}.\n${guardChecksReport}`;
+          ran.add(script);
+        }
+        if (await git(path, 'rev-parse', 'HEAD') !== head || await git(path, 'status', '--porcelain', '--untracked-files=all')) throw new Error('Verification changed the ticket worktree or HEAD; work retained.');
+      };
+      /** Include unchanged implementation referenced by the ticket/tests, not just the added-test diff. */
+      const guardEvidence = async (files: string[]): Promise<string> => {
+        const head = await git(path, 'rev-parse', 'HEAD');
+        const tracked = (await git(path, 'ls-tree', '-r', '--name-only', head)).split('\n');
+        const testSource = (await Promise.all(files.map(file => git(path, 'show', `${head}:${file}`).catch(() => '')))).join('\n');
+        const references = `${current().body}\n${testSource}`;
+        let remaining = 128 * 1024;
+        const sources: string[] = [];
+        for (const file of tracked) {
+          if (files.includes(file) || /(^|\/)(?:test|tests|__tests__|node_modules)\/|\.(?:test|spec)\./.test(file) || !/\.(?:[cm]?[jt]sx?|py|php|rs|go|java|rb|vue|svelte)$/.test(file)) continue;
+          // TypeScript projects commonly import the emitted .js path from .ts tests.
+          if (!references.includes(file) && !references.includes(basename(file)) &&
+              !references.includes(basename(file).replace(/\.tsx?$/, '.js'))) continue;
+          const source = await git(path, 'show', `${head}:${file}`);
+          const excerpt = source.slice(0, Math.min(64 * 1024, remaining));
+          sources.push(`${file} at ${head}:\n${excerpt}${excerpt.length < source.length ? '\n[truncated; inspect the file for the rest]' : ''}`);
+          remaining -= excerpt.length;
+          if (remaining <= 0) break;
+        }
+        return `\n\nMeaningful passing-guard judgment: use the saved acceptance checklist, test diff, relevant implementation and red-check output. Identify the behaviour each test protects and the regression that would make its assertions fail. Reject assertions that do not exercise that behaviour, missing coverage and weakened tests. Acceptance bypasses only proof of missing behaviour, never failing tests or declared checks. Explicit acceptance requires passingTests: {decision: "accept", tests: [{file, behaviour, regression}]} on a pass, with evidence for each test in the named files. A generic pass does not accept green proof.\n\nRelevant implementation (inspect other referenced files as needed):\n${sources.join('\n\n') || '(Read the relevant implementation in the worktree.)'}${guardChecksReport}`;
+      };
       const correctionHandoff = async (role: Role): Promise<string> => {
         const correction = progress.correction;
         if (!correction) return '';
@@ -503,11 +562,12 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         if (role !== 'reviewer' || !correction.head) return '';
         return `\n\nTest correction to verify (${correction.attempts}/${correctionCap}): check that it fixes only the requested mistake, keeps every requirement covered, and that the implementation still meets the ticket. ` +
-          `A green run alone does not make weaker tests acceptable. Pass accepts it as the new protected baseline.\n${request}\n\n${correction.tests ?? ''}\n\n` +
+          `A green run alone does not make weaker tests acceptable. Pass accepts valid renewed red proof; healthy green proof also requires explicit passingTests acceptance under the meaningful-guard checklist.\n${request}\n\n${correction.tests ?? ''}\n\n` +
           (correction.red ? `Renewed red proof on the unfixed code at ${progress.redHead}: ${correction.red.valid
             ? `the corrected tests still fail${correction.red.scenarios.length ? ` (${correction.red.scenarios.join(', ')})` : ''}.`
-            : `${correction.red.problem} Mill will not accept this correction on a pass.`}\n\n` : '') +
-          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}`;
+            : `${correction.red.problem} Mill will not accept this correction on a pass.${correction.green ? ' A generic pass is insufficient: to accept this healthy green proof instead, explicitly judge each test as a meaningful guard using passingTests evidence.' : ''}`}\n\n${correction.redOutput ?? ''}\n\n` : '') +
+          `Correction diff against the protected tests:\n${await git(path, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', correction.baseline, correction.head, '--', ...progress.testFiles ?? [])}` +
+          (correction.green ? await guardEvidence(correction.files) : '');
       };
       if (resuming === 'integrate') {
         if (await changedTests(path, progress)) {
@@ -540,6 +600,13 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
           const sent = await redCheck();
           if (typeof sent === 'object') return sent;
           if (sent) { role = 'test-writers'; continue; }
+          if (progress.passingTests) { role = 'reviewer'; continue; }
+        }
+        // Accepted guards skip implementation, not the suite or project checks. Run these
+        // before the final review (also before a fresh green-correction review).
+        if (role === 'reviewer' && (progress.passingTests?.acceptedBy || progress.correction?.green)) {
+          const problem = await verifyGuard(Boolean(progress.passingTests?.acceptedBy));
+          if (problem) return await stop(infrastructure(problem));
         }
         const correcting = role === 'test-writers' ? progress.correction : undefined;
         if (correcting && !correcting.from) await startCorrection(correcting);
@@ -561,7 +628,8 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         // Plain text, so the saved CI log paths are readable as written rather than JSON-escaped.
         const ciFailure = role === 'implementer' && progress.repair?.source === 'ci-failed' ? `\n\nCI failure to repair:\n${progress.repair.feedback}` : '';
         const site = role === 'reviewer' && progress.site ? siteHandoff(progress.site) : '';
-        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site;
+        const testRun = await latestRun(role) + await correctionHandoff(role) + ciFailure + site +
+          (role === 'reviewer' && progress.passingTests ? `\n\nPassing tests at the red-check cap: ${progress.redFeedback ?? 'A person accepted the passing guard.'}\n${progress.passingTests.redOutput ?? ''}\n` + await guardEvidence(progress.testFiles ?? []) : '');
         const duration = project.role_timeout;
         progress.activeRole = { role, beforeHead: beforeRole, bounces: current().bounces,
           ...(entry?.role === role && entry.bounces === current().bounces && entry.selectionId ? { selectionId: entry.selectionId } : {}) };
@@ -701,12 +769,53 @@ export async function runTeam(cwd: string, project: ProjectConfig, machine: Mach
         }
         delete progress.question;
         delete progress.stop;
+        if (role === 'reviewer' && progress.passingTests && !progress.passingTests.acceptedBy) {
+          if (result.outcome.outcome === 'bounce') {
+            // This is test-writer feedback, not an implementation bounce. Protection
+            // survives judgment and logjam, and is removed only for an actual send-back.
+            progress.redFeedback = result.outcome.feedback;
+            delete progress.testCommit; delete progress.testCommits; delete progress.testFiles;
+            delete progress.passingTests; delete progress.redHead; delete progress.redScenarios;
+            delete progress.approvedHead; delete progress.reviewedHead; delete progress.activeRole;
+            progress.redChecks = 0;
+            role = resume = progress.next = 'test-writers';
+            await save({ stage: 'tests-written', report: { stage: 'tests-not-red', details: result.outcome.feedback + '\nSent back to the test-writers after reviewer judgment.', reachedStage: 'reviewer', round: result.round } });
+            continue;
+          }
+          if (result.outcome.outcome === 'pass') {
+            if (!acceptsPassingTests(result.outcome, progress.testFiles ?? [])) {
+              const details = 'The reviewer did not explicitly accept each passing test as a meaningful guard. A person can inspect the retained baseline, then use mill run approve-tests and mill run answer.';
+              delete progress.approvedHead;
+              await transition(cwd, project, tracker, number, { state: 'logjam', reason: 'tests-not-red', stage, team: progress,
+                report: { stage: 'tests-not-red', details, reason: 'tests-not-red', reachedStage: stage } }, [], options);
+              return { outcome: 'aborted', ticket: number, stage, reason: 'tests-not-red', error: details };
+            }
+            if (!latest?.observed || !healthyGreen(latest.observed.run)) return await stop(infrastructure(`tests-failed: accepting missing red proof cannot accept a failing test command.\n${latest?.handoff ?? ''}`));
+            progress.passingTests.acceptedBy = 'reviewer';
+            delete progress.redPending; delete progress.redFeedback; delete progress.redChecks;
+            // Keep the unfixed-code reference for any later scoped correction.
+            progress.redHead = progress.passingTests.head;
+            delete progress.redScenarios; delete progress.approvedHead;
+            delete progress.activeRole;
+            resume = progress.next = 'reviewer';
+            await save({ report: { stage: 'passing-tests-accepted', details: `Reviewer accepted meaningful passing tests at ${beforeRole}.\n${JSON.stringify(result.outcome.passingTests)}`, reachedStage: role, round: result.round } });
+            // The final review sees declared-check evidence, without an implementer round.
+            continue;
+          }
+        }
         if (role === 'reviewer' && result.outcome.outcome === 'pass' && progress.correction?.head) {
           const accepted = progress.correction;
-          // A correction that passes on the unfixed code proves nothing missing; only a person can accept it.
-          if (accepted.red && !accepted.red.valid) return await question(path, 'reviewer', { outcome: 'question', question:
+          // Explicit reviewer judgment may accept a meaningful guard, never an unusable
+          // run or a generic pass. Current tests and checks must pass before promotion.
+          const acceptedGreen = accepted.green && acceptsPassingTests(result.outcome, accepted.files);
+          if (accepted.red && !accepted.red.valid && !acceptedGreen) return await question(path, 'reviewer', { outcome: 'question', question:
             `The reviewer passed test correction ${accepted.attempts}/${correctionCap}, but its renewed red proof failed: ${accepted.red.problem} The protected tests are unchanged. ` +
             `A person must decide: correct and commit the tests, then \`mill run approve-tests ${number}\` and \`mill run answer ${number}\`; or answer to send the ticket back to review.` });
+          if (acceptedGreen) {
+            if (!latest?.observed || !healthyGreen(latest.observed.run)) return await stop(infrastructure(`tests-failed: corrected tests must pass before acceptance.\n${latest?.handoff ?? ''}`));
+            delete progress.redScenarios; delete progress.redChecks; delete progress.redFeedback; delete progress.redPending;
+            await save({ report: { stage: 'passing-tests-accepted', details: `Reviewer accepted meaningful passing test correction at ${beforeRole}.\n${JSON.stringify(result.outcome.passingTests)}`, reachedStage: role, round: result.round } });
+          }
           // Only a fresh passing review moves the protected baseline. The writer commits stay for rebase checks.
           progress.testCommit = accepted.head;
           progress.testCommits = [...progress.testCommits ?? [], ...accepted.commits ?? []];

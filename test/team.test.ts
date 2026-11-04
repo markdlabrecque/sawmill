@@ -1986,21 +1986,152 @@ test('tests that fail on the first run never trigger a send-back', async t => {
   assert.doesNotMatch((await y.cli('run', 'log', '12')).stdout, /tests-not-red/);
 });
 
-test('a third green result stops the ticket in logjam with the test output and no implementer run', async t => {
-  const y = await fixture(t);
-  greenWriter(y, 3);
+// #272: an already-satisfied guard is not an implementation request. Use the
+// existing reviewer outcome seam, with explicit passingTests evidence rather
+// than relying on a generic pass or parsing prose in the summary.
+const guardAcceptance = {
+  outcome: 'pass' as const,
+  passingTests: { decision: 'accept', tests: [{ file: 'answer.test.cjs',
+    behaviour: 'answer() returns 0 synchronously',
+    regression: 'Returning 42, undefined or a Promise fails the strict equality assertion.' }] },
+  summary: 'Explicitly accept these passing tests as a meaningful guard. answer.test.cjs protects the public synchronous answer() result of 0. Changing answer.cjs to return 42, undefined, or a Promise makes its strict equality assertion fail. The assertion invokes the required API and preserves the acceptance checklist.',
+};
+
+async function passingGuard(t: TestContext, extra = '') {
+  const y = await fixture(t, 'Keep answer.cjs synchronous and returning 0.\n\n## Done when\n- [ ] answer() returns 0 synchronously.\n');
+  if (extra) await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')) + extra);
+  let writes = 0;
+  const checksAtReview: string[] = [];
+  y.setScript(async (request) => {
+    if (request.role === 'test-writers') {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), `const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 0);\nconsole.log('guard-output ${++writes}');\n`);
+      y.git('-C', request.cwd, 'add', 'answer.test.cjs');
+      y.git('-C', request.cwd, 'commit', '-m', `#12: Protect existing answer ${writes}`);
+      return { outcome: { outcome: 'done', summary: 'Guard checks the already implemented synchronous return value.' } };
+    }
+    if (request.role === 'implementer') return { outcome: { outcome: 'question', question: 'There is no missing implementation.' } };
+    checksAtReview.push(await readFile(join(y.home, 'guard-checks'), 'utf8').catch(() => ''));
+    return { outcome: { ...guardAcceptance, acceptance: [{ id: 'AC1', result: 'evidenced', evidence: {
+      check: 'node answer.test.cjs', revision: y.git('-C', request.cwd, 'rev-parse', 'HEAD'),
+    } }] } };
+  });
+  return { ...y, checksAtReview };
+}
+
+function assertGuardReviewEvidence(request: RuntimeRequest) {
+  assert.match(request.handoff, /AC1: answer\(\) returns 0 synchronously/);
+  assert.match(request.handoff, /diff --git a\/answer.test.cjs/);
+  assert.match(request.handoff, /assert.equal\(require\('\.\/answer.cjs'\)\(\), 0\)/);
+  assert.match(request.handoff, /module.exports = \(\) => 0/, 'include relevant existing implementation, not just the added-test diff');
+  assert.match(request.handoff, /guard-output 3/, 'include Mill red-check output');
+  assert.match(request.prompt + request.handoff, /regression/i, 'ask what regression would make each test fail');
+  assert.match(request.prompt + request.handoff, /each test/i);
+}
+
+function assertAcceptedGuardLog(log: string, who: 'reviewer' | 'person') {
+  const entry = log.split(/\n(?=\d{4}-\d\d-\d\dT)/).find(line => /\[[^\]]*(?:accept[^\]]*green|green[^\]]*accept|passing[^\]]*accept|accept[^\]]*passing)[^\]]*\]/i.test(line));
+  assert.ok(entry, 'accepted passing tests need their own event, not just review-pass');
+  assert.match(entry, who === 'reviewer' ? /reviewer/i : /human|person/i);
+}
+
+test('#272 reviewer accepts a meaningful passing guard at the cap and it merges without implementation', async t => {
+  const y = await passingGuard(t, '\nrequired_checks:\n  lint: node -e "require(\'node:fs\').appendFileSync(process.env.HOME + \'/guard-checks\', \'checked\\n\')"\n');
   const result = await y.cli('team', 'run', '12', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'test-writers']);
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.slice(0, 3).map(r => r.role), ['test-writers', 'test-writers', 'test-writers']);
+  assert.ok(y.inputs.slice(3).every(r => r.role === 'reviewer'), 'acceptance skips both implementation and another writer round');
+  assertGuardReviewEvidence(y.inputs[3]!);
   const row = (await y.status()).tickets[0];
-  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tests-not-red'); assert.equal(row.bounces, 0);
-  assert.equal(y.requests.length, 0); assert.equal(y.ticket.state, 'open');
-  assert.ok(y.ticket.labels.includes('logjam'));
-  assert.ok(!y.ticket.comments.some(c => /tests-not-red/.test(c.body)));
-  const reports = (await y.cli('run', 'log', '12')).stdout.split(/\n(?=\d{4}-\d\d-\d\dT)/).filter(entry => entry.includes('[tests-not-red]'));
-  assert.ok(reports.length >= 3, 'Each send-back and the escalation are in the run log');
-  assert.match(reports.at(-1)!, /-> logjam \(tests-not-red\)[^]*green-marker 3/);
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  assert.equal(y.requests.length, 1);
+  assert.ok(row.team.testCommit); assert.ok(row.team.testCommits.includes(row.team.testCommit));
+  assert.deepEqual(row.team.testFiles, ['answer.test.cjs']);
+  assert.equal(row.team.redChecks ?? 0, 0); assert.equal(row.team.redFeedback, undefined);
+  assert.equal(y.git('show', `${row.integration.mergedHead}:answer.cjs`), 'module.exports = () => 0;');
+  assert.match(y.checksAtReview.at(-1) ?? '', /checked/, 'declared checks must run before final review, not only during integration');
+  assertAcceptedGuardLog((await y.cli('run', 'log', '12')).stdout, 'reviewer');
 });
+
+test('#272 a reviewer rejecting assertions that do not exercise the requirement sends tests back and clears the baseline only then', async t => {
+  const y = await fixture(t);
+  let writes = 0, reviews = 0;
+  y.setScript(async (request, sink) => {
+    if (request.role === 'test-writers' && ++writes <= 3) {
+      await writeFile(join(request.cwd, 'answer.test.cjs'), `const assert = require('node:assert/strict');\nassert.equal(42, 42);\nconsole.log('vacuous ${writes}');\n`);
+      y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', '#12: Vacuous assertion');
+      return { outcome: { outcome: 'done', summary: 'Tests pass.' } };
+    }
+    if (request.role === 'reviewer' && ++reviews === 1) {
+      const row = (await y.status()).tickets[0];
+      assert.ok(row.team.testCommit, 'keep the candidate baseline while the reviewer judges it');
+      return { outcome: { outcome: 'bounce', feedback: 'assert.equal(42, 42) never invokes answer(); changing answer() cannot fail this assertion. Reject this meaningless guard and send it to the test writers.' } };
+    }
+    if (request.role === 'test-writers') {
+      const row = (await y.status()).tickets[0];
+      assert.equal(row.team.testCommit, undefined); assert.equal(row.team.testCommits, undefined); assert.equal(row.team.testFiles, undefined);
+      assert.match(request.handoff, /never invokes answer/);
+    }
+    return y.normal(request, sink);
+  });
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'test-writers', 'reviewer', 'test-writers', 'implementer', 'reviewer']);
+});
+
+test('#272 approve-tests and answer accept a preserved tests-not-red baseline and reach review and merge directly', async t => {
+  const y = await passingGuard(t);
+  const inner: Runtime['run'] = async request => {
+    if (request.role === 'reviewer') return { outcome: { outcome: 'question', question: 'Human user: decide whether to accept this passing guard.' } };
+    // Retain the real writer, but pause at the cap for a human decision.
+    await writeFile(join(request.cwd, 'answer.test.cjs'), `const assert = require('node:assert/strict');\nassert.equal(require('./answer.cjs')(), 0);\nconsole.log('guard-output ${y.inputs.length}');\n`);
+    y.git('-C', request.cwd, 'add', '.'); y.git('-C', request.cwd, 'commit', '-m', '#12: Guard existing answer');
+    return { outcome: { outcome: 'done', summary: 'Passing guard for existing behaviour.' } };
+  };
+  y.setScript(inner);
+  assert.equal((await y.cli('team', 'run', '12', '--json')).code, 1);
+  const stopped = (await y.status()).tickets[0];
+  assert.ok(stopped.team.testCommit, 'the cap must not discard the tests a person needs to approve');
+  assert.ok(stopped.team.testCommits.includes(stopped.team.testCommit));
+  assert.deepEqual(stopped.team.testFiles, ['answer.test.cjs']);
+  // Exercise the documented recovery entry state independently of whether the
+  // reviewer requested a human decision or rejected a previous candidate.
+  const { loadConfig } = await import('../src/config.js');
+  const { transition } = await import('../src/transitions.js');
+  const config = await loadConfig(y.cwd, y.home); assert.ok(config.valid);
+  assert.ok(await transition(y.cwd, config.project, y.tracker, 12, { state: 'logjam', reason: 'tests-not-red' }));
+  const approved = await y.cli('run', 'approve-tests', '12', '--json');
+  assert.equal(approved.code, 0, approved.stdout);
+  assert.equal((await y.cli('run', 'answer', '12')).code, 0);
+  const before = y.inputs.length;
+  y.setScript(async request => ({ outcome: { ...guardAcceptance, acceptance: [{ id: 'AC1', result: 'evidenced', evidence: {
+    check: 'node answer.test.cjs', revision: y.git('-C', request.cwd, 'rev-parse', 'HEAD'),
+  } }] } }));
+  const resumed = await y.cli('team', 'run', '12', '--json');
+  assert.equal(resumed.code, 0, resumed.stdout);
+  assert.deepEqual(y.inputs.slice(before).map(r => r.role), ['reviewer']);
+  const row = (await y.status()).tickets[0];
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+  assert.equal(row.team.redChecks ?? 0, 0); assert.equal(row.team.redFeedback, undefined);
+  assertAcceptedGuardLog((await y.cli('run', 'log', '12')).stdout, 'person');
+});
+
+for (const failure of ['required-check', 'later-test-failure'] as const) {
+  test(`#272 reviewer acceptance cannot bypass ${failure}`, async t => {
+    const y = await passingGuard(t, failure === 'required-check' ? '\nrequired_checks:\n  lint: node -e "process.exit(1)"\n' : '');
+    if (failure === 'later-test-failure') {
+      // The first three runs are green; every subsequent run genuinely fails.
+      const command = 'node -e "const fs=require(\'node:fs\'),p=process.env.HOME+\'/guard-runs\';let n=fs.existsSync(p)?+fs.readFileSync(p):0;fs.writeFileSync(p,String(n+1));require(\'./answer.test.cjs\');if(n>=3){console.error(\'AssertionError: guard regressed\');process.exit(1)}"';
+      await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('command: node answer.test.cjs', `command: '${command.replaceAll("'", "''")}'`));
+    }
+    const result = await y.cli('team', 'run', '12', '--json');
+    assert.ok(y.inputs.some(r => r.role === 'reviewer'), 'exercise reviewer judgment, not just the old cap logjam');
+    assert.equal(result.code, 1, 'accepting missing red proof does not waive failed verification');
+    assert.equal(y.requests.length, 0);
+    assert.notEqual((await y.status()).tickets[0].state, 'done');
+    assert.match(result.stdout + (await y.cli('run', 'log', '12')).stdout,
+      failure === 'required-check' ? /lint|checks-failed/ : /guard regressed|tests-failed/);
+  });
+}
 
 test('a timeout in the red check is an infrastructure retry, not a green result', async t => {
   const y = await fixture(t);

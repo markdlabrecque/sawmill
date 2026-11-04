@@ -6,12 +6,27 @@ export type Outcome =
   | { outcome: 'done'; summary: string }
   /** Implementer repair round: the failure could not be reproduced, so nothing was committed. */
   | { outcome: 'no-change'; summary: string }
-  | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[]; acceptance?: AcceptanceResult[] }
+  | { outcome: 'pass'; summary?: string; recommendations?: string[]; cases?: UserCase[]; acceptance?: AcceptanceResult[]; passingTests?: PassingTests }
   | { outcome: 'bounce'; feedback: string; cases?: UserCase[]; recommendations?: string[]; acceptance?: AcceptanceResult[] }
   /** Reviewer only: a protected test is wrong. The CLI routes it to the test-writers, scoped to `files`. */
   | { outcome: 'test-correction'; files: string[]; mistake: string; preserves: string; summary?: string }
   | { outcome: 'question'; question: string }
   | { outcome: 'infrastructure'; error: string };
+export interface PassingTests {
+  /** Validated as the literal "accept" at the runtime boundary. */
+  decision: string;
+  tests: { file: string; behaviour: string; regression: string }[];
+}
+/** Explicit evidence only; a generic pass cannot accept missing red proof. */
+export function acceptsPassingTests(outcome: Outcome, files: string[]): boolean {
+  if (outcome.outcome !== 'pass') return false;
+  const evidence = outcome.passingTests;
+  return evidence?.decision === 'accept' && Array.isArray(evidence.tests) && evidence.tests.length > 0 &&
+    evidence.tests.every(test => test && files.includes(test.file) &&
+      typeof test.behaviour === 'string' && Boolean(test.behaviour.trim()) &&
+      typeof test.regression === 'string' && Boolean(test.regression.trim())) &&
+    files.every(file => evidence.tests.some(test => test.file === file));
+}
 /** `persona` is the user role the case was performed as; `artifacts` are paths or links supporting it, never credentials. */
 export interface UserCase { case: string; result: 'completed' | 'broken'; step?: string; persona?: string; artifacts?: string[] }
 /** A link with a user name, password or secret-looking query value is a credential, not evidence. */
@@ -138,6 +153,8 @@ export function validateOutcome(value: unknown, role: Role): Outcome {
     case 'no-change': if (role !== 'implementer' || !nonempty(v.summary)) return bad(); break;
     case 'pass': case 'bounce':
       if (role !== 'reviewer' || (v.outcome === 'bounce' && !nonempty(v.feedback))) return bad();
+      if (v.passingTests !== undefined && (v.outcome !== 'pass' || !acceptsPassingTests(v as unknown as Outcome,
+        Array.isArray((v.passingTests as PassingTests)?.tests) ? (v.passingTests as PassingTests).tests.map(test => test?.file) : []))) return bad();
       // Shape only: whether the results meet the ticket's checklist is the coordinator's decision.
       if (v.acceptance !== undefined && (!Array.isArray(v.acceptance) || !v.acceptance.every(a => a && typeof a === 'object' && nonempty(a.id) && acceptanceResults.includes(a.result) &&
         (a.evidence === undefined || (a.evidence && typeof a.evidence === 'object' && ['check', 'revision'].every(key => a.evidence[key] === undefined || typeof a.evidence[key] === 'string'))) &&

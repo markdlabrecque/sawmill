@@ -145,22 +145,43 @@ for (const [name, line] of [
   });
 }
 
-test('a scenario that errored or missed its declared diagnostic goes back to the test-writers, then stops at tests-not-red', async t => {
+test('#272 scenarios without meaningful red proof reach reviewer judgment at the same cap and rejection sends them back', async t => {
   const y = await fixture(t);
   y.writes([
     { red: run(results([old, fails('New::answer', 'error')]), 1) },
     { red: run(results([old, fails('types::answer', 'compile', { expectedDiagnostic: 'TS2339', diagnostic: 'TS1005: syntax error' })]), 1) },
     { red: run(results([old, fails('New::answer', 'error')]), 1) },
+    { red, green },
   ]);
+  y.reviewer((request, round) => {
+    if (round > 1) return { outcome: 'pass', summary: 'The repaired test now proves the required answer.' };
+    assert.match(request.handoff, /New::answer/);
+    assert.match(request.handoff, /errored|did not fail meaningfully/);
+    assert.match(request.handoff, /red.txt/);
+    return { outcome: 'bounce', feedback: 'The scenario errors rather than asserting the promised answer. Reject as meaningless and send it back to the test writers.' };
+  });
   const result = await y.cli('team', 'run', '12', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'test-writers']);
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(y.inputs.map(r => r.role), ['test-writers', 'test-writers', 'test-writers', 'reviewer', 'test-writers', 'implementer', 'reviewer']);
   assert.match(y.inputs[1]!.handoff, /New::answer errored instead of failing an assertion/);
   assert.match(y.inputs[1]!.handoff, /Write new tests that fail an assertion, or a declared compile diagnostic/);
   assert.match(y.inputs[2]!.handoff, /types::answer expected diagnostic TS2339 but got/);
   const row = await y.row();
-  assert.equal(row.state, 'logjam'); assert.equal(row.reason, 'tests-not-red'); assert.equal(row.bounces, 0);
-  assert.match(JSON.parse(result.stdout).error, /did not fail meaningfully/);
+  assert.equal(row.state, 'done'); assert.equal(row.completion, 'merged');
+});
+
+test('#272 accepting missing meaningful red proof cannot waive an actually failing test command', async t => {
+  const y = await fixture(t);
+  y.writes([{ red: run(results([old, fails('New::answer', 'error')]), 1) }]);
+  y.reviewer(() => ({ outcome: 'pass', summary: 'Accept as an existing guard.',
+    passingTests: { decision: 'accept', tests: [{ file: 'red.txt', behaviour: 'answer returns 42',
+      regression: 'Returning 0 fails the answer assertion.' }] } }));
+  const result = await y.cli('team', 'run', '12', '--json');
+  assert.ok(y.inputs.some(r => r.role === 'reviewer'), 'both cap causes must get reviewer judgment');
+  assert.equal(result.code, 1);
+  const row = await y.row();
+  assert.notEqual(row.state, 'done');
+  assert.equal(row.integration?.request, undefined);
 });
 
 test('a declared compile diagnostic that matches is accepted as red', async t => {

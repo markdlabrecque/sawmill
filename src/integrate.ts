@@ -63,7 +63,7 @@ export async function tests(cwd: string, project: ProjectConfig, home?: string, 
 }
 
 /** A timeout kills the whole process group, including shell grandchildren. */
-function command(cwd: string, script: string, duration: string, home?: string, childStarted?: (pid: number) => void): Promise<CommandRun> {
+export function command(cwd: string, script: string, duration: string, home?: string, childStarted?: (pid: number) => void): Promise<CommandRun> {
   const ms = Number(duration.slice(0, -1)) * ({ s: 1000, m: 60000, h: 3600000 }[duration.at(-1)!] ?? 0);
   const env: NodeJS.ProcessEnv = { ...process.env, ...(home ? { HOME: home, XDG_CONFIG_HOME: join(home, '.config') } : {}) };
   // The final run must see what a plain `npm test` sees, as agent sessions do.

@@ -208,7 +208,7 @@ One agent's job within a team: test writers, implementer, or reviewer.
 _Avoid_: Agent type, persona
 
 **Test writers**:
-The role that proves a ticket's missing behaviour with failing tests before implementation, and corrects protected tests when the implementer, reviewer or a required check identifies a mistake.
+The role that establishes a ticket's coverage with failing tests before implementation, or meaningful passing guards explicitly accepted by the reviewer or human user when the behaviour already exists, and corrects protected tests when the implementer, reviewer or a required check identifies a mistake.
 
 **Implementer**:
 The role that makes the ticket's change and addresses review or gate feedback, with passing tests and checks as required by the project.

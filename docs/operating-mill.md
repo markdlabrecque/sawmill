@@ -315,6 +315,7 @@ Every board ticket action carries the attempt the page drew, whatever state the 
 | --- | --- | --- |
 | Environment: setup, prepare, network or credentials | The failing hook and its output | Fix the cause, then `mill run answer <n>` with no text. It retries from the saved checkpoint without spending a bounce. |
 | Review or test correction ran out of rounds (`retry-cap`) | The reviewer's last feedback, or the failing test command or required check | `mill run answer <n> "<guidance>"` for one more round. If the implementer kept changing protected tests that are right as they stand, `mill run approve-tests <n>` first. |
+| Tests did not prove missing behaviour (`tests-not-red`) | The retained tests, implementation and red-check output; the reviewer judges each test's behaviour and what regression would fail it first | Meaningful passing guards accepted by the reviewer proceed automatically. For a retained logjam, inspect the baseline, then `mill run approve-tests <n>` and `mill run answer <n>` to skip the red gate and implementer and reach review after tests and declared checks. Acceptance never waives failed verification. |
 | CI failed (`retry-cap` after CI repairs) | The failing CI output and the pushed head | `mill run answer <n> "<guidance>"`. The implementer resumes with the CI log as its feedback. |
 | Tracker mirror failed (`tracker`) | The tracker error | `mill run answer <n>`. It retries only the held tracker writes; no role runs. |
 
