@@ -582,11 +582,18 @@ export function approveTestsRow(cwd: string, project: ProjectConfig, number: num
     delete team.correction;
     // Approved tests may name other scenarios; the person, not the old red check, vouches for them.
     delete team.redScenarios;
+    const passing = ticket.reason === 'tests-not-red' || Boolean(team.passingTests);
+    delete team.redPending; delete team.redChecks; delete team.redFeedback;
+    if (passing) {
+      team.passingTests = { head: commit, acceptedBy: 'person' };
+      delete team.redHead;
+    }
     team.testCommit = commit;
     if (commits.length) team.testCommits = commits;
     team.next = 'reviewer';
     // The bounces were spent on the tests the person has now approved.
-    update(db, number, { team, bounces: 0 });
+    update(db, number, { team, bounces: 0, ...(passing ? { report: { stage: 'passing-tests-accepted' as const,
+      details: `Human user ${by} accepted passing tests at ${commit}; final review, tests and declared checks are still required.`, reachedStage: 'tests-written' } } : {}) });
     const time = new Date().toISOString();
     db.prepare('INSERT INTO log (ticket, time, event) VALUES (?, ?, ?)').run(number, time, JSON.stringify({ testsApproved: { by, commit, previous } }));
     return { commit, previous, by, time };
