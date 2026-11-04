@@ -90,3 +90,21 @@ Glossary checked; no update needed because Logging, Reviewer, Handoff, Acceptanc
 item and Human user already cover this evaluation. The human decision here is
 explicitly simulated, not authority for any real tracker write. No domain
 conflict was found. Protected tests and their completion record are unchanged.
+
+## Integration rebase repair
+
+Rebased onto integration revision `403341f681549dba3415cea05190e0b47127a726`.
+Resolved overlapping completion-record additions in `docs/agents/domain.md` by
+retaining both records unchanged. Combined the plugin manifest description and
+README additions so both ticket-graph and ticket-review remain documented. These
+were independent additions, not conflicting workflow requirements. The protected
+`test/ticket-review-skill.test.ts`, shipped ticket-review skill and evaluation
+runner remain byte-for-byte unchanged from the reviewed revision. Retained model
+observations still name their original executed revision; they were not rerun or
+relabeled as observations at the rebased revision.
+
+Verification after the rebase: the exact clean-test command passes 1340 suite
+tests and 3 process-permission tests, with no failures; build and typecheck pass.
+Glossary checked; no update needed because preserving completion records and
+combining plugin descriptions changes no domain definitions. Logging, Reviewer
+and Blocked-by still cover the documented skills; no terminology conflict found.
