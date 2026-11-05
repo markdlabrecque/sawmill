@@ -7,8 +7,8 @@ import type { RunSnapshot } from '../src/run-store.js';
 import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 
-const original = '**Done when:**\n\n- [ ] Removed requirement.\n- [ ] Unchanged requirement.\n';
-const edited = '**Done when:**\n\n- [ ] Unchanged requirement.\n- [ ] Newly required behaviour.\n';
+const original = '## Done when\n\n- [ ] Removed requirement.\n- [ ] Unchanged requirement.\n';
+const edited = '## Done when\n\n- [ ] Unchanged requirement.\n- [ ] Newly required behaviour.\n';
 
 async function fixture(t: TestContext) {
   const ticket: Ticket = { number: 11, title: 'Editable ticket', body: original, state: 'open', labels: [],

@@ -58,7 +58,10 @@ Request: $ARGUMENTS
 - Each acceptance item must describe an observable outcome that can feasibly be
   tested. Name a credible check for each, distinguishing feasibility from whether
   the millyard currently provides the needed test harness. Do not weaken an item
-  or delete user test cases just to match today's configuration.
+  or delete user test cases just to match today's configuration. Put every
+  browser-testing need in the exact `## User test cases` section with named
+  cases; `mill run draft` detects browser needs only there, not in acceptance
+  item text.
 - Set the required **Human estimate (hours)** field value before review. This is
   the time a human developer would take to build and verify the feature, not agent
   time. Keep the field outside the description body. State the human-hours basis

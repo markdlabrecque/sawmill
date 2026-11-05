@@ -7,9 +7,10 @@ import { registerMillyard } from './registry.js';
 import { literalCommand, requiredCheckNames } from './verification.js';
 import { proofPlan } from './proof-plan.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
-import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
+import { readTickets, type CheckPolicy, type Ticket, type TicketReader, type TicketRefusal } from './tracker.js';
 import type { RunSelection } from './selection.js';
-import { userTestSection, requireBrowserCapability } from './user-testing.js';
+import { userTestSection } from './user-testing.js';
+import { DraftValidationError, hasAcceptanceItems, hasWebEnvironment, type DraftFailure } from './draft-validation.js';
 import { checkDraftWorktrees } from './worktrees.js';
 
 const execute = promisify(execFile);
@@ -17,9 +18,28 @@ const execute = promisify(execFile);
 /** Closed tickets are left out unless `includeClosed`; the run records that override for dispatch.
  * `checkPolicy` settles the merge policy once the selection is valid; it throws to refuse the draft. */
 export async function draft(cwd: string, home: string, project: ProjectConfig,selection: RunSelection, tracker: TicketReader, replace = false, assign = false, includeClosed = false,
-  checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined, machine: Pick<MachineConfig, 'worktrees'> = {}) {
-  await checkMillyard(cwd, project.integration);
-  const previous = checkDraftable(cwd, replace);
+  checkPolicy: () => Promise<CheckPolicy | undefined> = async () => undefined, machine: Pick<MachineConfig, 'worktrees'> = {}, check = false) {
+  if (project.tracker.backend === 'github' && !project.tracker.project) {
+    throw new CliError('GitHub draft requires tracker.project in .mill/config.yaml; run Mill interactively to review setup, or configure the GitHub estimate project manually.', 2);
+  }
+  const failures: DraftFailure[] = [];
+  const fail = (ticket: number | null, rule: string, item: string, message = item) => { failures.push({ ticket, rule, item, message }); };
+  const collect = async (ticket: number | null, rule: string, action: () => unknown) => {
+    try { await action(); }
+    catch (error) {
+      if (!(error instanceof CliError) || error.exitCode === 2) throw error;
+      fail(ticket, rule, error.message);
+    }
+  };
+  // The millyard guard still precedes tracker contact.
+  try { await checkMillyard(cwd, project.integration); }
+  catch (error) {
+    if (!(error instanceof CliError) || error.exitCode === 2) throw error;
+    fail(null, 'millyard', error.message);
+    throw new DraftValidationError(failures);
+  }
+  let previous: ReturnType<typeof checkDraftable>;
+  await collect(null, 'run-state', () => { previous = checkDraftable(cwd, replace); });
   const existing = previous && previous.run.lifecycle !== 'completed' && !replace ? previous : undefined;
   if (existing && (existing.run.baseBranch !== project.integration || JSON.stringify(existing.run.tracker) !== JSON.stringify(project.tracker))) {
     throw new CliError('Configured tracker or integration branch does not match the drafted run; restore its configuration.', 2);
@@ -28,7 +48,8 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     await execute('git', ['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${project.integration}`], { cwd, timeout: 60000 });
   } catch (error) {
     if ((error as { code?: unknown }).code === 2) {
-      throw new CliError(`Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.`);
+      throw new DraftValidationError([{ ticket: null, rule: 'integration-branch', item: project.integration,
+        message: `Integration branch ${project.integration} was not found on remote origin. Publish it or correct integration in .mill/config.yaml before drafting.` }]);
     }
     throw new CliError(`Cannot check integration branch ${project.integration} on remote origin; verify remote access and retry drafting.\n${error instanceof Error ? error.message : String(error)}`);
   }
@@ -44,48 +65,58 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     try { await execute('bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd, timeout: 5000 }); }
     catch { warnings.push(`${setting}: ${program} was not found on PATH in the millyard; install it or set it up in .mill/setup.sh before starting tickets.`); }
   }
+  const refused = new Set<number>();
+  const onRefusal: TicketRefusal = (number, message) => {
+    refused.add(number);
+    fail(number, 'ticket-refusal', message);
+  };
   let tickets: Ticket[];
-  if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
+  if (selection.kind === 'numbers') tickets = await readTickets(tracker, selection.numbers, onRefusal);
   else if (selection.kind === 'label') {
     if (!tracker.listByLabel) throw new CliError('This tracker does not support --label selection; use explicit ticket numbers.', 2);
-    tickets = await tracker.listByLabel(selection.label);
+    tickets = await tracker.listByLabel(selection.label, onRefusal);
   } else {
     if (!tracker.listChildren) throw new CliError('This tracker does not support --spec selection; use explicit ticket numbers.', 2);
-    tickets = await tracker.listChildren(selection.number);
+    tickets = await tracker.listChildren(selection.number, onRefusal);
   }
   tickets = [...new Map(tickets.map(ticket => [ticket.number, ticket])).values()];
   const alreadyPresent = tickets.filter(ticket => existing?.tickets.some(row => row.number === ticket.number)).map(ticket => ticket.number);
   tickets = tickets.filter(ticket => !alreadyPresent.includes(ticket.number));
   const closed = includeClosed ? [] : tickets.filter(ticket => ticket.state === 'closed');
   const refs = (rows: Ticket[]) => rows.map(ticket => `#${ticket.number}`).join(', ');
-  if (selection.kind === 'numbers' && closed.length) {
-    throw new CliError(`${refs(closed)} ${closed.length === 1 ? 'is' : 'are'} closed on the tracker. Leave ${closed.length === 1 ? 'it' : 'them'} out, or pass --include-closed to draft ${closed.length === 1 ? 'it' : 'them'} anyway; the tracker issue stays closed.`);
-  }
-  tickets = tickets.filter(ticket => !closed.includes(ticket));
+  if (selection.kind === 'numbers') {
+    for (const ticket of closed) fail(ticket.number, 'closed-ticket', 'closed', 'Ticket is closed on the tracker. Leave it out, or pass --include-closed to draft it anyway; the tracker issue stays closed.');
+  } else tickets = tickets.filter(ticket => !closed.includes(ticket));
   if (!tickets.length && closed.length && !alreadyPresent.length) {
-    throw new CliError(`Every selected ticket is closed: skipped ${refs(closed)}. Nothing was drafted and the current run is unchanged; pass --include-closed to draft closed tickets anyway.`);
+    for (const ticket of closed) fail(ticket.number, 'closed-ticket', 'closed', `Every selected ticket is closed: skipped ${refs(closed)}. Nothing was drafted and the current run is unchanged; pass --include-closed to draft closed tickets anyway.`);
   }
-  if (!tickets.length && !alreadyPresent.length) {
+  if (!tickets.length && !alreadyPresent.length && !closed.length && !refused.size) {
     const message = selection.kind === 'label' ? `No tickets found with label ${JSON.stringify(selection.label)}.`
       : selection.kind === 'spec' ? `No direct children found for spec #${selection.number}.` : 'No tickets selected.';
-    throw new CliError(`${message} Choose another selector or use explicit ticket numbers.`);
+    fail(null, 'empty-selection', message, `${message} Choose another selector or use explicit ticket numbers.`);
   }
   const numbers = tickets.map(ticket => ticket.number);
-  await checkDraftWorktrees(cwd, project, machine, numbers);
-  const sections = tickets.map(ticket => {
-    try { return { ticket, section: userTestSection(ticket.body) }; }
-    catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
-  });
-  for (const ticket of tickets) {
+  // Read every estimate before interpreting any missing value. A transport failure
+  // aborts with a plain error, never a partial list of missing-estimate findings.
+  if (!tracker.getEstimate && tickets.length) throw new Error('Tracker adapter cannot read human-effort estimates.');
+  const estimates = await Promise.all(tickets.map(ticket => tracker.getEstimate!(ticket.number)));
+  const web = await hasWebEnvironment(cwd, project);
+  for (const [index, ticket] of tickets.entries()) {
+    await collect(ticket.number, 'worktree-collision', () => checkDraftWorktrees(cwd, project, machine, [ticket.number]));
+    if (!(Number(estimates[index]) > 0)) fail(ticket.number, 'missing-estimate', 'human-effort estimate', 'Missing positive human-effort estimate in the tracker field (zero counts as missing).');
+    if (!hasAcceptanceItems(ticket.body)) fail(ticket.number, 'missing-acceptance', '## Done when', 'No checkbox items under ## Done when; an acceptance checklist is required.');
+    try {
+      const section = userTestSection(ticket.body);
+      if (section.present && !web) {
+        for (const item of section.cases.length ? section.cases.map(item => item.case) : ['## User test cases']) {
+          fail(ticket.number, 'harness-not-configured', item, `${item}: User test cases require a test harness and a web environment; test_harness is ${project.test_harness}. Configure DDEV (.ddev/config.yaml) or Docker with test_url.`);
+        }
+      }
+    } catch (error) { fail(ticket.number, 'user-test-cases', '## User test cases', error instanceof Error ? error.message : String(error)); }
     try { proofPlan(ticket.body); }
-    catch (error) { throw new CliError(`#${ticket.number}: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { fail(ticket.number, 'proof-plan', 'proof plan', error instanceof Error ? error.message : String(error)); }
   }
-  if (project.test_harness === 'none') {
-    const cases = sections.filter(({ section }) => section.present).map(({ ticket }) => ticket);
-    if (cases.length) throw new CliError(`${cases.map(ticket => `#${ticket.number}`).join(', ')}: User test cases require a test harness; test_harness is none.`);
-  }
-  for (const ticket of tickets) requireBrowserCapability(project, ticket);
-  const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers]);
+  const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers, ...refused]);
   const edges: RunEdge[] = [
     ...existing?.edges.map(edge => ({ ...edge, outsideClosed: selected.has(edge.blocker) ? false : edge.outsideClosed })) ?? [],
     ...tickets.flatMap(ticket => {
@@ -98,20 +129,27 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   const outside = new Map<number, Ticket>(closed.map(ticket => [ticket.number, ticket]));
   for (const edge of edges) {
     if (selected.has(edge.blocker) || edge.outsideClosed) continue;
-    const blocker = outside.get(edge.blocker) ?? await tracker.getTicket(edge.blocker);
+    const blocker = outside.get(edge.blocker) ?? (await readTickets(tracker, [edge.blocker], onRefusal))[0];
+    if (!blocker) continue;
     outside.set(edge.blocker, blocker);
-    if (blocker.state !== 'closed') throw new CliError(`Ticket #${edge.blocked} has open blocker #${edge.blocker} outside the run.`);
-    edge.outsideClosed = true;
+    if (blocker.state !== 'closed') fail(edge.blocked, 'outside-blocker', `#${edge.blocker}`, `Ticket #${edge.blocked} has open blocker #${edge.blocker} outside the run.`);
+    else edge.outsideClosed = true;
   }
   // Detect cycles over the complete graph, including old satisfied outside links
   // that become internal when their ticket is appended.
   const remaining = [...selected];
   const visited = new Set<number>();
   while (remaining.length) {
-    const next = remaining.findIndex(number => edges.every(edge => edge.blocked !== number || edge.outsideClosed || visited.has(edge.blocker)));
-    if (next < 0) throw new CliError(`Dependency cycle involving ${remaining.map(number => `#${number}`).join(', ')}.`);
+    const next = remaining.findIndex(number => edges.every(edge => edge.blocked !== number || !selected.has(edge.blocker) || edge.outsideClosed || visited.has(edge.blocker)));
+    if (next < 0) {
+      for (const number of remaining) fail(number, 'dependency-cycle', remaining.map(number => `#${number}`).join(', '), `Dependency cycle involving ${remaining.map(number => `#${number}`).join(', ')}.`);
+      break;
+    }
     visited.add(remaining.splice(next, 1)[0]!);
   }
+  const policy = tickets.length ? await checkPolicy() : undefined;
+  if (failures.length) throw new DraftValidationError(failures);
+  if (check) return { added: numbers, alreadyPresent, warnings, checked: true as const };
   // Existing order is fixed; only additions are topologically sorted.
   const additions = [...tickets].sort((a, b) => a.number - b.number);
   const ordered: Ticket[] = [];
@@ -122,7 +160,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     ordered.push(ticket);
     available.add(ticket.number);
   }
-  const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, tickets.length ? await checkPolicy() : undefined, previous);
+  const clearedPick = saveDraft(cwd, project, numbers, ordered, edges, replace, selection, assign, { includeClosed, skippedClosed: closed.map(ticket => ticket.number) }, policy, previous);
   await registerMillyard(home, cwd);
   return { snapshot: readRun(cwd), added: ordered.map(ticket => ticket.number), alreadyPresent, warnings, ...(clearedPick === undefined ? {} : { clearedPick }) };
 }

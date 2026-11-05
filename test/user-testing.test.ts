@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { fixtureCli as runCli, type CliOptions } from './helpers.js';
@@ -23,6 +23,12 @@ async function fixture(t: TestContext, ticketBody = body, harness = 'docker\ntes
     .replace('# name: islandhealth', 'name: forms').replace('# repo: owner/name', 'repo: team/forms')
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', `test_harness: ${harness}`)
     .replaceAll('claude-opus-5-5', 'claude-opus-4-6'));
+  // Draft requires a web environment for User test cases: DDEV needs its project config.
+  if (harness === 'ddev') {
+    await mkdir(join(y.cwd, '.ddev'));
+    await writeFile(join(y.cwd, '.ddev/config.yaml'), 'name: forms\n');
+    y.git('add', '.ddev'); y.git('commit', '-m', 'DDEV config'); y.git('push');
+  }
   async function invoke(args: string[], options: Partial<CliOptions> = {}) {
     let stdout = '';
     const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker, sleep: async () => {}, ...options, stdout: value => { stdout += value; } });

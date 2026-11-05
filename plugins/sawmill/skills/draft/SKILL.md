@@ -1,6 +1,6 @@
 ---
 name: draft
-description: Draft a Sawmill run from a label, spec children, or ticket numbers.
+description: Validate tickets or draft a Sawmill run from a label, spec children, or ticket numbers.
 argument-hint: "<ticket selection>"
 disable-model-invocation: true
 ---
@@ -26,17 +26,39 @@ Request: $ARGUMENTS
    missing or ambiguous, ask for the label, parent number, or explicit numbers.
    Do not combine selectors or guess an intersection.
 
+   If the user only wants to validate/check tickets, add `--check` to the same
+   command, retaining `--json` and the selector. Never save a run for a check-only
+   request. `--check` includes every existing draft refusal, not just ticket rules.
+
 2. Run the selected command from the checkout root. Capture stdout and the exit
    code. Parse JSON rather than scraping the status table. A successful draft
    returns `status: "ok"`, `run`, `tickets`, and `edges`; each ticket includes its
    body, comments, state, and blockers. A failure carries `message` or config
-   `issues`. If `mill` is missing, explain that the Sawmill CLI must be installed
+   `issues`. Validation refusals also carry `failures`, an array of records with
+   `ticket` (number, or null for the whole draft), `rule`, `item` and `message`.
+   A successful check returns `status: "ok"`, `checked: true`, `selected`,
+   `alreadyPresent`, `failures: []` and `warnings`, not a saved run snapshot.
+   If `mill` is missing, explain that the Sawmill CLI must be installed
    and on PATH, then stop.
 
 3. Handle the result below. Only exit 0 with a successful JSON snapshot means the
-   requested draft was saved. A refusal leaves the previous draft in place.
+   requested draft was saved, unless `checked: true`: that means validation passed
+   and no run was built or changed. A refusal leaves the previous draft in place.
+
+## Ticket references
+
+Every ticket reference in terminal output must be a clickable number-only link,
+without restating its title wherever possible: `[#12](https://github.com/team/tool/issues/12)`
+in Markdown output, or OSC 8 in terminal text. Build URLs from the millyard's
+`tracker.backend`, `tracker.host` and `tracker.repo`; GitLab uses
+`https://<host>/<repo>/-/issues/<number>`, GitHub uses
+`https://<host>/<repo>/issues/<number>`. Apply this to all failures, blockers,
+selection summaries, questions and the final report; do not print raw numeric
+references from JSON messages without linking them.
 
 ## Optional advisory screening (successful drafts only)
+
+Skip this section for `--check`; it neither saves nor reviews a draft.
 
 Moving from legacy JSON: move `.mill/draft-screening.json` options to `jev.draft`
 (`timeoutMs` becomes a duration `timeout`, `maxEvidenceChars` becomes
@@ -74,6 +96,20 @@ been measured yet.
 
 ## Resolve feedback
 
+- **Exit 1, structured validation failures:** report **every** `failures` record,
+  including several rules on one ticket and failures across tickets. Name its
+  linked ticket number, rule and failing item; use `message` for detail. Do not
+  scrape messages to discover failures or stop after the first one. The three
+  ticket requirements are: a positive native human-effort estimate (zero counts
+  as missing), checkbox items under `## Done when`, and a DDEV/Docker web
+  environment plus test harness for `## User test cases`. Browser needs only in
+  acceptance text are not detected. Never invent wording or scope validation.
+  Existing closed-ticket, worktree, graph and proof-plan refusals share the list.
+  Preserve user test cases. Offer the supported remedies below, but do not edit
+  tickets, configure a harness, change the selection or retry without approval.
+- **Exit 1, plain tracker error:** reading estimates failed (for example, outage
+  or permission denied). Report the error, not missing estimates. The whole
+  draft/check stopped; suggest repairing access and retrying the same command.
 - **Exit 1, open outside blocker:** name both the blocked ticket and blocker from
   the CLI message. Ask whether to include the blocker or drop the blocked ticket.
   Once the user chooses, retry with the complete explicit number list. If the
@@ -94,6 +130,9 @@ been measured yet.
 - **Exit 2:** show the usage/config problems, including each `issues` entry's
   source, key, and message. Stop until those problems are resolved. A wrong branch
   or dirty checkout needs attention in the millyard; keep the CLI guard intact.
+- **Successful check:** report validation passed and no run file was created or
+  changed. Do not claim tickets were assigned or a draft was saved. Stop here;
+  do not run advisory screening or show an unrelated existing run as this check.
 - **Successful draft:** review the returned ticket bodies and comments. If a
   ticket combines independently shippable work, lacks a bounded acceptance
   criterion, or has an odd dependency, cite the specific evidence. Propose
@@ -112,10 +151,11 @@ been measured yet.
 
 ## Show the run
 
-Run `mill run status` and display its table after drafting, including when a
-refusal leaves an earlier run. Label that earlier table as the existing run.
-If no run exists or status fails, report that result instead of inventing rows.
-Use `mill run status --json` when you need to inspect the saved snapshot.
+After actual drafting (not `--check`), read `mill run status --json` and show its
+state and number-only linked tickets, including when a refusal leaves an earlier
+run. Label that earlier report as the existing run. Do not reproduce titles from
+the status table. If no run exists or status fails, report that result instead
+of inventing rows.
 
 Stop after showing status and any decision needed. Drafting does not start the
 run: the draft stays inactive until the user runs `mill run` themselves. Never

@@ -108,8 +108,8 @@ test('spec selects only direct children and produces equivalent rows despite dup
   const text = await selectedYard.cli('run', 'draft', '--spec', '40');
   assert.equal(text.code, 0, text.stdout);
   assert.match(text.stdout, /skipped.*#12|#12.*skipped/is);
-  assert.match(text.stdout, /#3\s+Ticket 3\s+queued/);
-  assert.match(text.stdout, /#20\s+Ticket 20\s+blocked\s+#3/);
+  assert.match(text.stdout.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ''), /#3\s+queued/);
+  assert.match(text.stdout.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ''), /#20\s+blocked\s+#3/);
   const status = await selectedYard.cli('run', 'status', '--json');
   assert.deepEqual(readRun(selectedYard.cwd).tickets, result.tickets);
   assert.deepEqual(JSON.parse(status.stdout), { ...result, tickets: result.tickets.filter(row => row.state === 'queued') });

@@ -476,7 +476,7 @@ test('three review bounces persist the last failure and report retry-cap in text
 });
 
 test('a pass with an unmet acceptance item bounces to retry-cap, and waiving the last item resumes final tests without a role', async t => {
-  const y = await fixture(t, 'Return 42 from answer.cjs.\n\n**Done when:**\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the answer in the pilot.\n');
+  const y = await fixture(t, 'Return 42 from answer.cjs.\n\n## Done when\n\n- [ ] answer.cjs returns 42.\n- [ ] A person confirms the answer in the pilot.\n');
   let implementations = 0, revision = '';
   y.setScript(async (request, sink) => {
     if (request.role === 'reviewer') {
