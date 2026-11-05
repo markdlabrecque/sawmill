@@ -10,7 +10,7 @@ import { millyard } from './helpers.js';
 // checklist AC1, AC2, ... in order. A reviewer pass must carry one `acceptance` entry per item:
 // `evidenced` (with evidence.check and evidence.revision), or `unresolved` (with reason).
 // Only a human waives, with `mill run waive <ticket> <item> --reason <text>`.
-const body = 'Show the wait time.\n\n**Done when:**\n\n- [ ] Wait time renders on the location page.\n- [ ] Final run and worktree run agree.\n';
+const body = 'Show the wait time.\n\n## Done when\n\n- [ ] Wait time renders on the location page.\n- [ ] Final run and worktree run agree.\n';
 
 async function acceptanceYard(t: TestContext) {
   const ticket: Ticket = { number: 11, title: 'Wait time', body, state: 'open', labels: [], comments: [], blockedBy: [] };

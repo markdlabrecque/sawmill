@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readRun } from '../src/run-store.js';
 import { createHash } from 'node:crypto';
-import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { fixtureCli as runCli, type CliOptions } from './helpers.js';
@@ -36,6 +36,12 @@ async function reviewYard(t: TestContext, harness = 'docker\ntest_url: http://lo
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', `test_harness: ${harness}`)
     .replaceAll('claude-opus-5-5', 'claude-opus-4-6'));
   if (harness.startsWith('docker')) await writeFile(join(y.cwd, '.mill/prepare.sh'), prepareHook);
+  // Draft requires a web environment for User test cases: DDEV needs its project config.
+  if (harness === 'ddev') {
+    await mkdir(join(y.cwd, '.ddev'));
+    await writeFile(join(y.cwd, '.ddev/config.yaml'), 'name: forms\n');
+    y.git('add', '.ddev'); y.git('commit', '-m', 'DDEV config'); y.git('push');
+  }
   await before(y.cwd);
   assert.equal((await y.cli('run', 'draft', '16', '--json')).code, 0);
   assert.equal((await y.cli('worktree', 'create', '16')).code, 0);

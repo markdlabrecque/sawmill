@@ -187,7 +187,7 @@ test('draft refuses user test cases without a harness and accepts them with Dock
   await writeFile(yard.projectConfig, (await readFile(yard.projectConfig, 'utf8')).replace('test_harness: none', 'test_harness: docker') + '\ntest_url: http://localhost:8080\n');
   const accepted = await yard.cli('run', 'draft', '1');
   assert.equal(accepted.code, 0, accepted.stdout);
-  assert.match(accepted.stdout, /#1\s+Ticket 1\s+queued/);
+  assert.match(accepted.stdout.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, ''), /#1\s+queued/);
 });
 
 for (const state of ['working', 'logjam']) {

@@ -261,7 +261,7 @@ test('a required artifact check that fails names itself and its exit code', asyn
 });
 
 test('acceptance items appear with their waiver and an unwaived item stays pending', async t => {
-  const body = 'Ship it.\n\n**Done when:**\n\n- [ ] The field exists.\n- [ ] Existing content keeps its value.\n';
+  const body = 'Ship it.\n\n## Done when\n\n- [ ] The field exists.\n- [ ] Existing content keeps its value.\n';
   const y = await fixture(t, { body, release: steps, evidenced: ['AC1'], waive: { AC2: 'Content preservation is checked by the editors.' } });
   const merged = await y.integrate();
   assert.equal(merged.code, 0, merged.stdout);
