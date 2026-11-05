@@ -6,10 +6,11 @@ import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { readRun, type RunSnapshot } from '../src/run-store.js';
 import { GitHubDraftReader, GitHubApiError, type GitHubApi, type GitHubIssue } from '../src/github.js';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureEstimate, fixtureGitHubData, fixtureGitHubEstimate, millyard } from './helpers.js';
 
 class SelectionTracker implements TicketReader {
   offline = false;
+  getEstimate = fixtureEstimate;
   constructor(readonly tickets: Ticket[], readonly children: Record<number, number[]> = {}) {}
   async getTicket(number: number): Promise<Ticket> {
     if (this.offline) throw new Error('Tracker is offline');
@@ -136,8 +137,9 @@ async function githubFixture(t: TestContext, yard: Awaited<ReturnType<typeof con
   await mkdir(bin);
   const gh = join(bin, 'gh');
   await writeFile(gh, `#!/usr/bin/env node
-const fixture = ${JSON.stringify(fixture)};
+const fixture = ${JSON.stringify(fixtureGitHubData(fixture))};
 const args = process.argv.slice(2);
+${fixtureGitHubEstimate}
 let value = fixture[args[1]];
 if (args[0] !== 'api' || value === undefined) {
   process.stderr.write('Unexpected fixture request: ' + JSON.stringify(args));
@@ -191,7 +193,7 @@ test('GitHub label selection reads every page, skips pull requests and caches co
   assert.deepEqual(snapshot.tickets.map(row => row.number), [7]);
   assert.deepEqual(snapshot.edges, [{ blocked: 7, blocker: 8, outsideClosed: true }]);
   assert.deepEqual(snapshot.tickets[0]!.comments.map(comment => comment.body), ['First comment', 'Last comment']);
-  assert.equal(snapshot.tickets[0]!.body, 'Blocked by: #999');
+  assert.equal(snapshot.tickets[0]!.body, fixtureBody('Blocked by: #999'));
   assert.deepEqual(snapshot.run.source, { kind: 'label', label });
   await writeFile(gh, '#!/bin/sh\nexit 91\n');
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), snapshot);

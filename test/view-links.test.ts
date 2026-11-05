@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { page } from '../src/view/page.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { millyard } from './helpers.js';

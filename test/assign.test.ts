@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { GitHubWriter } from '../src/github-writes.js';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { Ticket } from '../src/tracker.js';
 import type { ViewProject as BaseProject, ViewSnapshot, ViewTicket as BaseTicket } from '../src/view/model.js';
 import { millyard } from './helpers.js';

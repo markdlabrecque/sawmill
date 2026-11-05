@@ -10,7 +10,7 @@ import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import { runTeam } from '../src/team-runner.js';
 import type { IntegrationTracker, Ticket, TicketReader } from '../src/tracker.js';
 import { resolveTypeSafeKey } from '../src/typesafe.js';
-import { millyard } from './helpers.js';
+import { fixtureReview, millyard } from './helpers.js';
 
 test('a Jev-disabled team completes and persists role measurements with an unfixable settings file without infrastructure retries', async t => {
   const ticket: Ticket = { number: 12, title: 'Return the answer', body: 'Return 42 from answer.cjs.',
@@ -82,7 +82,7 @@ test('a Jev-disabled team completes and persists role measurements with an unfix
       y.git('-C', request.cwd, 'commit', '-m', 'Complete fixture role');
     }
     return { outcome: request.role === 'reviewer'
-      ? { outcome: 'pass', summary: 'Answer is correct.' }
+      ? { ...fixtureReview(request), summary: 'Answer is correct.' }
       : { outcome: 'done', summary: 'Role completed.' },
       effectiveModel: request.model, effectiveEffort: request.effort,
       usage: { inputTokens: 100, outputTokens: 20 } };
@@ -110,7 +110,9 @@ test('a Jev-disabled team completes and persists role measurements with an unfix
     assert.ok(invocation.execution.durationMs !== null && invocation.execution.durationMs >= 0);
     assert.deepEqual(invocation.execution.usage, { inputTokens: 100, outputTokens: 20 });
     assert.deepEqual(invocation.execution.outcome, index === 2
-      ? { outcome: 'pass', summary: 'Answer is correct.' } : { outcome: 'done', summary: 'Role completed.' });
+      ? { outcome: 'pass', summary: 'Answer is correct.', acceptance: [{ id: 'AC1', result: 'evidenced',
+          evidence: { check: 'git show --format= --check HEAD', revision: row.integration.mergedHead } }] }
+      : { outcome: 'done', summary: 'Role completed.' });
   }
   assert.equal((await stat(settingsPath)).mode & 0o777, 0o644, 'ordinary work never needs to repair the unusable file');
 });

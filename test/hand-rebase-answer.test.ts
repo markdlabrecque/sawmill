@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { readRun } from '../src/run-store.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { IntegrationTracker, Ticket, TicketReader } from '../src/tracker.js';

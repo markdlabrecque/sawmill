@@ -4,9 +4,10 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
-import { runCli, type CliOptions } from '../src/cli.js';
+import { fixtureCli as runCli, type CliOptions } from './helpers.js';
 import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+import { createRuntime } from '../src/runtime-factory.js';
 
 // Constructed projections of Pi 1.4.0 source, NOT captured/live vendor output.
 // https://github.com/earendil-works/pi/blob/58c0b02ce552adab76014e7ed712ab7981359aa8/packages/coding-agent/docs/json.md
@@ -44,7 +45,7 @@ async function piYard(t: TestContext, body = 'Preserve the full patch.', browser
   t.after(() => { process.env.PATH = originalPath; });
   const invoke = async (args: string[], options: Partial<CliOptions> = {}) => {
     let stdout = '';
-    const code = await runCli(args, { cwd: yard.cwd, home: yard.home, tracker, sleep: async () => {}, ...options, stdout: text => { stdout += text; } });
+    const code = await runCli(args, { cwd: yard.cwd, home: yard.home, tracker, runtime: createRuntime('pi'), sleep: async () => {}, ...options, stdout: text => { stdout += text; } });
     return { code, stdout };
   };
   const fake = async (source: string) => {

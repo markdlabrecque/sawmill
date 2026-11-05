@@ -11,12 +11,13 @@ import { GitLabTracker } from '../src/gitlab.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
 import { continueCommand } from './conflict-command.js';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureEstimate, fixtureReview, millyard } from './helpers.js';
 
 async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
-  const ticket: Ticket = { number: 12, title: 'Return the answer', body,labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
+  const ticket: Ticket = { number: 12, title: 'Return the answer', body: fixtureBody(body),labels: [], state: 'open', comments: [{ body: 'Keep the public API synchronous.' }], blockedBy: [] };
   const requests: ChangeRequest[] = [];
   const tracker = {
+    getEstimate: fixtureEstimate,
     async getTicket() { return structuredClone(ticket); },
     async addComment(_n: number, body: string) { await beforeWrite?.(body); ticket.comments.push({ body }); },
     async addLabel(_n: number, label: string) { await beforeWrite?.(); ticket.labels.push(label); },
@@ -66,7 +67,13 @@ async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
     sink.session(`${request.role}-session`);
     sink.stdout(Buffer.from(JSON.stringify({ type: 'assistant', text: request.role }) + '\n'));
     sink.stderr(Buffer.from('diagnostic\n'));
-    return script(request, sink);
+    const result = await script(request, sink);
+    const items = readRun(y.cwd).tickets[0]!.team?.acceptance?.items;
+    if (result.outcome.outcome === 'pass' && !result.outcome.acceptance &&
+        items?.length === 1 && items[0]!.text === 'The ticket changes contain no whitespace errors.') {
+      result.outcome = { ...result.outcome, ...fixtureReview(request) };
+    }
+    return result;
   } };
   let script: Runtime['run'] = async request => {
     const git = (...args: string[]) => y.git('-C', request.cwd, ...args);
@@ -97,6 +104,22 @@ async function fixture(t: TestContext, body = 'Return 42 from answer.cjs.') {
     setScript(value: Runtime['run']) { script = value; },
     setBeforeWrite(value: typeof beforeWrite) { beforeWrite = value; },
     status: async (): Promise<any> => readRun(y.cwd), path: join(y.root, '12') };
+}
+
+// Draft valid inputs first, then restore a pre-checklist saved run for legacy-report coverage.
+async function legacyEmptyAcceptance(y: Awaited<ReturnType<typeof fixture>>) {
+  const { loadConfig } = await import('../src/config.js');
+  const { transition } = await import('../src/transitions.js');
+  const config = await loadConfig(y.cwd, y.home);
+  assert.ok(config.valid);
+  const row = readRun(y.cwd).tickets[0]!;
+  assert.ok(await transition(y.cwd, config.project, y.tracker, 12, {
+    team: { ...row.team, acceptance: undefined },
+  }));
+  const db = new DatabaseSync(join(y.cwd, '.mill/run.sqlite'));
+  db.prepare('UPDATE tickets SET body = ? WHERE number = 12').run(
+    row.body.replace(/\n\n## Done when\n- \[ \] The ticket changes contain no whitespace errors\.\n$/, ''));
+  db.close();
 }
 
 /** Docker browser cases, on a site whose prepare.sh reports the ticket that owns it: a URL alone proves nothing. */
@@ -145,6 +168,7 @@ for (const mismatch of [false, true]) {
     const y = await fixture(t, mismatch
       ? 'Return 42 from answer.cjs.\n\n## Done when\n- [ ] Return the answer synchronously.\n'
       : 'Return 42 from answer.cjs.\n\n## Done when\n- Return the answer synchronously.\n');
+    if (!mismatch) await legacyEmptyAcceptance(y);
     const reviewerHandoffs: string[] = [];
     y.setScript(async (request, sink) => {
       if (request.role !== 'reviewer') {
@@ -179,6 +203,7 @@ for (const mismatch of [false, true]) {
 
 test('persistent invented acceptance IDs exhaust a small report-shape budget without code repair or a not-reproduced logjam', async t => {
   const y = await fixture(t, 'Return 42 from answer.cjs.\n\n## Done when\n- Return the answer synchronously.\n');
+  await legacyEmptyAcceptance(y);
   let reviews = 0;
   y.setScript(async (request, sink) => {
     if (request.role !== 'reviewer') {
@@ -502,6 +527,7 @@ test('a pass with an unmet acceptance item bounces to retry-cap, and waiving the
 
 test('the merged report of a ticket without an acceptance checklist claims no acceptance evidence', async t => {
   const y = await fixture(t);
+  await legacyEmptyAcceptance(y);
   const result = await y.cli('team', 'run', '12', '--json');
   assert.equal(result.code, 0, result.stdout);
   const row = (await y.status()).tickets[0];

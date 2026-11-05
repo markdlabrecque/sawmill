@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli, type CliOptions } from '../src/cli.js';
+import { fixtureCli as runCli, type CliOptions } from './helpers.js';
 import { ClaudeCodeRuntime } from '../src/claude-runtime.js';
 import type { RuntimeRequest } from '../src/runtime.js';
 import type { Outcome } from '../src/runtime.js';

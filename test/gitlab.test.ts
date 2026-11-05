@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
+import { acceptanceChecklist } from '../src/acceptance.js';
 import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runCli } from '../src/cli.js';
 import test, { type TestContext } from 'node:test';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureReview, millyard } from './helpers.js';
 
-const issue = (iid: number, description = '', state = 'opened') => ({ iid, id: 1000 + iid, project_id: 71, title: `Ticket ${iid}`, description, state, labels: ['batch / ready'], web_url: `https://git.example.invalid/group/subgroup/tool/-/issues/${iid}` });
+const issue = (iid: number, description = '', state = 'opened') => ({ iid, id: 1000 + iid, project_id: 71, title: `Ticket ${iid}`, description: fixtureBody(description), time_stats: { time_estimate: 3600 }, state, labels: ['batch / ready'], web_url: `https://git.example.invalid/group/subgroup/tool/-/issues/${iid}` });
 const note = (id: number, body: string) => ({ id, body, author: { username: 'reviewer' }, created_at: `2026-10-22T00:00:0${id}Z`, system: false });
 const originalEnvironment = { ...process.env };
 
@@ -49,7 +50,7 @@ async function approved(t: TestContext, ci = 'none') {
     let stdout = '';
     const code = await runCli(['team', 'review', '7', '--json'], {
       cwd: y.cwd, home: y.home, sleep: async () => {}, stdout: value => { stdout += value; },
-      runtime: { async run(_request, sink) { sink.session('fixture-review'); return { outcome: { outcome: 'pass' } }; } },
+      runtime: { async run(request, sink) { sink.session('fixture-review'); return { outcome: fixtureReview(request) }; } },
     });
     assert.equal(code, 0, stdout);
   };
@@ -59,13 +60,29 @@ async function approved(t: TestContext, ci = 'none') {
   return { ...y, path, approve, hostState, changeHost };
 }
 
+test('shared fake glab supplies a positive estimate and acceptance checklist by default', async t => {
+  const y = await fixture(t);
+  // Inspect the hosting response independently: today's draft ignores time_stats.
+  const raw = JSON.parse(execFileSync('glab', ['api', 'projects/group%2Fsubgroup%2Ftool/issues/7',
+    '--method', 'GET', '--hostname', 'git.example.invalid'], { encoding: 'utf8', input: '' }));
+  const seconds = raw.time_stats?.time_estimate;
+  assert.ok(typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0,
+    'The shared fake glab must supply a positive human estimate in seconds');
+  assert.ok(acceptanceChecklist(raw.description).length > 0);
+  const result = await y.cli('run', 'draft', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const rows = JSON.parse(result.stdout).tickets;
+  assert.equal(rows.length, 1);
+  assert.ok(acceptanceChecklist(rows[0].body).length > 0);
+});
+
 test('GitLab draft normalizes full paginated threads and closed outside body blockers', async t => {
   const y = await fixture(t);
   const result = await y.cli('run', 'draft', '7', '--json');
   assert.equal(result.code, 0, result.stdout);
   const snapshot = JSON.parse(result.stdout), row = snapshot.tickets[0];
   assert.equal(row.number, 7); assert.equal(row.title, 'Ticket 7');
-  assert.equal(row.body, 'Blocked by: #2\n\nBuild it.');
+  assert.equal(row.body, fixtureBody('Blocked by: #2\n\nBuild it.'));
   assert.equal(row.trackerState, 'open'); assert.equal(row.state, 'queued');
   assert.deepEqual(row.labels, ['batch / ready']);
   assert.deepEqual(row.comments, [
@@ -585,7 +602,7 @@ test('GitLab defaults to gitlab.com and body blocker parsing excludes unrelated 
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8')).replace('  host: git.example.invalid\n', ''));
   y.state.host = 'gitlab.com';
   for (const issue of y.state.issues) issue.web_url = issue.web_url.replace('git.example.invalid', 'gitlab.com');
-  y.state.issues[0]!.description = '## Blocked by\n- #2\n\n## Context\nSee #900\n```\nBlocked by: #901\n```';
+  y.state.issues[0]!.description = fixtureBody('## Blocked by\n- #2\n\n## Context\nSee #900\n```\nBlocked by: #901\n```');
   await y.save();
   const result = await y.cli('run', 'draft', '7', '--json');
   assert.equal(result.code, 0, result.stdout);
@@ -627,7 +644,7 @@ test('GitLab native selection also carries the newly integrated team CLI through
         tests(); y.git('-C', request.cwd, 'add', 'answer.cjs'); y.git('-C', request.cwd, 'commit', '-m', 'Return answer');
         return { outcome: { outcome: 'done', summary: 'Answer test passes.' } };
       }
-      tests(); return { outcome: { outcome: 'pass', summary: 'Verified answer through its public API.' } };
+      tests(); return { outcome: { ...fixtureReview(request), summary: 'Verified answer through its public API.' } };
     },
   } });
   assert.equal(code, 0, stdout); assert.equal(JSON.parse(stdout).outcome, 'passed');

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { readRun } from '../src/run-store.js';
 import type { Runtime } from '../src/runtime.js';
 import type { ChangeRequest, Ticket } from '../src/tracker.js';

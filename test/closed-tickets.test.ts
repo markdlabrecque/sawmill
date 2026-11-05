@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { formatRun, readRun, type RunSnapshot } from '../src/run-store.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { fixture, until } from './dispatch-fixture.js';

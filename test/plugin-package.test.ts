@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 import type { runCli as Cli } from '../src/cli.js';
 import { readRun, type RunSnapshot } from '../src/run-store.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureEstimate, fixtureProject, millyard } from './helpers.js';
 
 test('packed package ships a discoverable draft plugin and its CLI selections work offline', async (t) => {
   let yard = await millyard(t);
@@ -55,23 +55,24 @@ test('packed package ships a discoverable draft plugin and its CLI selections wo
 
   const { runCli }: { runCli: typeof Cli } = await import(pathToFileURL(join(installed, 'dist/src/cli.js')).href);
   const ticket = (number: number, blockedBy: number[] = []): Ticket => ({
-    number, title: `Ticket ${number}`, body: 'Implement a bounded change.', labels: ['sprint ready'],
+    number, title: `Ticket ${number}`, body: fixtureBody('Implement a bounded change.'), labels: ['sprint ready'],
     state: 'open', comments: [], blockedBy,
   });
   const tickets = [ticket(12), ticket(14, [12]), ticket(15), ticket(16, [90]), ticket(90)];
   let offline = false;
-  const tracker: TicketReader = {
-    async getTicket(number) {
+  const tracker = {
+    getEstimate: fixtureEstimate,
+    async getTicket(number: number) {
       if (offline) throw new Error('Tracker is offline');
       const found = tickets.find(ticket => ticket.number === number);
       assert.ok(found, `fixture ticket ${number} exists`);
       return structuredClone(found);
     },
-    async listByLabel(label) {
+    async listByLabel(label: string) {
       assert.equal(label, 'sprint ready');
       return Promise.all([15, 14, 12].map(number => this.getTicket(number)));
     },
-    async listChildren(number) {
+    async listChildren(number: number) {
       assert.equal(number, 40);
       return Promise.all([14, 15, 12].map(number => this.getTicket(number)));
     },
@@ -85,6 +86,7 @@ test('packed package ships a discoverable draft plugin and its CLI selections wo
   const config = parse(await readFile(yard.projectConfig, 'utf8'));
   config.name = 'plugin-smoke';
   config.tracker.repo = 'fixture/tool';
+  config.tracker.project = fixtureProject;
   config.integration = 'integration';
   config.runtime = 'codex';
   config.test_harness = 'none';

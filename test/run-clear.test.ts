@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { openRun, readRun, runPath } from '../src/run-store.js';
 import { activateRun } from '../src/transitions.js';
 import { withRunLock } from '../src/run-lock.js';
@@ -231,9 +231,10 @@ test('a CLI draft validated before clear cannot recreate the removed run when it
   const draft = await gatedProcess(t, y, `
     let first = true;
     const tracker = {
+      getEstimate: async () => 1,
       async getTicket(number) {
         if (first) { first = false; await gate(); }
-        return { number, title: 'Ticket ' + number, body: 'Implement a feature.', labels: [], state: 'open', comments: [], blockedBy: [] };
+        return { number, title: 'Ticket ' + number, body: 'Implement a feature.\\n\\n## Done when\\n- [ ] The ticket changes contain no whitespace errors.\\n', labels: [], state: 'open', comments: [], blockedBy: [] };
       },
       async addComment() {}, async addLabel() {}, async removeLabel() {}, async closeTicket() {}
     };
