@@ -8,6 +8,8 @@ import { stopScheduler } from '../src/scheduler.js';
 import { acceptanceChecklist } from '../src/acceptance.js';
 import type { RuntimeRequest } from '../src/runtime.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
+import { resolveMillyard } from '../src/millyard.js';
+import { parseDocument } from 'yaml';
 export type { CliOptions } from '../src/cli.js';
 
 // Valid draft inputs, shared by injected trackers and scripted hosting transports.
@@ -60,6 +62,20 @@ export function fixtureTracker<T extends TicketReader>(tracker: T): T & { getEst
 
 /** Run the real CLI with valid fake inputs; never supply evidence for a custom item. */
 export async function fixtureCli(args: string[], options: CliOptions = {}) {
+  if (args[0] === 'run' && args[1] === 'draft') {
+    // Leave build/configuration tests' raw defaults alone. Configure the estimate
+    // project only when this fixture is about to draft, and only for GitHub.
+    let path: string | undefined;
+    try { path = join(resolveMillyard(options.cwd ?? process.cwd()), '.mill/config.yaml'); } catch {}
+    const text = path && await readFile(path, 'utf8').catch(() => undefined);
+    if (text) {
+      const config = parseDocument(text);
+      if (!config.errors.length && config.getIn(['tracker', 'backend']) === 'github' && !config.hasIn(['tracker', 'project'])) {
+        config.setIn(['tracker', 'project'], fixtureProject);
+        await writeFile(path!, config.toString());
+      }
+    }
+  }
   const runtime = options.runtime;
   return runCli(args, {
     ...options,
@@ -107,11 +123,6 @@ export async function millyard(t: TestContext, adapters: Pick<CliOptions, 'track
   async function cli(...args: string[]) {
     let stdout = '';
     const code = await fixtureCli(args, { ...adapters, cwd, home, stdout: (text) => { stdout += text; } });
-    if (args[0] === 'build') {
-      const config = await readFile(projectConfig, 'utf8').catch(() => undefined);
-      if (config && !/^  project:/m.test(config)) await writeFile(projectConfig,
-        config.replace('  # repo: owner/name', `  project: ${fixtureProject}\n  # repo: owner/name`));
-    }
     return { code, stdout };
   }
   return { root, cwd, home, remote, env, git, userConfig, projectConfig, cli };

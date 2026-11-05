@@ -231,9 +231,10 @@ test('a CLI draft validated before clear cannot recreate the removed run when it
   const draft = await gatedProcess(t, y, `
     let first = true;
     const tracker = {
+      getEstimate: async () => 1,
       async getTicket(number) {
         if (first) { first = false; await gate(); }
-        return { number, title: 'Ticket ' + number, body: 'Implement a feature.', labels: [], state: 'open', comments: [], blockedBy: [] };
+        return { number, title: 'Ticket ' + number, body: 'Implement a feature.\\n\\n## Done when\\n- [ ] The ticket changes contain no whitespace errors.\\n', labels: [], state: 'open', comments: [], blockedBy: [] };
       },
       async addComment() {}, async addLabel() {}, async removeLabel() {}, async closeTicket() {}
     };
