@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { parse } from 'yaml';
+import { acceptanceChecklist } from '../src/acceptance.js';
 import { readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';import { DatabaseSync } from 'node:sqlite';
@@ -350,6 +353,20 @@ process.stdout.write(JSON.stringify(value));
   const output = JSON.parse(result.stdout);
   assert.deepEqual(output.tickets[0].comments.map((comment: { body: string }) => comment.body), ['First page', 'Last page']);
   assert.deepEqual(output.edges.map((edge: { blocker: number }) => edge.blocker), [80, 90]);
+  assert.ok(acceptanceChecklist(output.tickets[0].body).length > 0);
+  const config = parse(await readFile(yard.projectConfig, 'utf8'));
+  assert.equal(config.tracker.backend, 'github');
+  assert.ok(Number.isInteger(config.tracker.project) && config.tracker.project > 0);
+  // Today's draft does not read estimates. Exercise the shared fake gh response
+  // directly so this guard does not depend on the later draft-rule implementation.
+  const estimate = JSON.parse(execFileSync(gh, ['api', 'graphql', '-f',
+    'query=query { repository(owner: "team", name: "tool") { issue(number: 1) { projectItems(first: 100) { nodes { project { number } fieldValueByName(name: "Human estimate (hours)") { ... on ProjectV2ItemFieldNumberValue { number } } } } } } }'],
+    { encoding: 'utf8' }));
+  const item = estimate.data.repository.issue.projectItems.nodes.find(
+    (item: { project: { number: number } }) => item.project.number === config.tracker.project);
+  const hours = item?.fieldValueByName?.number;
+  assert.ok(typeof hours === 'number' && Number.isFinite(hours) && hours > 0,
+    'The shared fake gh must return positive human hours in the configured GitHub estimate project');
   await writeFile(gh, '#!/bin/sh\nexit 91\n');
   assert.deepEqual(JSON.parse((await yard.cli('run', 'status', '--json')).stdout), output);
 });

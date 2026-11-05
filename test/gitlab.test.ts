@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { acceptanceChecklist } from '../src/acceptance.js';
 import { readRun } from '../src/run-store.js';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -58,6 +59,22 @@ async function approved(t: TestContext, ci = 'none') {
   const changeHost = async (changes: object) => y.save({ ...await hostState(), ...changes });
   return { ...y, path, approve, hostState, changeHost };
 }
+
+test('shared fake glab supplies a positive estimate and acceptance checklist by default', async t => {
+  const y = await fixture(t);
+  // Inspect the hosting response independently: today's draft ignores time_stats.
+  const raw = JSON.parse(execFileSync('glab', ['api', 'projects/group%2Fsubgroup%2Ftool/issues/7',
+    '--method', 'GET', '--hostname', 'git.example.invalid'], { encoding: 'utf8', input: '' }));
+  const seconds = raw.time_stats?.time_estimate;
+  assert.ok(typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0,
+    'The shared fake glab must supply a positive human estimate in seconds');
+  assert.ok(acceptanceChecklist(raw.description).length > 0);
+  const result = await y.cli('run', 'draft', '7', '--json');
+  assert.equal(result.code, 0, result.stdout);
+  const rows = JSON.parse(result.stdout).tickets;
+  assert.equal(rows.length, 1);
+  assert.ok(acceptanceChecklist(rows[0].body).length > 0);
+});
 
 test('GitLab draft normalizes full paginated threads and closed outside body blockers', async t => {
   const y = await fixture(t);
