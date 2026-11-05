@@ -88,7 +88,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const links = !json && !options.stdout && Boolean(process.stdout.isTTY) && !process.env.NO_HYPERLINK;
   const projectSetup: string[] = [];
   let draftTracker: ProjectConfig['tracker'] | undefined;
-  const draftText = (message: string) => !draftTracker || json ? message : message.replace(/#([1-9]\d*)\b/g, (_, number: string) => ticketRef(draftTracker!, Number(number), true));
+  const draftText = (message: string) => !draftTracker || json ? message : message.replace(/#([1-9]\d*)\b|\b(mill run answer )([1-9]\d*)\b/g,
+    (_, reference: string | undefined, command: string | undefined, argument: string | undefined) => reference
+      ? ticketRef(draftTracker!, Number(reference), true)
+      : command + ticketRef(draftTracker!, Number(argument), true, argument));
   const diagnostic = options.stderr ?? (text => process.stderr.write(text));
   const emit = (value: object, message: string) => {
     // Keep successful command payloads (including arrays and path-only output)

@@ -54,3 +54,46 @@ the ticket (in particular its explicit no-grandfathering limit). A person must
 expand the test-writer scope to migrate legacy fixtures and assertions, retaining
 the original behavioural coverage and the new hard validation gates. No tests
 were retired or simplified to conceal these failures.
+
+## Review repair
+
+The earlier fixture migration was delivered before this round; Mill's handoff at
+`4617086` records 1444 suite tests and 3 process-permission tests passing.
+
+New unprotected `test/draft-review-boundaries.test.ts` reproduced nine failures
+before implementation (with two transport-error guards already passing):
+owner-number collisions and missing/zero/positive GitHub estimates, including
+pagination; aggregate ticket-reader refusals for numbers, labels and spec
+children; and pending-assignment answer-command hyperlinks. All eleven now pass.
+`src/github.ts` requests stable Project IDs and compares each item with the
+configured GitHub estimate project's ID. `readTickets` collects only outcome
+`CliError` refusals while readable selections continue through validation;
+transport errors and configuration errors still abort without partial findings.
+Draft and `--check` return the same failures and preserve existing run bytes.
+Answer-command ticket arguments are linked without changing their visible text,
+both in draft output and in linked run formatting.
+
+Glossary checked; no update needed because **Draft**, **GitHub estimate project**,
+**Ticket**, **Tracker**, **Run file** and **Test correction** already cover these
+repairs. No terminology conflict found. The protected test and domain-guidance
+files remain unchanged.
+
+Build and typecheck pass. The full declared command reports 1452 passing and
+3 failing suite tests; it stops before the process-permission command. Output:
+`/tmp/pi-bash-64cd0f7dfdcea58e.log`. All three failures are existing transport
+success scenarios in `test/draft.test.ts` and `test/selection.test.ts` that use
+`fixtureGitHubEstimate` from `test/helpers.ts`. Its fake item has only
+`project.number`; it needs `project.id: 'fixture-project'` to match the already
+supplied configured-project ID. Do not restore number-only production matching
+to accommodate this fixture: that reintroduces the reviewed collision defect.
+These failures were introduced by the correct ID lookup, not present in the
+handed-off green run. Existing tests and the shared helper were not edited;
+test-writer scope is needed for this outside-protected-baseline fixture change.
+
+The reviewer's deferred protected correction is also still required in
+`test/draft-validation.test.ts`: its permission fixture denies every request,
+so the claimed estimate-read failure is actually an initial ticket-read failure.
+The correction must allow ticket reads, fail specifically during an estimate
+read after another selected ticket returns a missing estimate, and assert exit
+1, a plain error without missing-estimate findings, and an unchanged run. The
+implementer has left that file untouched.

@@ -1,3 +1,23 @@
+import { CliError } from './errors.js';
+
+export type TicketRefusal = (number: number, message: string) => void;
+
+/** Read all selected tickets; only ticket refusals may be collected, never transport errors. */
+export async function readTickets(reader: Pick<TicketReader, 'getTicket'>, numbers: number[], onRefusal?: TicketRefusal): Promise<Ticket[]> {
+  const results = await Promise.all(numbers.map(async number => {
+    try { return { ticket: await reader.getTicket(number) }; }
+    catch (error) {
+      if (!onRefusal || !(error instanceof CliError) || error.exitCode === 2) throw error;
+      return { number, message: error.message };
+    }
+  }));
+  return results.flatMap(result => {
+    if (result.ticket) return [result.ticket];
+    onRefusal!(result.number!, result.message!);
+    return [];
+  });
+}
+
 export interface TicketComment {
   body: string;
   author?: string;
@@ -26,9 +46,9 @@ export interface TicketReader {
   /** Native human-effort field: positive values pass draft, null/zero mean missing. Read errors must throw. */
   getEstimate?(number: number): Promise<number | null>;
   /** Return all matching tickets, including closed tickets, with complete threads; draft skips the closed ones. */
-  listByLabel?(label: string): Promise<Ticket[]>;
+  listByLabel?(label: string, onRefusal?: TicketRefusal): Promise<Ticket[]>;
   /** Return all direct children, with complete threads; do not include the parent. */
-  listChildren?(number: number): Promise<Ticket[]>;
+  listChildren?(number: number, onRefusal?: TicketRefusal): Promise<Ticket[]>;
 }
 
 export interface ChangeRequest {

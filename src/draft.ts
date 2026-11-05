@@ -7,7 +7,7 @@ import { registerMillyard } from './registry.js';
 import { literalCommand, requiredCheckNames } from './verification.js';
 import { proofPlan } from './proof-plan.js';
 import { saveDraft, readRun, checkDraftable, type RunEdge } from './run-store.js';
-import type { CheckPolicy, Ticket, TicketReader } from './tracker.js';
+import { readTickets, type CheckPolicy, type Ticket, type TicketReader, type TicketRefusal } from './tracker.js';
 import type { RunSelection } from './selection.js';
 import { userTestSection } from './user-testing.js';
 import { DraftValidationError, hasAcceptanceItems, hasWebEnvironment, type DraftFailure } from './draft-validation.js';
@@ -65,14 +65,19 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     try { await execute('bash', ['-c', 'command -v -- "$1"', 'preflight', program], { cwd, timeout: 5000 }); }
     catch { warnings.push(`${setting}: ${program} was not found on PATH in the millyard; install it or set it up in .mill/setup.sh before starting tickets.`); }
   }
+  const refused = new Set<number>();
+  const onRefusal: TicketRefusal = (number, message) => {
+    refused.add(number);
+    fail(number, 'ticket-refusal', message);
+  };
   let tickets: Ticket[];
-  if (selection.kind === 'numbers') tickets = await Promise.all(selection.numbers.map(number => tracker.getTicket(number)));
+  if (selection.kind === 'numbers') tickets = await readTickets(tracker, selection.numbers, onRefusal);
   else if (selection.kind === 'label') {
     if (!tracker.listByLabel) throw new CliError('This tracker does not support --label selection; use explicit ticket numbers.', 2);
-    tickets = await tracker.listByLabel(selection.label);
+    tickets = await tracker.listByLabel(selection.label, onRefusal);
   } else {
     if (!tracker.listChildren) throw new CliError('This tracker does not support --spec selection; use explicit ticket numbers.', 2);
-    tickets = await tracker.listChildren(selection.number);
+    tickets = await tracker.listChildren(selection.number, onRefusal);
   }
   tickets = [...new Map(tickets.map(ticket => [ticket.number, ticket])).values()];
   const alreadyPresent = tickets.filter(ticket => existing?.tickets.some(row => row.number === ticket.number)).map(ticket => ticket.number);
@@ -85,7 +90,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   if (!tickets.length && closed.length && !alreadyPresent.length) {
     for (const ticket of closed) fail(ticket.number, 'closed-ticket', 'closed', `Every selected ticket is closed: skipped ${refs(closed)}. Nothing was drafted and the current run is unchanged; pass --include-closed to draft closed tickets anyway.`);
   }
-  if (!tickets.length && !alreadyPresent.length && !closed.length) {
+  if (!tickets.length && !alreadyPresent.length && !closed.length && !refused.size) {
     const message = selection.kind === 'label' ? `No tickets found with label ${JSON.stringify(selection.label)}.`
       : selection.kind === 'spec' ? `No direct children found for spec #${selection.number}.` : 'No tickets selected.';
     fail(null, 'empty-selection', message, `${message} Choose another selector or use explicit ticket numbers.`);
@@ -111,7 +116,7 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
     try { proofPlan(ticket.body); }
     catch (error) { fail(ticket.number, 'proof-plan', 'proof plan', error instanceof Error ? error.message : String(error)); }
   }
-  const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers]);
+  const selected = new Set([...existing?.tickets.map(ticket => ticket.number) ?? [], ...numbers, ...refused]);
   const edges: RunEdge[] = [
     ...existing?.edges.map(edge => ({ ...edge, outsideClosed: selected.has(edge.blocker) ? false : edge.outsideClosed })) ?? [],
     ...tickets.flatMap(ticket => {
@@ -124,7 +129,8 @@ export async function draft(cwd: string, home: string, project: ProjectConfig,se
   const outside = new Map<number, Ticket>(closed.map(ticket => [ticket.number, ticket]));
   for (const edge of edges) {
     if (selected.has(edge.blocker) || edge.outsideClosed) continue;
-    const blocker = outside.get(edge.blocker) ?? await tracker.getTicket(edge.blocker);
+    const blocker = outside.get(edge.blocker) ?? (await readTickets(tracker, [edge.blocker], onRefusal))[0];
+    if (!blocker) continue;
     outside.set(edge.blocker, blocker);
     if (blocker.state !== 'closed') fail(edge.blocked, 'outside-blocker', `#${edge.blocker}`, `Ticket #${edge.blocked} has open blocker #${edge.blocker} outside the run.`);
     else edge.outsideClosed = true;

@@ -4,7 +4,7 @@ import { GitHubApiError } from './github-error.js';
 export { GitHubApiError } from './github-error.js';
 import { CliError } from './errors.js';
 import type { ProjectConfig } from './config.js';
-import type { Ticket, TicketReader } from './tracker.js';
+import { readTickets, type Ticket, type TicketReader, type TicketRefusal } from './tracker.js';
 
 export interface GitHubIssue {
   number: number;
@@ -31,13 +31,13 @@ export class GitHubDraftReader implements TicketReader {
     if (!this.api.getEstimate) throw new Error('The GitHub transport cannot read human estimates.');
     return this.api.getEstimate(number);
   }
-  async listByLabel(label: string): Promise<Ticket[]> {
+  async listByLabel(label: string, onRefusal?: TicketRefusal): Promise<Ticket[]> {
     if (!this.api.listByLabel) throw new CliError('GitHub API does not support label selection; use explicit ticket numbers.', 2);
     const issues = await this.api.listByLabel(label);
     const numbers = [...new Set(issues.filter(issue => !issue.pull_request).map(issue => issue.number))];
-    return Promise.all(numbers.map(number => this.getTicket(number)));
+    return readTickets(this, numbers, onRefusal);
   }
-  async listChildren(number: number): Promise<Ticket[]> {
+  async listChildren(number: number, onRefusal?: TicketRefusal): Promise<Ticket[]> {
     if (!this.api.listChildren) throw new CliError('GitHub API does not support spec selection; use explicit ticket numbers.', 2);
     const parent = await this.api.getIssue(number);
     if (parent.pull_request) throw new CliError(`#${number} is a pull request, not a spec issue.`);
@@ -48,7 +48,7 @@ export class GitHubDraftReader implements TicketReader {
         throw new CliError(`Spec #${number} has a cross-repository child ${issue.repository_url}#${issue.number}; only this repository can be drafted.`);
       }
     }
-    return Promise.all([...new Set(issues.map(issue => issue.number))].map(number => this.getTicket(number)));
+    return readTickets(this, [...new Set(issues.map(issue => issue.number))], onRefusal);
   }
   async getTicket(number: number): Promise<Ticket> {
     const issue = await this.api.getIssue(number);
@@ -96,23 +96,24 @@ export function githubApi(config: ProjectConfig['tracker'], cwd = process.cwd())
           repository(owner:$owner,name:$name) {
             owner { ... on User { projectV2(number:$project) { id field(name:"${humanEstimateField}") { ... on ProjectV2Field { dataType } } } } ... on Organization { projectV2(number:$project) { id field(name:"${humanEstimateField}") { ... on ProjectV2Field { dataType } } } } }
             issue(number:$number) { projectItems(first:100,after:$cursor) {
-              nodes { project { number } fieldValueByName(name:"${humanEstimateField}") { ... on ProjectV2ItemFieldNumberValue { number } } }
+              nodes { project { id } fieldValueByName(name:"${humanEstimateField}") { ... on ProjectV2ItemFieldNumberValue { number } } }
               pageInfo { hasNextPage endCursor }
             } }
           }
         }`;
-        type Page = { nodes: { project: { number: number }; fieldValueByName: { number?: number } | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+        type Page = { nodes: { project: { id: string }; fieldValueByName: { number?: number } | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
         const result = await githubRequest(config, cwd, 'POST', 'graphql', { query, variables: { owner, name, number, project: config.project, cursor } }) as {
           errors?: { message: string }[]; data?: { repository: { owner: { projectV2: { id: string; field: { dataType?: string } | null } | null }; issue: { projectItems: Page } | null } | null };
         };
         if (result.errors?.length) throw new Error(result.errors.map(error => error.message).join('; '));
         const repository = result.data?.repository;
         if (!repository?.issue || !repository.owner) throw new Error('GitHub returned unreadable estimate data.');
-        if (!repository.owner.projectV2) throw new Error('Cannot read the configured GitHub estimate project; verify tracker.project and Project permissions.');
-        if (repository.owner.projectV2.field?.dataType !== 'NUMBER') throw new CliError(`Configured tracker.project needs the ${humanEstimateField} number field; run Mill interactively to review setup.`, 2);
+        const estimateProject = repository.owner.projectV2;
+        if (!estimateProject) throw new Error('Cannot read the configured GitHub estimate project; verify tracker.project and Project permissions.');
+        if (estimateProject.field?.dataType !== 'NUMBER') throw new CliError(`Configured tracker.project needs the ${humanEstimateField} number field; run Mill interactively to review setup.`, 2);
         const page: Page = repository.issue.projectItems;
         if (!Array.isArray(page?.nodes) || !page.pageInfo) throw new Error('GitHub returned incomplete estimate data.');
-        const item = page.nodes.find(item => item.project.number === config.project);
+        const item = page.nodes.find(item => item.project.id === estimateProject.id);
         if (item) {
           const value = item.fieldValueByName?.number;
           if (value == null) return null;

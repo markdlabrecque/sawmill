@@ -8,7 +8,7 @@ export function ticketUrl(tracker: ProjectConfig['tracker'], number: number): st
   return `https://${tracker.host ?? (gitlab ? 'gitlab.com' : 'github.com')}/${tracker.repo}/${gitlab ? '-/' : ''}issues/${number}`;
 }
 
-/** `#<n>`, linked to the ticket's web page when links are on. */
-export function ticketRef(tracker: ProjectConfig['tracker'], number: number, links: boolean): string {
-  return links ? hyperlink(ticketUrl(tracker, number), `#${number}`) : `#${number}`;
+/** `#<n>` (or a command argument), linked to the ticket's web page when links are on. */
+export function ticketRef(tracker: ProjectConfig['tracker'], number: number, links: boolean, text = `#${number}`): string {
+  return links ? hyperlink(ticketUrl(tracker, number), text) : text;
 }

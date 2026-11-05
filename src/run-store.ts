@@ -455,6 +455,7 @@ export function readRunDatabase(db: DatabaseSync): RunSnapshot {
 
 export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectConfig['tracker']; links?: boolean; titles?: boolean } = {}): string {
   const ref = (number: number) => ticketRef(options.tracker ?? snapshot.run.tracker, number, options.links ?? false);
+  const argument = (number: number) => ticketRef(options.tracker ?? snapshot.run.tracker, number, options.links ?? false, String(number));
   // Linked cells replace their plain text only after cleaning and padding, so widths stay visible-width.
   const linked: (string | undefined)[][] = [[]];
   const rows = snapshot.tickets.map(ticket => {
@@ -479,7 +480,7 @@ export function formatRun(snapshot: RunSnapshot, options: { tracker?: ProjectCon
     return link === undefined ? padded : link + padded.slice(cell.length);
   };
   return [snapshot.run.loop?.pausedReason, snapshot.run.pendingPick ? `Pending pick: ${ref(snapshot.run.pendingPick)}.` : undefined, table.map((row, rowIndex) => row.map((cell, index) => render(cell, rowIndex, index)).join('  ').trimEnd()).join('\n'),
-    ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref)),
+    ...snapshot.tickets.map(ticket => assignmentNote(ticket, ref, argument)),
     ...snapshot.tickets.map(ticket => ticket.refreshed ? `${ref(ticket.number)}: text refreshed at ${ticket.refreshed.time} by ${ticket.refreshed.by} (checklist ${ticket.refreshed.snapshot}).` : undefined),
     // The undeclared default stays implicit; a ticket's own plan is shown before work starts.
     ...snapshot.tickets.map(({ number, proofPlan: plan }) => plan && plan.reason !== defaultProofPlan.reason ? `${ref(number)}: proof plan ${plan.path}: ${plan.reason}` : undefined),
@@ -536,11 +537,11 @@ export function formatTicketLog(entries: LogEntry[]): string {
   }).join('\n');
 }
 
-function assignmentNote({ number, assignment }: RunTicket, ref: (number: number) => string): string | undefined {
+function assignmentNote({ number, assignment }: RunTicket, ref: (number: number) => string, argument: (number: number) => string): string | undefined {
   switch (assignment?.status) {
     case 'held': return `${ref(number)}: already assigned to ${assignment.by}; left with them.`;
     case 'refused': return `${ref(number)}: the tracker refused the assignment (${assignment.error}); left unassigned.`;
-    case 'pending': return `${ref(number)}: not assigned yet (${assignment.error}); retry with mill run answer ${number}.`;
+    case 'pending': return `${ref(number)}: not assigned yet (${assignment.error}); retry with mill run answer ${argument(number)}.`;
     default: return undefined;
   }
 }
