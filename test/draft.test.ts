@@ -5,11 +5,12 @@ import { createHash } from 'node:crypto';import { DatabaseSync } from 'node:sqli
 import test, { type TestContext } from 'node:test';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { GitHubDraftReader, type GitHubApi, type GitHubIssue, GitHubApiError } from '../src/github.js';
-import { millyard } from './helpers.js';
+import { fixtureBody, fixtureEstimate, fixtureGitHubEstimate, millyard } from './helpers.js';
 import { readRun } from '../src/run-store.js';
 
 class FakeTracker implements TicketReader {
   offline = false;
+  getEstimate = fixtureEstimate;
   constructor(readonly tickets: Ticket[]) {}
   async getTicket(number: number): Promise<Ticket> {
     if (this.offline) throw new Error('Tracker is offline');
@@ -20,10 +21,11 @@ class FakeTracker implements TicketReader {
 }
 
 function ticket(number: number, fields: Partial<Ticket> = {}): Ticket {
-  return { number, title: `Ticket ${number}`, body: 'Implement the feature.', labels: [], state: 'open', comments: [], blockedBy: [], ...fields };
+  return { number, title: `Ticket ${number}`, labels: [], state: 'open', comments: [], blockedBy: [], ...fields, body: fixtureBody(fields.body ?? 'Implement the feature.') };
 }
 
 async function configured(t: TestContext, tracker?: TicketReader) {
+  if (tracker) Object.assign(tracker, { getEstimate: fixtureEstimate });
   const yard = await millyard(t, { tracker });
   await yard.cli('build');
   const config = (await readFile(yard.projectConfig, 'utf8'))
@@ -49,7 +51,7 @@ test('explicit drafting persists membership and ticket context for offline statu
   const status = await yard.cli('run', 'status', '--json');
   assert.equal(status.code, 0, status.stdout);
   assert.deepEqual(JSON.parse(status.stdout), result);
-  assert.equal(result.tickets[1].body, 'Implement the feature.');
+  assert.equal(result.tickets[1].body, fixtureBody('Implement the feature.'));
   assert.deepEqual(result.tickets[1].comments, [{ body: 'Remember the edge case.', author: 'user' }]);
   assert.equal((await readFile(join(yard.cwd, '.mill/run.sqlite'))).subarray(0, 16).toString(), 'SQLite format 3\0');
   assert.equal(yard.git('status', '--porcelain'), '');
@@ -270,7 +272,7 @@ test('status with no run is an outcome error and creates no database; config err
 
 test('GitHub draft reader caches issue bodies, labels, states, comments and native blockers', async (t) => {
   const issues: GitHubIssue[] = [
-    { number: 7, title: 'Native issue', body: 'Blocked by: #999', labels: [{ name: 'ready' }], state: 'open' },
+    { number: 7, title: 'Native issue', body: fixtureBody('Blocked by: #999'), labels: [{ name: 'ready' }], state: 'open' },
     { number: 8, title: 'Already resolved', body: null, labels: [], state: 'closed' },
   ];
   const api: GitHubApi = {
@@ -291,7 +293,7 @@ test('GitHub draft reader caches issue bodies, labels, states, comments and nati
 test('GitHub falls back only when dependencies are unavailable, never on authentication or server errors', async (t) => {
   let status = 404;
   const api: GitHubApi = {
-    getIssue: async number => ({ number, title: `Ticket ${number}`, body: number === 1 ? '## Blocked by\n- #2' : '', labels: [], state: 'open' }),
+    getIssue: async number => ({ number, title: `Ticket ${number}`, body: fixtureBody(number === 1 ? '## Blocked by\n- #2' : ''), labels: [], state: 'open' }),
     getComments: async () => [],
     getBlockers: async () => { throw new GitHubApiError(`HTTP ${status}`, status); },
   };
@@ -314,7 +316,7 @@ test('default GitHub adapter reads all comment and dependency pages via gh and s
   const yard = await configured(t);
   const bin = join(yard.root, 'bin');
   await mkdir(bin);
-  const issue = { number: 1, title: 'Transport fixture', body: 'The complete ticket', state: 'open', labels: [] };
+  const issue = { number: 1, title: 'Transport fixture', body: fixtureBody('The complete ticket'), state: 'open', labels: [] };
   const closed = (number: number) => ({ ...issue, number, state: 'closed' });
   const fixture = {
     'repos/team/tool/issues/1': issue,
@@ -331,6 +333,7 @@ test('default GitHub adapter reads all comment and dependency pages via gh and s
   await writeFile(gh, `#!/usr/bin/env node
 const fixtures = ${JSON.stringify(fixture)};
 const args = process.argv.slice(2);
+${fixtureGitHubEstimate}
 const path = args.find(arg => arg.startsWith('repos/'))?.split('?')[0];
 let value = fixtures[path];
 if (args[0] !== 'api' || !value) process.exit(1);

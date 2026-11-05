@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli, type CliOptions } from '../src/cli.js';
+import { fixtureCli as runCli, type CliOptions } from './helpers.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { ChangeRequest, Pipeline, Ticket } from '../src/tracker.js';
 import { browserProof, userTestSection, type UserTesting } from '../src/user-testing.js';

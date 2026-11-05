@@ -9,7 +9,7 @@ import type { Runtime } from '../src/runtime.js';
 import { runTeam } from '../src/team-runner.js';
 import type { IntegrationTracker, TicketReader } from '../src/tracker.js';
 import { activateRun, claimWorker, consumeResults, recordWorker } from '../src/transitions.js';
-import { millyard } from './helpers.js';
+import { fixtureReview, millyard } from './helpers.js';
 
 for (const boundary of ['integration', 'first-start'] as const) {
   test(`an unavailable GitHub account at ${boundary} holds the ticket without infrastructure pause accounting`, async t => {
@@ -65,7 +65,7 @@ process.exit(1);
         return { outcome: { outcome: 'done', summary: 'Change committed.' } };
       }
       assert.equal(request.role, 'reviewer');
-      return { outcome: { outcome: 'pass', summary: 'Change reviewed.' } };
+      return { outcome: { ...fixtureReview(request), summary: 'Change reviewed.' } };
     } };
     const result = await runTeam(y.cwd, config.project, config.machine, 12, tracker, { home: y.home, runtime,
       sleep: async () => { assert.fail('Account configuration must not consume infrastructure retries'); } });

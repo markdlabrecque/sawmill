@@ -4,9 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli, type CliOptions } from '../src/cli.js';
+import { fixtureCli as runCli, type CliOptions } from './helpers.js';
 import type { Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
+import { createRuntime } from '../src/runtime-factory.js';
 
 // Source-derived projections, NOT live captures. Official rolling CLI JSONL examples,
 // fetched 2026-10-22; flags checked against local codex-cli 0.163.0 help.
@@ -51,7 +52,7 @@ async function fixture(t: TestContext) {
   }
   async function invoke(args = ['team', 'review', '22', '--json'], extra: Partial<CliOptions> = {}) {
     let stdout = '';
-    const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker, sleep: async () => {}, ...extra, stdout: s => { stdout += s; } });
+    const code = await runCli(args, { cwd: y.cwd, home: y.home, tracker, runtime: createRuntime('codex'), sleep: async () => {}, ...extra, stdout: s => { stdout += s; } });
     return { code, stdout };
   }
   return { ...y, worktree, ticket, tracker, script, events, invoke,

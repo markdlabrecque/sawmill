@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { openRun, readRun, runPath } from '../src/run-store.js';
 import { activateRun } from '../src/transitions.js';
 import { withRunLock } from '../src/run-lock.js';

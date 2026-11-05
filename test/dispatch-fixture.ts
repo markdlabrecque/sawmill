@@ -29,7 +29,7 @@ export async function fixture(t: TestContext, numbers = [1], success = false) {
   const y = await millyard({ after(fn: () => Promise<void>) { cleanup = fn; } } as TestContext, { tracker }, 'sawmill-dispatch-');
   await y.cli('build');
   await writeFile(y.projectConfig, (await readFile(y.projectConfig, 'utf8'))
-    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', `repo: dispatch/tool\n  project: ${fixtureProject}`)
+    .replace('# name: islandhealth', 'name: tool').replace('# repo: owner/name', 'repo: dispatch/tool')
     .replace('integration: main', 'integration: integration').replace('# test_harness: none', 'test_harness: none')
     .replace('command: npm test', 'command: node --test'));
   await writeFile(join(y.cwd, 'answer.cjs'), 'module.exports = () => 0;\n');
@@ -166,7 +166,8 @@ process.stdin.on('end', async () => {
     outcome = {outcome:row.stage === 'reviewer' ? 'pass' : 'done', summary:'Fixture role complete'};
     if (row.stage === 'reviewer') {
       cp.execFileSync(process.execPath, ['--test', tests], {stdio:'pipe'});
-      outcome.acceptance = [{id:'AC1', result:'evidenced', evidence:{check:'node --test ' + tests, revision:git('rev-parse', 'HEAD').toString().trim()}}];
+      git('show', '--format=', '--check', 'HEAD');
+      outcome.acceptance = [{id:'AC1', result:'evidenced', evidence:{check:'git show --format= --check HEAD', revision:git('rev-parse', 'HEAD').toString().trim()}}];
     }
     if (row.stage === 'reviewer' && row.bounces === 0 && fs.existsSync(root + '/repair-crash')) outcome = {outcome:'bounce', feedback:'Add the repair checkpoint'};
   }

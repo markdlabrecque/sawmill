@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import type { RunSnapshot } from '../src/run-store.js';
 import { millyard } from './helpers.js';

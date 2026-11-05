@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { readBuildIdentity } from '../src/build-identity.js';
-import { runCli, type CliOptions } from '../src/cli.js';
+import { fixtureCli as runCli, type CliOptions } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { registerMillyard } from '../src/registry.js';
 import { readRun } from '../src/run-store.js';

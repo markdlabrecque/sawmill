@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { Runtime, RuntimeRequest } from '../src/runtime.js';
 import { readRun } from '../src/run-store.js';
 import { millyard } from './helpers.js';

@@ -3,7 +3,7 @@ import { readRun } from '../src/run-store.js';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { ChangeRequest, Ticket } from '../src/tracker.js';
 import { millyard } from './helpers.js';
 

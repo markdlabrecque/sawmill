@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { Ticket, TicketReader } from '../src/tracker.js';
 import { laneOf, type ViewSnapshot } from '../src/view/model.js';
 import { readRun, type WorkerOwnership } from '../src/run-store.js';

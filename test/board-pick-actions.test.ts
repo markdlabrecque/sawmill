@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { readRun } from '../src/run-store.js';
 import type { TicketReader } from '../src/tracker.js';
 import type { ViewAction, ViewProject, ViewSnapshot } from '../src/view/model.js';

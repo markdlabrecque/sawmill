@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import test, { type TestContext } from 'node:test';
 import { MergeRefusedError } from '../src/tracker.js';
 import type { ChangeRequest, Ticket } from '../src/tracker.js';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { millyard } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { CliError } from '../src/errors.js';

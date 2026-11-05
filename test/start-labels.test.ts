@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import { loadConfig } from '../src/config.js';
 import { GitHubIntegration } from '../src/github-integration.js';
 import { GitLabTracker } from '../src/gitlab.js';

@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { chromium } from 'playwright-core';
-import { runCli } from '../src/cli.js';
+import { fixtureCli as runCli } from './helpers.js';
 import type { TicketReader } from '../src/tracker.js';
 import type { ViewSnapshot, ViewTicket } from '../src/view/model.js';
 import { fixture, until } from './dispatch-fixture.js';
