@@ -16,7 +16,7 @@ export type { CliOptions } from '../src/cli.js';
 export const fixtureProject = 1;
 export const fixtureEstimate = async (_number: number): Promise<number> => 1;
 export const fixtureGitHubEstimate = `if (args[0] === 'api' && args[1] === 'graphql') {
-  console.log(${JSON.stringify(JSON.stringify({ data: { repository: { owner: { projectV2: { id: 'fixture-project', field: { dataType: 'NUMBER' } } }, issue: { projectItems: { nodes: [{ project: { number: fixtureProject }, fieldValueByName: { number: 1 } }], pageInfo: { hasNextPage: false } } } } } }))});
+  console.log(${JSON.stringify(JSON.stringify({ data: { repository: { owner: { projectV2: { id: 'fixture-project', field: { dataType: 'NUMBER' } } }, issue: { projectItems: { nodes: [{ project: { id: 'fixture-project', number: fixtureProject }, fieldValueByName: { number: 1 } }], pageInfo: { hasNextPage: false } } } } } }))});
   process.exit(0);
 }`;
 

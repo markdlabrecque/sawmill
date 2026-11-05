@@ -225,14 +225,21 @@ test('check reports worktree collisions together with missing acceptance items w
 
 test('tracker permission failure is a plain outcome error, never a missing-estimate finding', async t => {
   const f = await fixture(t, [issue(1)]);
-  f.state.denied = true;
-  await f.save();
-  const result = await f.cli('run', 'draft', '1', '--check', '--json');
-  assert.equal(result.code, 1, result.stdout);
-  assert.match(result.stdout, /403|access denied/i);
-  assert.doesNotMatch(result.stdout, /missing.estimate/i);
-  const report = JSON.parse(result.stdout);
-  assert.ok(!report.failures?.length, 'transport errors must not become ticket findings');
+  // Ticket 1 reads fine but has no estimate; the estimate read for ticket 2 is denied.
+  // The denial must stop the whole draft instead of leaving ticket 1's missing estimate as a finding.
+  const ticket = (number: number) => ({ number, title: 'Valid', body: done, state: 'open' as const, labels: [], comments: [], blockedBy: [] });
+  let output = '';
+  const code = await runCli(['run', 'draft', '1', '2', '--check', '--json'], {
+    cwd: f.cwd, home: f.home, stdout: text => { output += text; },
+    tracker: {
+      async getTicket(number) { return ticket(number); },
+      async getEstimate(number) { if (number === 2) throw new Error('HTTP 403: estimate access denied'); return null; },
+    },
+  });
+  assert.equal(code, 1, output);
+  assert.match(output, /403|access denied/i);
+  assert.doesNotMatch(output, /missing.estimate/i);
+  assert.ok(!JSON.parse(output).failures?.length, 'transport errors must not become ticket findings');
   await f.absent();
 });
 
