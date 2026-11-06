@@ -23,6 +23,22 @@ For every change, including code, tests, documentation and agent instructions:
 
 ## Completion records
 
+### Ticket #306
+
+Glossary checked; added **Ticket-review agent** to distinguish read-only ticket
+audits and rewrite review from the team's code reviewer. Logging, Reviewer and
+human approval retain their existing meanings. No terminology conflict remains.
+The named profile and tool live in `plugins/sawmill/pi/`; the ticket-review skill
+uses fresh instances and preserves its diff, two-bounce limit and approval gate.
+
+Verification: the full declared test command passes 1462 suite tests and all
+3 process-permission tests. Build, typecheck and the 16 focused ticket-review
+checks pass. The installed Pi extension loader registers the profile and tool
+without errors. Tests cover fixed read arguments, later pages, empty/error
+responses, large-response preservation, subprocess execution, packaging and
+instruction contracts; they do not claim live model review compliance. No live
+tickets were edited as part of implementation.
+
 - Ticket #277: Glossary checked across the graph command, tracker writes,
   headless proposal boundary, ticket-graph skill and plugin/spec guidance. Added
   **Graph**, with `_Avoid_` alternatives, checked against **Blocked-by**, **Draft**

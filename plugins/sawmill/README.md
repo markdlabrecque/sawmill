@@ -122,7 +122,7 @@ answered and unresolved questions stay visible. Browser needs become User test
 cases. Legacy blocked-by prose becomes GitHub native links or GitLab's body list.
 
 A built millyard is required, but no run. Closed tickets are refused; a GitHub
-ticket missing its Project item is stopped without adding it. A fresh subagent
+ticket missing its Project item is stopped without adding it. A fresh ticket-review subagent
 checks coverage, format, testability and the human-hours estimate basis, with at
 most two repair bounces. Untestable items block; a missing harness only warns.
 After review passes, the human user sees a diff and approves the exact body,
@@ -137,6 +137,34 @@ This skill ships in both the plugin and the global skill set discovered by
 `mill skills refresh`; use the refresh and session-reload instructions above.
 Tests check shipped guidance, packaging and isolated installation, not live
 agent compliance or actual tracker writes.
+
+### Ticket-review agent
+
+Sawmill's Pi package supplies a discoverable `ticket-review` profile through the
+subagents extension's `pi-subagents.agent-providers` registry. Install the built
+Sawmill package with `pi install /absolute/path/to/sawmill` and reload Pi or start
+a fresh session. The Pi subagents extension and an authenticated `gh-axi` CLI on
+PATH are prerequisites. `mill skills refresh` refreshes skills only; it does not
+load Pi extensions. No user agent files are overwritten. A user profile with the
+same name takes precedence, so check its tool list before dispatch.
+
+The profile enables exactly `gh-axi` and `read`. Sawmill supplies the read-only
+`gh-axi` tool wrapper; installing the CLI alone does not register a Pi tool.
+The wrapper allows only fixed GitHub read operations, honors `.mill/gh-user`,
+and saves large responses for complete reading. It supports github.com, not
+GitLab or GitHub Enterprise. Unsupported trackers produce an explicit refusal.
+
+For an audit, ask the ticket-review skill to review all open tickets. Its caller
+performs preflight and supplies the configured repository, millyard and template
+facts to a fresh agent. The agent reads every results page and reports each
+ticket as meeting requirements, needing changes or incomplete. An empty tracker
+is reported explicitly; failed or partial reads cannot produce an all-clear.
+The audit makes no tracker changes. For a rewrite, the skill sends only the
+original ticket, rewrite packet, template and checklist to a fresh ticket-review
+agent, then retains the existing diff and human-approval gate.
+
+Tests exercise registration, tool restrictions, read transport and instruction
+contracts. They do not establish live model judgment or autonomous compliance.
 
 ## Drafting a run
 

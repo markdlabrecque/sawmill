@@ -13,6 +13,14 @@ It edits the existing ticket, never files a replacement or duplicate.
 
 Ticket numbers: $ARGUMENTS
 
+For an all-open formatting audit rather than a rewrite, complete the read-only
+preflight below and delegate to a fresh `ticket-review` agent. Supply the verified
+millyard and configuration paths, tracker identity, estimate project and test
+configuration. Ask it to audit all open tickets, including every results page,
+against Logging and its template. Return its per-ticket findings and completeness
+report without entering the rewrite or tracker-write steps. An audit request is
+not approval to edit tickets.
+
 ## 1. Read-only preflight
 
 1. Find the project's single built millyard using `git worktree list --porcelain`
@@ -121,8 +129,14 @@ the ticket.
 
 ## 4. Fresh-reviewer gate
 
-For every review, invoke a fresh subagent with only the original ticket and rewrite
+For every review, invoke a fresh `ticket-review` subagent with only the original ticket and rewrite
 packet, plus the shared template and this checklist as fixed review instructions.
+Use the named ticket-review agent, not a generic review agent. In Pi, use terminal
+lifecycle for each invocation, or `freshSession: true` for workflow lifecycle.
+Verify that the profile and its `gh-axi` and `read` tools are available. If either
+is unavailable, stop and show the unfiled rewrite to the human user; write nothing.
+The Sawmill Pi package supplies this profile and its read-only gh-axi tool; see
+[installation and audit usage](../../README.md#ticket-review-agent).
 Give it no context from the writing agent's conversation, prior rationale, prior
 review session or claimed approval. The reviewer may verify project facts
 read-only. Never self-review or reuse the writer's session. If fresh subagents
