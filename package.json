@@ -20,6 +20,9 @@
     ".claude-plugin",
     "plugins"
   ],
+  "pi": {
+    "extensions": ["./plugins/sawmill/pi/ticket-review.js"]
+  },
   "engines": {
     "node": ">=22.13"
   },

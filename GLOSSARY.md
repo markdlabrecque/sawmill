@@ -225,6 +225,9 @@ _Avoid_: Coder, developer
 **Reviewer**:
 The independent agent that checks a new or existing ticket during Logging, or the team role that checks the change against the ticket, performs any user test cases, and returns a review outcome, including pass, bounce or a scoped test correction.
 
+**Ticket-review agent**:
+The read-only agent that audits open tickets against Logging's minimum requirements and independently reviews proposed ticket rewrites. Distinct from the team's code reviewer; its findings do not authorize tracker edits.
+
 **Agent runtime**:
 The agent tool a role runs on: Claude Code, Pi, or Codex, with a model and effort per role.
 _Avoid_: Provider, harness, engine
